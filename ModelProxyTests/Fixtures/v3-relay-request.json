@@ -7,7 +7,7 @@
     "authorization": "Bearer eyJ0eXAiOiJ…IIHVqM(470)",
     "content-type": "application/json",
     "http-referer": "https://zcode.z.ai",
-    "user-agent": "ZCode/0.17.1 ai-sd….js/22(60)",
+    "user-agent": "ZCode/0.17.1 ai-sdk/provider-utils/4.0.27 runtime/node.js/22",
     "x-api-key": "eyJ0eXAiOiJKV1QiLC…IIHVqM(463)",
     "x-app-id": "zcode",
     "x-client-language": "en-US",

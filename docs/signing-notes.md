@@ -1,15 +1,16 @@
 # Signing intelligence — zcode relay (Task 1 findings)
 
-Observed 2026-11-15. Sources: live instrumented run (`capture2.js`, this task), V3 wire capture
-(`/Volumes/ssd/github/zcode/wire.log`, 2026-11-15T17:08Z), credential-store metadata decode
-(`inspect-store.js`), and static reading of the CLI bundle
+Observed 2026-11-15. Sources: live instrumented runs (`capture2.js`, this task — failed run
+2026-11-15T18:13Z with expired credentials; successful run 2026-11-15T18:25Z after user
+re-login), V3 wire capture (`/Volumes/ssd/github/zcode/wire.log`, 2026-11-15T17:08Z),
+credential-store metadata decode (`inspect-store.js`), and static reading of the CLI bundle
 (`/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`, 15.7 MB). No credential value
 appears anywhere in this document; token references are by length and truncation form only.
 
 ## The one-line answers
 
-- **Relay `authorization` + `x-api-key` provenance:** both headers carry the *same* value — the
-  **project access token**, minted per CLI run by
+- **Relay `authorization` + `x-api-key` provenance (live-confirmed 18:25Z):** both headers
+  carry the *same* value — the **project access token**, minted per CLI run by
   `POST https://api.z.ai/api/biz/v1/organization/<orgId>/projects/<projectId>/api_keys/<apiKeyId>/access_tokens`
   (body `{"clientType":"zcode","clientVersion":"0.17.1"}`, 50 B). `x-api-key` = the token raw
   (463-char JWT); `authorization` = `"Bearer " + token` (470 = 7 + 463). It is **not** a
@@ -18,6 +19,13 @@ appears anywhere in this document; token references are by length and truncation
   carries only the signing-key cipher, below). The token lives in an in-process cache keyed by
   origin/family/account/usageScene/loginGeneration; only the *location* (org/project/apiKeyId)
   is persisted, as store key `project-key-location:v1:[...]` (155 B plaintext).
+  **The mint call's own auth** (live-observed): `Bearer <z/login-minted biz JWT>` (header
+  length 1409 = 7 + 1402) — *not* the store's 404-char `access_token` and *not*
+  `zcodejwttoken` (255/262). Per-invocation chain: store `access_token` → `z/login` →
+  1402-char biz JWT → `access_tokens` mint → 463-char project token → handshake
+  `Authorization` = relay `x-api-key` (raw) / `authorization` (`Bearer ` + token).
+  Task 4 implication: ZGate must replicate the full mint chain per run (or cache the project
+  token in memory for its TTL); there is no way to read a relay-ready token from the store.
 - **Access-token expiry flow (observed live):** with the store's 1-h `oauth:zai:access_token`
   expired, the CLI fails before any handshake/relay traffic: `POST api.z.ai/api/auth/z/login`
   with body `{"token":"<expired access_token>"}` (416 B = 12 + 404) returns HTTP 200 with a
@@ -59,6 +67,14 @@ Expired-token run (this task, 2026-11-15T18:13Z): `client/configs` 200 (zcodejwt
 valid) → CDN config 200 (cache hit) → `z/login` HTTP 200/business-failure → hard stop, exit 1.
 Store file untouched (sha256 `0622ed87…`, mtime unchanged by the failed run).
 
+Successful instrumented run (this task, 2026-11-15T18:25Z, fresh store, all 200, stdout `OK`):
+`z/login` (416 B body, no auth header) → `access_tokens` mint (auth `Bearer …(1409)`, body
+50 B) → `agent/configs` → handshake → relay. Note the deltas vs the first-ever run:
+`client/configs`/CDN were cache-skipped ("not-due"), and `getCustomerInfo` + `api_keys` list
+did **not** fire at all — the org/project/apiKeyId location came from the store's
+`project-key-location:v1` cache, so with a warm location the CLI goes straight from `z/login`
+to the mint. `z/login` itself fires on every invocation, using the store `access_token`.
+
 ## Handshake `POST api.z.ai/api/paas/c1f3a7e2/v2/client`
 
 - Request: header `Authorization: <project token>` (463) — same value as the body's
@@ -69,17 +85,18 @@ Store file untouched (sha256 `0622ed87…`, mtime unchanged by the failed run).
   `handshakeField: "apiKey"`).
 - `sig` = signature over `"get_sign_key\n<apiKeyId>\n<ts>\n<nonce>"` (bundle const
   `bia="get_sign_key"`); `nonce` = 16 random bytes hex (32 chars).
-- Response (bundle static reading): `{code: 200, msg?, data: {privateCipher: <string>}}`;
-  `privateCipher` + `apiKeyId` + secret feed the HKDF key schedule (`WD_CLIENT_SIGN_KDF_SALT` /
-  `getSignKey_hmac` / `ed25519_priv`, constants already pinned in the plan) → the ed25519
-  private key used for `x-client-sig`. Non-200 `code` or missing `privateCipher` →
-  `handshake-business`/`handshake-protocol` error; all handshake error kinds are
-  `failOpenEligible` (client falls back to sending the relay request *unsigned* — which the
-  relay rejects with 401 per the earlier live probe; Task 5's "no cold-start fail-open" stands).
-- **Live response SHAPE still pending**: this task's run died at `z/login` (expired access
-  token) before any handshake fired. After re-login, one `node /Volumes/ssd/github/zcode/capture2.js`
-  run prints it (recursively typed, zero values) plus the relay request header set with full
-  non-credential values.
+- **Live shapes (18:25Z capture, recursively typed, zero values):**
+  - request body: `{"accessToken": "<str:463>", "nonce": "<str:32>", "sig": "<str:44>", "ts": "<str:13>"}`
+    (598 B total; `sig` 44 chars = base64 of 32 bytes; `ts` = ms epoch)
+  - response body: `{"code": "<num>", "msg": "<str:20>", "data": {"privateCipher": "<str:124>"}, "success": "<boolean>"}`
+    — confirms the static contract: the only signing-relevant field is `privateCipher`
+    (124-char string); `privateCipher` + `apiKeyId` + secret feed the HKDF key schedule
+    (`WD_CLIENT_SIGN_KDF_SALT` / `getSignKey_hmac` / `ed25519_priv`, constants already pinned
+    in the plan) → the ed25519 private key used for `x-client-sig`. Non-200 `code` or missing
+    `privateCipher` → `handshake-business`/`handshake-protocol` error; all handshake error
+    kinds are `failOpenEligible` (client falls back to sending the relay request *unsigned* —
+    which the relay rejects with 401 per the earlier live probe; Task 5's "no cold-start
+    fail-open" stands).
 
 ## Relay request — fixture
 
@@ -92,13 +109,26 @@ lengths Tasks 4–5 need). Whitelisted non-credential headers are full values.
 
 - `anthropic-beta` recovered **byte-exact** from the bundle literal
   `ke.add("mid-conversation-system-2026-04-07")` — 34 chars, head `mid-conversation-s` /
-  tail `-04-07` / length all match the wire.log truncation. Fixture carries the full value.
-- `user-agent` is the one gap: wire.log has only `ZCode/0.17.1 ai-sd….js/22(60)`. Confirmed
-  composition facts: prefix `ZCode/0.17.1` (CLI), second segment `ai-sdk/anthropic/3.0.81`
-  (bundle const `$Qs`, the only `ai-sdk/anthropic/` literal), and an ai-sdk runtime-suffix
-  builder `runtime/node.js/${process.version}` — but no composition of these reproduces the
-  observed length-60 string ending `.js/22`, so the full value is **not** asserted here. The
-  post-re-login capture2 run logs it in full (whitelisted header).
+  tail `-04-07` / length all match the wire.log truncation, and the 18:25Z live run sent the
+  identical value.
+- `user-agent` full value from the 18:25Z live run (whitelisted → logged in full):
+  `ZCode/0.17.1 ai-sdk/provider-utils/4.0.27 runtime/node.js/22` (60 chars — composition:
+  CLI version prefix + ai-sdk provider-utils segment + runtime segment with node *major* only;
+  matches the V3 truncation checkpoints head `ZCode/0.17.1 ai-sd` / tail `.js/22` / len 60).
+- The live relay header **name set is identical to the V3 capture** (same 28 headers), so the
+  fixture's names are live-confirmed; only per-request values (ids, nonces, ts, pow) differ
+  between runs, as expected.
+
+### Relay request/response body shapes (18:25Z, typed, zero values — for Task 5)
+
+- request (86 749 B): `{model: <str:7>, max_tokens: <num>, metadata: {user_id: <str:122>},
+  system: [{type: <str:4>, text: <str:35>}], messages: [{role: <str:4>, content: [{type:
+  <str:4>, text: <str:22>, cache_control: {type: <str:9>}}]}], tools: […], tool_choice:
+  {type: <str:4>}, stream: <boolean>, thinking: {type: <str:7>}, output_config: {effort: <str:3>}}`
+- response: `text/event-stream`; first SSE event (message_start):
+  `{type: <str:13>, message: {id: <str:34>, type: <str:7>, role: <str:9>, model: <str:7>,
+  content: [], stop_reason: <object>, stop_sequence: <object>, usage: {input_tokens: <num>,
+  output_tokens: <num>}}}` — SSE chunks must be forwarded immediately (upstream constraint).
 
 ## Signing headers set by the signer (bundle static, `sendSigned`)
 
@@ -111,15 +141,16 @@ headers (the agent/configs proxy mapping's `zcodeAuthorizationHeader` flag inclu
 relay-destined requests). On a 401 the signer retries once with a fresh handshake, then
 switches to unsigned bypass for the process lifetime.
 
-## Open item (blocking nothing in Tasks 2–3; blocks live confirmation for 4–5)
+## Capture log
 
-Scratch home needs re-login (interactive browser OAuth, human required):
+`/Volumes/ssd/github/zcode/capture2.log` holds the full 18:25Z JSONL (request/response records
+under the header policy; shape records for the handshake and relay). The earlier 18:13Z
+expired-token transcript is preserved in `/Volumes/ssd/github/zcode/task-1-report.md` —
+`capture2.log` is truncated fresh by each direct run. Scratch store was re-login-refreshed at
+18:24:36Z (access token exp 19:24:36Z); re-login command for future expiry (interactive,
+human-only):
 
 ```bash
 ZCODE_DATA_BASE_DIR=$HOME/.zcode-scratch-v3 ZCODE_CREDENTIAL_SECRET_FILE=$HOME/.zcode-scratch-v3/secret.txt \
 node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai
 ```
-
-Then one run of `node /Volumes/ssd/github/zcode/capture2.js` (prints shape logs; whitelisted
-headers in full) captures the handshake response shape, relay header set, and the full
-`user-agent`, closing the two pending observations above.
