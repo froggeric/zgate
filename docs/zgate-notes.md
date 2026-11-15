@@ -206,3 +206,67 @@ policy** (final safety net; the catch-all normally wins first).
   RelayTargetTests (Task 5's documented EmbeddedChannel caveat) is unchanged by Task 6 —
   verified identical counts (84) against the true HEAD baseline (an earlier mis-baseline used
   `git stash` without `-u`, leaving new files behind → build failure read as "0 errors").
+
+## Task 7 — LocalTarget (Splash) + transcript replay (2026-11-15)
+
+`ModelProxy/Proxy/LocalTarget.swift`: Splash as a forward target (loopback baseURL,
+`.anthropic` vendor kind — NOT a new VendorKind case). Self-contained module in
+RelayTarget's shape; **not yet branched into `ProxyForwarder.forward`** (file-scope
+constraint — see below), so live splash traffic still rides the generic mapped path.
+
+- **Wire request:** headers = client's minus hop-by-hop, minus `x-claude-code-*`, minus
+  `x-api-key`/`authorization`, nothing added (local trust — the generic mapped path would
+  add `Authorization: Bearer ` + empty `x-api-key` for a keyless vendor, which the AC
+  forbids). Body = byte-preserving `model` splice (`ProxyForwarder.replaceModelField`) to
+  the rule target's model verbatim — NO GLM canonicalization (splash isn't GLM); no
+  `targetModel` → body unchanged.
+- **Thinking replay is REUSED, not reimplemented:** `TranscriptProjector` keyed on the
+  target's `replayPolicy` already strips thinking-like blocks + `signature` fields for
+  `.portableOnly` targets that don't accept them (the splash shape:
+  `supportsThinkingBlocks` defaults false) and is byte-transparent for `.transparent`
+  (relay). Pinned in LocalTargetTests: identical body → splash-shaped target strips
+  thinking/signature, relay-shaped target forwards byte-identical. Foreign-signature
+  poisoning (plan risk #5) is therefore impossible through the projection path.
+- **Fallback ladder** (`executeWithFallback(targets:)`, the `router.targets(for:)` shape):
+  local exchange first; 2xx–4xx pass through (client errors are real errors); splash 5xx or
+  transport failure walks the backups — relay backups delegate to `RelayTarget.execute`
+  (own signed ladder), `.anthropic` backups get `ProxyForwarder.upstreamHeaders` + the same
+  model splice. All backups exhausted → `.primaryError` (the local 5xx, rewrapped via
+  `RelayTarget.drainErrorBody`) so the client sees the real error; primary unreachable +
+  no backup → `.unreachable`.
+- **AsyncHTTPClient single-iterator trap:** an `HTTPClientResponse.body` admits ONE
+  `for await` iterator EVER — draining a 5xx then streaming the same response crashes
+  (`NIOThrowingAsyncSequenceProducer ... only a single AsyncIterator`). Hence the ladder
+  returns drainErrorBody's REWRAPPED response (fresh `.bytes` body) for `.primaryError`,
+  never the drained original. Same class of bug as Task 5's EmbeddedChannel note.
+- **Stream relay** (`relayStream`): pure chunk-for-chunk passthrough (no normalization —
+  splash responses aren't projected back); on an upstream cut mid-SSE the client gets a
+  terminal `event: error` SSE event (`api_error`, "Local model stream ended unexpectedly")
+  then `.end` + close — never a silent EOF. Cut framing in tests: mock promises
+  content-length N+1024, delivers N, closes (EOF-framed bodies would make a close look
+  like a legal end). Silent-stall (open but mute upstream) is NOT bounded — AsyncHTTPClient
+  has no per-body-read deadline; documented limitation.
+- **Health** (`LocalHealthMonitor`, same file): implements Task 6's
+  `TargetHealthProviding`. TCP connect (NIO `ClientBootstrap`, 2 s timeout) + immediate
+  close to loopback vendor endpoints; cadence 20 s keeps success timestamps inside the
+  router's 60 s staleness window (the timestamp IS the cache; the router applies freshness).
+  Failed probes record nothing — old successes age out (asserted). Wire-level 2xx exchanges
+  also `noteSuccess` (relay's `noteRelaySuccess` pattern). Registered in
+  `ProxyServer.start` BEFORE the per-client `RequestRouter`s are built (Task 6 lifecycle
+  note: routers capture the provider at construction); reconfigured on
+  `updateRouting`, stopped in `stop()`. Injected `healthProvider`s (tests) never
+  overridden.
+- **Tests** (`ModelProxyTests/LocalTargetTests.swift`, 13; suite total 277/18 green):
+  strip/keep thinking contract, byte-parity passthrough + credential-stripping header
+  capture, no-targetModel passthrough, loopback classification, wire-success health note,
+  probe up/down/stale-preserved (ephemeral listener), 5xx→rule-backup fallback THROUGH
+  `RoutingSnapshot.targets(for:)` + relayStream to an EmbeddedChannel, 5xx-no-backup
+  passthrough, unreachable→backup, stream-cut clean error event (bounded 5 s) + SSE
+  well-formedness. Mock splash server pattern from RelayTargetTests; synthetic
+  credentials/signatures only.
+- **Known gap (deliberate, file-scope constraint):** `ProxyForwarder.forward` still routes
+  splash-kind targets through `executeUpstream`, so live traffic gets empty auth headers,
+  no 5xx fallback, no cut-protect. Wiring is a small follow-up: branch local targets to
+  `LocalTarget.executeWithFallback` + `relayStream` (ProxyChannelHandler/ProxyServer need
+  to pass the health monitor + relay context through). The router-side skip (health) IS
+  live via the registered monitor.
