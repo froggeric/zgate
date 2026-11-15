@@ -20,7 +20,7 @@ The **module name is `ZGate`** (follows target name): tests must `@testable impo
 - Project: `ZGate.xcodeproj`; targets `ZGate`, `ZGateTests`, `ZGateUITests`
 - Product: `ZGate.app`, executable `ZGate`, display name `ZGate`
 - Bundle ids: app `local.zgate.mac`, unit tests `local.zgate.macTests`, UI tests `local.zgate.macUITests`; e2e harness override `local.zgate.mac.e2e` (`scripts/e2e/env.sh`)
-- Entitlements still `ModelProxy/ModelProxy.entitlements` (sandbox + network client/server); `Info.plist` is an empty stub — identity keys come from `GENERATE_INFOPLIST_FILE` build settings (e.g. `INFOPLIST_KEY_CFBundleDisplayName`)
+- Entitlements: `ModelProxy/ModelProxy.entitlements` is now an **empty dict** (Task 4, user ruling 2026-11-15: App Sandbox OFF). Xcode 26 re-injects the sandbox from the `ENABLE_APP_SANDBOX` build setting, so that flag is also `NO` in the app target's Debug+Release — the file edit alone is not enough. `Info.plist` is an empty stub — identity keys come from `GENERATE_INFOPLIST_FILE` build settings (e.g. `INFOPLIST_KEY_CFBundleDisplayName`)
 
 ## Xcode project format — how to add new Swift files
 
@@ -60,3 +60,32 @@ Deployment target: `MACOSX_DEPLOYMENT_TARGET = 15.6` on all targets (15.7 at pro
 - Upstream docs tree (`docs/00-AI-CONTEXT.md` is their index); App-Store history in `docs/10-app-store-connect/` (not relevant to the local-only fork).
 - Upstream hard constraints (from their CLAUDE.md): proxy must stay pure SwiftNIO, no request/response body logging, localhost-only listeners, SSE chunks forwarded immediately, config in `~/Library/Application Support/ModelProxy/config.json`.
 - Pre-existing build warnings: `ResponseRelay.swift` deprecation warnings for NIO `writeAndFlush` — upstream code, not touched.
+
+## Task 4 — SigningClient live smoke (2026-11-15T20:25Z, executor-run)
+
+`SigningClientLiveSmokeTests` in `ModelProxyTests/SigningClientTests.swift` (runs only with
+`TEST_RUNNER_ZGATE_LIVE_SMOKE=1 xcodebuild test -only-testing:ZGateTests/SigningClientLiveSmokeTests`
+— the `TEST_RUNNER_` prefix is what forwards the env var through xcodebuild into the test host).
+Status/ms/lengths only; no credential value is printed or stored.
+
+- **Build 1 — full path** (real scratch store → z/login → mint → handshake):
+  z/login `200` in 528 ms, biz JWT 1402 c → mint `200` in 183 ms, project token 463 c →
+  handshake `200` in 174 ms, privateCipher 124 c → **Ed25519 key unsealed** (sign/verify
+  round trip against the derived public key OK). Biz session persisted to the injected cache
+  dir, 0600, fields `{bizJwt, acquiredAtMs, location}` (zbridge-compatible file format).
+- **Build 2 — restart on the persisted session** (`store = nil`, so z/login is impossible):
+  mint `200` in 168 ms, token 463 c → handshake `200` in 163 ms, cipher 124 c → key OK.
+  **z/login requests: 0** — the cached biz session rebuilt the chain without touching the store.
+
+All observed lengths match the wire facts pinned in the task brief (1402/463/124 chars).
+
+### Task 4 wire finding: store location value is an object
+
+Live-checked against the real store (metadata only): the `project-key-location:v1:*` field's
+**name** carries the percent-encoded array `["https://api.z.ai","zai",<account>,null,1,"default"]`
+while its **value** is the object `{"organizationId":36c,"projectId":37c,"apiKeyId":32c}` —
+the mint location. Task 2's `CredentialStore.projectKeyLocation()` parses the value as the
+array shape (its synthetic fixture models that), so it throws on the real store. SigningClient
+takes the location from the persisted biz session or `Configuration.initialLocation` instead;
+the app's first cold start needs either a zbridge cache seed, an injected location, or a Task 2
+follow-up accessor that parses the value object.
