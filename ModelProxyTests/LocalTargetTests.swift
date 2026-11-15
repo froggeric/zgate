@@ -1,0 +1,638 @@
+import AsyncHTTPClient
+import Foundation
+import NIOCore
+import NIOEmbedded
+import NIOFoundationCompat
+import NIOHTTP1
+import NIOPosix
+import Testing
+@testable import ZGate
+
+/// Offline tests for `LocalTarget` — the Splash local route.
+///
+/// Splash is a local SwiftNIO HTTP server (127.0.0.1, ephemeral port)
+/// serving scripted responses, including a 5xx script for the fallback
+/// ladder and an abrupt mid-stream cut. All credentials and thinking
+/// signatures in fixtures are synthetic — no real key or signature material
+/// appears anywhere.
+@MainActor
+@Suite struct LocalTargetTests {
+
+    // MARK: - Mock splash server (SwiftNIO, 127.0.0.1)
+
+    private final class MockSplashServer: @unchecked Sendable {
+        struct RecordedRequest {
+            let method: String
+            let path: String
+            let headers: [String: String]
+            let body: Data
+        }
+
+        struct Script {
+            var status: Int = 200
+            var headers: [String: String] = ["content-type": "application/json"]
+            var chunks: [Data] = []
+            var cutAfterChunks = false
+
+            static func json(_ object: [String: Any], status: Int = 200) -> Script {
+                let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+                return Script(status: status, chunks: [data])
+            }
+        }
+
+        private let lock = NSRecursiveLock()
+        private var scripts: [Script]
+        private var _requests: [RecordedRequest] = []
+        private var _channels: [any Channel] = []
+        private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        private var serverChannel: (any Channel)?
+
+        init(scripts: [Script] = []) {
+            self.scripts = scripts
+        }
+
+        var requests: [RecordedRequest] {
+            lock.lock(); defer { lock.unlock() }
+            return _requests
+        }
+
+        func start() async throws -> Int {
+            let bootstrap = ServerBootstrap(group: group)
+                .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+                .childChannelInitializer { channel in
+                    channel.pipeline.configureHTTPServerPipeline(withErrorHandling: true).flatMap {
+                        channel.pipeline.addHandler(MockSplashHandler(server: self))
+                    }
+                }
+            let channel = try await bootstrap.bind(host: "127.0.0.1", port: 0).get()
+            lock.lock()
+            serverChannel = channel
+            lock.unlock()
+            return channel.localAddress?.port ?? 0
+        }
+
+        func shutdown() async {
+            lock.lock()
+            let channels = _channels + [serverChannel].compactMap { $0 }
+            serverChannel = nil
+            _channels = []
+            lock.unlock()
+            for channel in channels {
+                try? await channel.close().get()
+            }
+            try? await group.shutdownGracefully()
+        }
+
+        fileprivate func takeScript() -> Script {
+            lock.lock(); defer { lock.unlock() }
+            if !scripts.isEmpty { return scripts.removeFirst() }
+            return .json(["ok": true])
+        }
+        fileprivate func record(_ request: RecordedRequest) {
+            lock.lock(); _requests.append(request); lock.unlock()
+        }
+        fileprivate func trackChannel(_ channel: any Channel) {
+            lock.lock(); _channels.append(channel); lock.unlock()
+        }
+    }
+
+    private final class MockSplashHandler: ChannelInboundHandler, @unchecked Sendable {
+        typealias InboundIn = HTTPServerRequestPart
+        typealias OutboundOut = HTTPServerResponsePart
+
+        private let server: MockSplashServer
+        private var requestHead: HTTPRequestHead?
+        private var body = Data()
+
+        init(server: MockSplashServer) {
+            self.server = server
+        }
+
+        func handlerAdded(context: ChannelHandlerContext) {
+            server.trackChannel(context.channel)
+        }
+
+        func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+            switch unwrapInboundIn(data) {
+            case .head(let head):
+                requestHead = head
+                body = Data()
+            case .body(let buffer):
+                if let bytes = buffer.getData(at: buffer.readerIndex, length: buffer.readableBytes) {
+                    body.append(bytes)
+                }
+            case .end:
+                guard let head = requestHead else {
+                    context.close(promise: nil)
+                    return
+                }
+                var headers: [String: String] = [:]
+                for (name, value) in head.headers {
+                    headers[name.lowercased()] = value
+                }
+                server.record(MockSplashServer.RecordedRequest(
+                    method: head.method.rawValue,
+                    path: head.uri,
+                    headers: headers,
+                    body: body))
+                respond(context: context, script: server.takeScript())
+                requestHead = nil
+                body = Data()
+            }
+        }
+
+        private func respond(context: ChannelHandlerContext, script: MockSplashServer.Script) {
+            let channel = context.channel
+            Task {
+                var head = HTTPResponseHead(
+                    version: .http1_1,
+                    status: HTTPResponseStatus(statusCode: script.status))
+                for (name, value) in script.headers {
+                    head.headers.add(name: name, value: value)
+                }
+                let total = script.chunks.reduce(0) { $0 + $1.count }
+                if script.cutAfterChunks {
+                    // Promise more bytes than will be delivered, then close:
+                    // the client sees a body cut short of its content-length.
+                    head.headers.replaceOrAdd(name: "content-length", value: String(total + 1024))
+                } else if script.chunks.count <= 1 {
+                    head.headers.replaceOrAdd(name: "content-length", value: String(total))
+                }
+                channel.write(NIOAny(HTTPServerResponsePart.head(head)), promise: nil)
+                for chunk in script.chunks {
+                    var buffer = channel.allocator.buffer(capacity: chunk.count)
+                    buffer.writeBytes(chunk)
+                    channel.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buffer))), promise: nil)
+                    channel.flush()
+                }
+                if script.cutAfterChunks {
+                    channel.flush()
+                    channel.close(promise: nil)
+                } else {
+                    channel.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil)), promise: nil)
+                }
+            }
+        }
+    }
+
+    // MARK: - Helpers
+
+    /// Thread-safe boolean for assertions made from child tasks.
+    private final class LockedFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() {
+            lock.lock(); defer { lock.unlock() }
+            value = true
+        }
+        var isSet: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return value
+        }
+    }
+
+    private func localRouteTarget(port: Int, targetModel: String? = LocalTarget.defaultModel) -> RoutingSnapshot.RouteTarget {
+        RoutingSnapshot.RouteTarget(
+            baseURL: "http://127.0.0.1:\(port)",
+            apiKey: "",
+            vendorName: "splash (local)",
+            vendorID: UUID(),
+            targetModel: targetModel,
+            isPassthrough: false,
+            connectTimeoutSeconds: 5,
+            readTimeoutSeconds: 10,
+            signingDomain: .compatibleThirdParty,
+            replayPolicy: .portableOnly)
+    }
+
+    private func relayRouteTarget() -> RoutingSnapshot.RouteTarget {
+        RoutingSnapshot.RouteTarget(
+            baseURL: "https://zcode.z.ai/api/v1/ultra-zai/anthropic",
+            apiKey: "",
+            vendorName: "zcode relay",
+            vendorID: UUID(),
+            targetModel: "GLM-5.3-Flash",
+            isPassthrough: false,
+            connectTimeoutSeconds: 5,
+            readTimeoutSeconds: 10,
+            signingDomain: .compatibleThirdParty,
+            replayPolicy: .transparent,
+            vendorKind: .relay)
+    }
+
+    private func postHead() -> HTTPRequestHead {
+        var head = HTTPRequestHead(version: .http1_1, method: .POST, uri: "/v1/messages")
+        // Synthetic credentials — assert they never leave the machine.
+        head.headers.add(name: "x-api-key", value: "client-key-synthetic")
+        head.headers.add(name: "authorization", value: "Bearer client-key-synthetic")
+        head.headers.add(name: "anthropic-version", value: "2023-06-01")
+        head.headers.add(name: "content-type", value: "application/json")
+        head.headers.add(name: "user-agent", value: "claude-cli/2.1.282 (test)")
+        head.headers.add(name: "x-claude-code-session-id", value: "session-1")
+        return head
+    }
+
+    /// Handcrafted so byte-parity after the model splice is assertable.
+    private func passthroughBody() -> String {
+        #"{"model":"glm-5.3-flash","max_tokens":128,"stream":true,"system":"You are helpful.","messages":[{"role":"user","content":"héllo"}]}"#
+    }
+
+    /// A CC-style replay transcript: an assistant turn carrying a signed
+    /// `thinking` block (synthetic signature — never real material).
+    private func transcriptBody() -> Data {
+        Data(
+            #"{"model":"glm-5.3-flash","max_tokens":128,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"thinking","thinking":"prior reasoning","signature":"fake-signature-synthetic-0001"},{"type":"text","text":"answer"}]}]}"#
+                .utf8)
+    }
+
+    private func makeHTTPClient() -> HTTPClient {
+        // Short connect deadline: a refused loopback port otherwise retried
+        // by AsyncHTTPClient until the full default timeout, slowing the
+        // unreachable-target test by 10 s for no diagnostic value.
+        HTTPClient(
+            eventLoopGroupProvider: .createNew,
+            configuration: HTTPClient.Configuration(timeout: .init(connect: .seconds(1))))
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 5, _ condition: () -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return condition()
+    }
+
+    /// Reads every outbound part of an EmbeddedChannel: (head, concatenated
+    /// body bytes, sawEnd).
+    private func drainClientResponse(_ channel: EmbeddedChannel) throws -> (HTTPResponseHead, Data, Bool) {
+        var head: HTTPResponseHead?
+        var body = Data()
+        var sawEnd = false
+        while let part = try channel.readOutbound(as: HTTPServerResponsePart.self) {
+            switch part {
+            case .head(let h): head = h
+            case .body(.byteBuffer(let buffer)):
+                if let bytes = buffer.getData(at: buffer.readerIndex, length: buffer.readableBytes) {
+                    body.append(bytes)
+                }
+            case .body(.fileRegion): break  // never produced on EmbeddedChannel
+            case .end: sawEnd = true
+            }
+        }
+        return (try #require(head), body, sawEnd)
+    }
+
+    // MARK: - Thinking-block contract (splash strips, relay keeps)
+
+    @Test func foreignThinkingBlocksStrippedOnSplashRouteKeptOnRelayRoute() throws {
+        let body = transcriptBody()
+        let projector = TranscriptProjector()
+        let fingerprint = ConversationFingerprint()
+
+        // Splash shape (.portableOnly, thinking not accepted): the projector's
+        // vendor-ready projection drops thinking-like blocks — a signature
+        // minted by a non-splash model can never reach Splash.
+        let splashPrepared = try projector.prepareRequest(
+            bodyData: body, clientName: "test", sessionScopeKey: nil,
+            coordinationScopeKey: nil, target: localRouteTarget(port: 8000),
+            existingBranches: [], fingerprint: fingerprint)
+        let splashJSON = try #require(
+            try JSONSerialization.jsonObject(with: splashPrepared.bodyData) as? [String: Any])
+        let splashMessages = try #require(splashJSON["messages"] as? [[String: Any]])
+        let assistant = try #require(splashMessages.last)
+        let blocks = try #require(assistant["content"] as? [[String: Any]])
+        #expect(blocks.contains { ($0["type"] as? String) == "thinking" } == false)
+        #expect(blocks.contains { ($0["type"] as? String) == "text" } == true)
+        #expect(splashPrepared.bodyData.range(of: Data("signature".utf8)) == nil)
+
+        // Relay shape (.transparent): the identical request is byte-unchanged.
+        let relayPrepared = try projector.prepareRequest(
+            bodyData: body, clientName: "test", sessionScopeKey: nil,
+            coordinationScopeKey: nil, target: relayRouteTarget(),
+            existingBranches: [], fingerprint: fingerprint)
+        #expect(relayPrepared.bodyData == body)
+    }
+
+    // MARK: - Passthrough (headers + body)
+
+    @Test func passthroughPreservesBodyExceptModelRewriteAndStripsCredentials() async throws {
+        let splash = MockSplashServer(scripts: [.json(["ok": true])])
+        let port = try await splash.start()
+        defer { Task { await splash.shutdown() } }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await LocalTarget.execute(
+            head: postHead(), bodyData: Data(passthroughBody().utf8),
+            target: localRouteTarget(port: port), httpClient: httpClient,
+            requestID: "t-passthrough")
+        guard case .responded(let response) = outcome else {
+            Issue.record("expected responded, got \(outcome)")
+            return
+        }
+        #expect(response.status == .ok)
+
+        let request = try #require(splash.requests.first)
+        #expect(request.method == "POST")
+        #expect(request.path == "/v1/messages")
+
+        // Body: byte-identical except the model splice — same primitive the
+        // relay path uses, no canonicalization of the splash model name.
+        let expected = passthroughBody().replacingOccurrences(
+            of: "glm-5.3-flash", with: LocalTarget.defaultModel)
+        #expect(request.body == Data(expected.utf8))
+
+        // Headers: CC's credentials and gateway identifiers stripped, nothing
+        // added in their place; the client's protocol headers ride along.
+        let headers = request.headers
+        #expect(headers["authorization"] == nil)
+        #expect(headers["x-api-key"] == nil)
+        #expect(headers["x-claude-code-session-id"] == nil)
+        #expect(headers["anthropic-version"] == "2023-06-01")
+        #expect(headers["content-type"] == "application/json")
+        #expect(headers["user-agent"] == "claude-cli/2.1.282 (test)")
+    }
+
+    @Test func wireBodyForwardsUnchangedWithoutTargetModel() throws {
+        let body = Data(passthroughBody().utf8)
+        let target = localRouteTarget(port: 8000, targetModel: nil)
+        #expect(LocalTarget.wireBody(bodyData: body, target: target) == body)
+    }
+
+    @Test func loopbackClassification() {
+        #expect(LocalTarget.isLocalTarget(localRouteTarget(port: 8000)) == true)
+        #expect(LocalTarget.isLocalTarget(relayRouteTarget()) == false)
+        let remote = RoutingSnapshot.RouteTarget(
+            baseURL: "https://api.example.com", apiKey: "k", vendorName: "remote",
+            vendorID: UUID(), targetModel: "m", isPassthrough: false,
+            connectTimeoutSeconds: 5, readTimeoutSeconds: 10,
+            signingDomain: .compatibleThirdParty, replayPolicy: .portableOnly)
+        #expect(LocalTarget.isLocalTarget(remote) == false)
+        #expect(LocalTarget.isLoopbackBaseURL("http://localhost:9000") == true)
+        #expect(LocalTarget.isLoopbackBaseURL("http://127.0.0.1:8000/v1") == true)
+        #expect(LocalTarget.isLoopbackBaseURL("https://api.example.com") == false)
+    }
+
+    // MARK: - Wire-level health note
+
+    @Test func localExchangeSuccessNotedOnHealthMonitor() async throws {
+        let splash = MockSplashServer(scripts: [.json(["ok": true])])
+        let port = try await splash.start()
+        defer { Task { await splash.shutdown() } }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let monitor = LocalHealthMonitor()
+        defer { Task { await monitor.stopProbing() } }
+        let target = localRouteTarget(port: port)
+        #expect(monitor.lastSuccess(forVendor: target.vendorID!) == nil)
+
+        let outcome = await LocalTarget.execute(
+            head: postHead(), bodyData: Data(passthroughBody().utf8),
+            target: target, httpClient: httpClient, requestID: "t-wire-health",
+            health: monitor)
+        guard case .responded = outcome else {
+            Issue.record("expected responded, got \(outcome)")
+            return
+        }
+        #expect(monitor.lastSuccess(forVendor: target.vendorID!) != nil)
+    }
+
+    // MARK: - Health probe (ephemeral listener)
+
+    @Test func probeRecordsSuccessWhenListenerUp() async throws {
+        let listener = MockSplashServer(scripts: [])
+        let port = try await listener.start()
+        defer { Task { await listener.shutdown() } }
+
+        let monitor = LocalHealthMonitor()
+        defer { Task { await monitor.stopProbing() } }
+        let vendor = Vendor(name: "splash (local)", baseURL: "http://127.0.0.1:\(port)", apiKey: "")
+        monitor.configure(vendors: [vendor])
+        await monitor.probeOnce(force: true)
+
+        let success = try #require(monitor.lastSuccess(forVendor: vendor.id))
+        #expect(abs(success.timeIntervalSinceNow) < 5)
+    }
+
+    @Test func probeRecordsNothingWhenListenerDown() async throws {
+        // Bind, note the port, shut down: a certainly-refused local port.
+        let listener = MockSplashServer(scripts: [])
+        let port = try await listener.start()
+        await listener.shutdown()
+
+        let monitor = LocalHealthMonitor()
+        defer { Task { await monitor.stopProbing() } }
+        let vendor = Vendor(name: "splash (local)", baseURL: "http://127.0.0.1:\(port)", apiKey: "")
+        monitor.configure(vendors: [vendor])
+        await monitor.probeOnce(force: true)
+
+        #expect(monitor.lastSuccess(forVendor: vendor.id) == nil)
+    }
+
+    @Test func failedProbeLeavesStaleSuccessUntouched() async throws {
+        let listener = MockSplashServer(scripts: [])
+        let port = try await listener.start()
+
+        let monitor = LocalHealthMonitor()
+        let vendor = Vendor(name: "splash (local)", baseURL: "http://127.0.0.1:\(port)", apiKey: "")
+        monitor.configure(vendors: [vendor])
+        await monitor.probeOnce(force: true)
+        let firstSuccess = try #require(monitor.lastSuccess(forVendor: vendor.id))
+
+        await listener.shutdown()
+        await monitor.probeOnce(force: true)
+
+        // Down is recorded as absence of a fresh success, never by mutating
+        // history: the old entry stays and ages out for the router to judge.
+        let stillFirst = try #require(monitor.lastSuccess(forVendor: vendor.id))
+        #expect(stillFirst == firstSuccess)
+        try? await monitor.stopProbing()
+    }
+
+    // MARK: - Fallback ladder
+
+    /// Builds the spec §2-style rule (haiku → splash, loopback backup) and
+    /// resolves its target array through RoutingSnapshot — the same array
+    /// the router's failover machinery hands the forwarder.
+    private func makeFallbackFixture(splashPort: Int, backupPort: Int) throws
+        -> (targets: [RoutingSnapshot.RouteTarget], splashVendor: Vendor, backupVendor: Vendor)
+    {
+        let splashVendor = Vendor(
+            name: "splash (local)", baseURL: "http://127.0.0.1:\(splashPort)",
+            apiKey: "", replayPolicy: .portableOnly)
+        let backupVendor = Vendor(
+            name: "backup vendor", baseURL: "http://127.0.0.1:\(backupPort)",
+            apiKey: "backup-key-synthetic")
+        let mapping = ModelMapping(
+            sourceModel: "haiku", targetModel: "Qwen3.8-27B-4bit",
+            targetVendorID: splashVendor.id,
+            backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: backupVendor.id,
+            matchClass: .haiku)
+        let client = ClientConfig(
+            clientName: "Claude Code", port: 0,
+            defaultUpstream: "https://api.anthropic.com", unmappedPolicy: .passthrough)
+        let config = AppConfig(
+            vendors: [splashVendor, backupVendor], clients: [client], modelMappings: [mapping])
+        let snapshot = RoutingSnapshot(from: config, for: client)
+        let targets = try #require(snapshot.targets(for: "glm-5.3-flash"))
+        #expect(targets.count == 2)
+        return (targets, splashVendor, backupVendor)
+    }
+
+    @Test func splash5xxFallsBackToRuleBackup() async throws {
+        let splash = MockSplashServer(scripts: [
+            .json(["type": "error", "error": ["type": "api_error", "message": "boom"]], status: 500),
+        ])
+        let backup = MockSplashServer(scripts: [.json(["servedBy": "backup-marker"])])
+        let splashPort = try await splash.start()
+        let backupPort = try await backup.start()
+        defer {
+            Task { await splash.shutdown() }
+            Task { await backup.shutdown() }
+        }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let fixture = try makeFallbackFixture(splashPort: splashPort, backupPort: backupPort)
+        let outcome = await LocalTarget.executeWithFallback(
+            head: postHead(), bodyData: Data(passthroughBody().utf8),
+            targets: fixture.targets, httpClient: httpClient, requestID: "t-fallback")
+
+        guard case .served(let response, let servedTarget) = outcome else {
+            Issue.record("expected served, got \(outcome)")
+            return
+        }
+        #expect(response.status == .ok)
+        #expect(servedTarget.vendorID == fixture.backupVendor.id)
+        #expect(splash.requests.count == 1)
+        #expect(backup.requests.count == 1)
+
+        // The client receives the fallback's response.
+        let channel = EmbeddedChannel()
+        await LocalTarget.relayStream(upstreamResponse: response, to: channel, requestID: "t-fallback")
+        let (head, body, sawEnd) = try drainClientResponse(channel)
+        #expect(head.status == .ok)
+        #expect(String(data: body, encoding: .utf8)?.contains("backup-marker") == true)
+        #expect(sawEnd)
+    }
+
+    @Test func splash5xxWithoutBackupPassesErrorThrough() async throws {
+        let splash = MockSplashServer(scripts: [
+            .json(["type": "error", "error": ["type": "api_error", "message": "boom"]], status: 500),
+        ])
+        let splashPort = try await splash.start()
+        defer { Task { await splash.shutdown() } }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await LocalTarget.executeWithFallback(
+            head: postHead(), bodyData: Data(passthroughBody().utf8),
+            targets: [localRouteTarget(port: splashPort)], httpClient: httpClient,
+            requestID: "t-no-backup")
+
+        guard case .primaryError(let response, let target) = outcome else {
+            Issue.record("expected primaryError, got \(outcome)")
+            return
+        }
+        #expect(response.status == .internalServerError)
+        let channel = EmbeddedChannel()
+        await LocalTarget.relayStream(upstreamResponse: response, to: channel, requestID: "t-no-backup")
+        let (head, _, sawEnd) = try drainClientResponse(channel)
+        #expect(head.status == .internalServerError)
+        #expect(sawEnd)
+        _ = target
+    }
+
+    @Test func splashUnreachableFallsBackToBackup() async throws {
+        // A port with nothing listening: the splash exchange cannot connect.
+        let gone = MockSplashServer(scripts: [])
+        let splashPort = try await gone.start()
+        await gone.shutdown()
+
+        let backup = MockSplashServer(scripts: [.json(["servedBy": "backup-marker"])])
+        let backupPort = try await backup.start()
+        defer { Task { await backup.shutdown() } }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let fixture = try makeFallbackFixture(splashPort: splashPort, backupPort: backupPort)
+        let outcome = await LocalTarget.executeWithFallback(
+            head: postHead(), bodyData: Data(passthroughBody().utf8),
+            targets: fixture.targets, httpClient: httpClient, requestID: "t-unreachable")
+
+        guard case .served(let response, let servedTarget) = outcome else {
+            Issue.record("expected served, got \(outcome)")
+            return
+        }
+        #expect(response.status == .ok)
+        #expect(servedTarget.vendorID == fixture.backupVendor.id)
+        #expect(backup.requests.count == 1)
+    }
+
+    // MARK: - Stream cut mid-response
+
+    @Test func streamCutMidResponseYieldsCleanErrorEventNotHang() async throws {
+        let firstEvent = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n"
+        let cutEvent = "event: content_block_delta\ndata: {\"type\":\"content_block_"
+        let splash = MockSplashServer(scripts: [
+            MockSplashServer.Script(
+                status: 200,
+                headers: ["content-type": "text/event-stream"],
+                chunks: [Data(firstEvent.utf8), Data(cutEvent.utf8)],
+                cutAfterChunks: true),
+        ])
+        let port = try await splash.start()
+        defer { Task { await splash.shutdown() } }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await LocalTarget.execute(
+            head: postHead(), bodyData: Data(passthroughBody().utf8),
+            target: localRouteTarget(port: port), httpClient: httpClient,
+            requestID: "t-cut")
+        guard case .responded(let response) = outcome else {
+            Issue.record("expected responded, got \(outcome)")
+            return
+        }
+        #expect(response.status == .ok)
+
+        // Bounded completion: the relay must terminate (here within 5 s)
+        // even though the upstream body never finishes.
+        let channel = EmbeddedChannel()
+        let done = LockedFlag()
+        let relayTask = Task {
+            await LocalTarget.relayStream(upstreamResponse: response, to: channel, requestID: "t-cut")
+            done.set()
+        }
+        let finished = await waitUntil(timeout: 5) { done.isSet }
+        #expect(finished)
+        relayTask.cancel()
+
+        let (head, body, sawEnd) = try drainClientResponse(channel)
+        let bodyText = String(data: body, encoding: .utf8) ?? ""
+        #expect(head.status == .ok)
+        #expect(bodyText.contains("message_start"))  // early events were delivered
+        #expect(bodyText.contains("event: error"))  // clean terminal error event
+        #expect(bodyText.contains("Local model stream ended unexpectedly"))
+        #expect(sawEnd)
+    }
+
+    @Test func streamCutErrorEventIsWellFormedSSE() throws {
+        // Exactly one blank-line-terminated event; JSON payload parses.
+        #expect(LocalTarget.streamCutErrorEvent.hasSuffix("\n\n"))
+        #expect(LocalTarget.streamCutErrorEvent.hasPrefix("event: error\ndata: "))
+        let payload = LocalTarget.streamCutErrorEvent
+            .dropFirst("event: error\ndata: ".count)
+            .dropLast(2)
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
+        #expect(json["type"] as? String == "error")
+        let error = try #require(json["error"] as? [String: Any])
+        #expect(error["type"] as? String == "api_error")
+        #expect((error["message"] as? String)?.isEmpty == false)
+    }
+}

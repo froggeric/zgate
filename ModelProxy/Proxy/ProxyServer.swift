@@ -42,6 +42,11 @@ final class ProxyServer {
     /// real implementations. nil = fail-open (see RouterExtensions).
     var healthProvider: (any TargetHealthProviding)?
     var quotaProvider: (any QuotaSnapshotProviding)?
+    /// Splash health probe (Task 7): TCP-probes loopback vendors and feeds
+    /// the health seam. Built on first start, kept across restarts, and
+    /// reconfigured whenever config changes. An explicitly injected
+    /// `healthProvider` (tests) is never overridden.
+    private var localHealthMonitor: LocalHealthMonitor?
     /// SigningClient factory for the relay context. Injectable for tests;
     /// the default is the production chain — best-effort store load, so a
     /// missing store surfaces at request time as the relay's
@@ -120,6 +125,19 @@ final class ProxyServer {
         }
         let relayContext = self.relayContext
 
+        // Local health probe (Task 7): registers BEFORE any RequestRouter is
+        // built below — routers capture the provider at construction (Task 6
+        // lifecycle note), so this is the one point where the splash probe
+        // connects to the router's health conditions.
+        if localHealthMonitor == nil {
+            localHealthMonitor = LocalHealthMonitor()
+        }
+        localHealthMonitor?.configure(vendors: config.vendors)
+        localHealthMonitor?.startProbing()
+        if healthProvider == nil {
+            healthProvider = localHealthMonitor
+        }
+
         for clientCfg in config.clients {
             let snapshot = RoutingSnapshot(from: config, for: clientCfg)
             let router = RequestRouter(
@@ -196,6 +214,8 @@ final class ProxyServer {
         }
         listeners = []
 
+        await localHealthMonitor?.stopProbing()
+
         try? await httpClient?.shutdown()
         httpClient = nil
 
@@ -221,6 +241,7 @@ final class ProxyServer {
     func updateRouting(config: AppConfig) {
         self.webSearchProvider = WebSearchProviderFactory.make(from: config.webSearch)
         self.webSearchForwardAsIs = config.webSearch.provider == .forwardAsIs
+        localHealthMonitor?.configure(vendors: config.vendors)
         for slot in listeners {
             guard let clientCfg = config.clients.first(where: { $0.clientName == slot.clientName }) else {
                 continue
