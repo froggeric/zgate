@@ -282,9 +282,11 @@ The generic mapped path for non-splash anthropic vendors is untouched.
   error event), and a local model never needs cross-vendor thinking restore; keeping the
   lease would surface 409s to concurrent duplicates for no benefit. Consequence: no
   token-usage extraction and no branch-transcript commit on the splash route (splash is
-  local/free; CC resends its own context). `WebSearchBridge` (only active with a
-  configured search provider AND server-side web_search tools) still uses the generic
-  `executeWithFailover` path — edge case, unchanged.
+  local/free; CC resends its own context). Fix round 1: `WebSearchBridge.shouldHandle`
+  now EXCLUDES local targets (it ran before the local branch and would have routed
+  splash traffic through the generic mapped path — empty auth headers, no ladder, no
+  cut-protect); web-search-bearing splash requests ride the local branch instead, and
+  `sanitizeToolsForVendor` drops the server-side search tool before the request leaves.
 - **Monitor chain:** ProxyServer → `ProxyChannelHandler(localHealth:)` →
   `forward(localHealth:)` → `executeLocal` — so wire-level 2xx splash exchanges warm the
   registered health monitor.

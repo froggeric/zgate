@@ -59,7 +59,14 @@ enum WebSearchBridge {
         target: RoutingSnapshot.RouteTarget,
         requestKind: TrafficEntry.RequestKind
     ) -> Bool {
-        guard !target.isPassthrough, requestKind == .generation else {
+        // Local (splash) targets are excluded: the bridge's model turns run
+        // through the generic mapped path, which would re-add (empty) auth
+        // headers and bypass the splash ladder and cut-protected relay.
+        // Web-search-bearing splash traffic rides the normal forward branch
+        // instead; `sanitizeToolsForVendor` drops the server-side search
+        // tool (no `name`/`input_schema`) before the request leaves.
+        guard !target.isPassthrough, !LocalTarget.isLocalTarget(target),
+            requestKind == .generation else {
             return false
         }
         guard let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],

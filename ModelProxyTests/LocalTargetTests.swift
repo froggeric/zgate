@@ -700,7 +700,8 @@ import Testing
     @discardableResult
     private func forward(
         _ fixture: ForwardFixture, httpClient: HTTPClient, channel: any Channel,
-        bodyText: String, localHealth: LocalHealthMonitor? = nil
+        bodyText: String, localHealth: LocalHealthMonitor? = nil,
+        webSearchProvider: (any WebSearchBridgeProviding)? = nil
     ) async -> Void {
         var body = ByteBufferAllocator().buffer(capacity: 0)
         body.writeData(Data(bodyText.utf8))
@@ -716,7 +717,7 @@ import Testing
             lineageBroker: fixture.lineageBroker,
             portableNormalizer: fixture.portableNormalizer,
             requestCoordinator: fixture.requestCoordinator,
-            webSearchProvider: nil,
+            webSearchProvider: webSearchProvider,
             webSearchForwardAsIs: false,
             relayContext: nil,
             localHealth: localHealth)
@@ -887,6 +888,83 @@ import Testing
         #expect(head.status == .internalServerError)
         #expect(sawEnd)
         #expect(String(data: body, encoding: .utf8)?.contains("splash-failed-marker") == true)
+        finishChannel(client)
+    }
+
+    // MARK: - Fix round 1 (web-search traffic rides the local ladder)
+
+    /// A provider that records every search call — the bridge must never
+    /// reach it for splash-routed requests.
+    private final class RecordingSearchProvider: WebSearchBridgeProviding, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _calls = 0
+        var calls: Int {
+            lock.lock(); defer { lock.unlock() }
+            return _calls
+        }
+        func search(
+            query: String, maxResults: Int, httpClient: HTTPClient
+        ) async throws -> [WebSearchResult] {
+            lock.lock(); _calls += 1; lock.unlock()
+            return []
+        }
+    }
+
+    private func webSearchBodyText() -> String {
+        #"{"model":"glm-5.3-flash","max_tokens":128,"stream":true,"tools":[{"type":"web_search_20250305","max_uses":3}],"messages":[{"role":"user","content":"search the web"}]}"#
+    }
+
+    @Test func webSearchBridgeDoesNotClaimLocalTargets() throws {
+        let body = Data(webSearchBodyText().utf8)
+        // Splash shape: the bridge must not claim it (would bypass the local
+        // ladder and its credential-free headers).
+        #expect(WebSearchBridge.shouldHandle(
+            bodyData: body, target: localRouteTarget(port: 8000),
+            requestKind: .generation) == false)
+        // The identical body still claims an ordinary mapped vendor — the
+        // exclusion is scoped to local targets, not the tool set.
+        let mappedRemote = RoutingSnapshot.RouteTarget(
+            baseURL: "https://api.example.com", apiKey: "k", vendorName: "remote",
+            vendorID: UUID(), targetModel: "m", isPassthrough: false,
+            connectTimeoutSeconds: 5, readTimeoutSeconds: 10,
+            signingDomain: .compatibleThirdParty, replayPolicy: .portableOnly)
+        #expect(WebSearchBridge.shouldHandle(
+            bodyData: body, target: mappedRemote,
+            requestKind: .generation) == true)
+    }
+
+    @Test func forwardLocalWebSearchRequestRidesLocalLadderNotBridge() async throws {
+        let splash = MockSplashServer(scripts: [.json(["id": "msg_local_search"])])
+        let splashPort = try await splash.start()
+        defer { Task { await splash.shutdown() } }
+        let fixture = try makeForwardFixture(splashPort: splashPort, backupPort: nil)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+        let provider = RecordingSearchProvider()
+
+        let client = EmbeddedChannel()
+        await forward(
+            fixture, httpClient: httpClient, channel: client,
+            bodyText: webSearchBodyText(), webSearchProvider: provider)
+
+        // Client got the local response; the bridge never ran.
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .ok)
+        #expect(sawEnd)
+        #expect(String(data: body, encoding: .utf8)?.contains("msg_local_search") == true)
+        #expect(provider.calls == 0)
+
+        // The splash request rode the local ladder: no credentials added,
+        // model rewritten, and the server-side search tool dropped by the
+        // mapped-path tool sanitizer (splash can't execute it).
+        let request = try #require(splash.requests.first)
+        #expect(request.headers["authorization"] == nil)
+        #expect(request.headers["x-api-key"] == nil)
+        let sent = try #require(
+            try JSONSerialization.jsonObject(with: request.body) as? [String: Any])
+        #expect(sent["model"] as? String == "Qwen3.8-27B-4bit")
+        #expect(sent["tools"] == nil)
         finishChannel(client)
     }
 }

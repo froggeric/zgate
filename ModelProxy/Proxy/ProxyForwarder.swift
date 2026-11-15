@@ -942,9 +942,11 @@ enum ProxyForwarder {
     /// Local-target execution: `LocalTarget.executeWithFallback` over the
     /// rule's target array (`router.targets(for:)` — the same class-rule
     /// failover arrays and eligibility the resolver applied). Route-state
-    /// bookkeeping mirrors the mapped path: non-2xx responses count as
-    /// failures, a fully unreachable chain flips the active target after 10
-    /// consecutive failures.
+    /// rule (deliberately narrower than the mapped path's): a 2xx resets
+    /// `failCount`; client errors (4xx) neither reset nor increment — they
+    /// are request problems, not availability signals; ladder failures
+    /// (primary 5xx with no backup served, fully unreachable chain)
+    /// increment, flipping the active target after 10 consecutive ones.
     private static func executeLocal(
         head: HTTPRequestHead,
         bodyData: Data,
