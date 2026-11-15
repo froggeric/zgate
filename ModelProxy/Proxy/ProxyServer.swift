@@ -38,10 +38,17 @@ final class ProxyServer {
     private(set) var relayContext: RelayTarget.Context?
     /// Credential events surfaced to the UI (re-login alert observes).
     let credentialEvents = CredentialEventChannel()
+    /// Quota threshold-crossing events surfaced to the UI (Task 9 observes).
+    let quotaEvents = QuotaEventChannel()
     /// Routing-condition seams; Tasks 7 (health) / 8 (quota) provide the
     /// real implementations. nil = fail-open (see RouterExtensions).
     var healthProvider: (any TargetHealthProviding)?
     var quotaProvider: (any QuotaSnapshotProviding)?
+    /// Quota poll service (Task 8): built once per process on the first
+    /// `start` with a relay-kind vendor configured, like the signing context.
+    /// Polling outlives server stop/start (billing is independent of the
+    /// listener), so it is never torn down in `stop()`.
+    private var quotaService: QuotaService?
     /// Splash health probe (Task 7): TCP-probes loopback vendors and feeds
     /// the health seam. Built on first start, kept across restarts, and
     /// reconfigured whenever config changes. An explicitly injected
@@ -114,13 +121,29 @@ final class ProxyServer {
         // SigningClient); a cold start with no store fails later as the
         // signing-unavailable 502, never an unsigned request.
         if relayContext == nil, config.vendors.contains(where: { $0.vendorKind == .relay }) {
+            let store = try? CredentialStore.loadDefault()
             let signingClient = makeSigningClient?() ?? {
                 var configuration = SigningClient.Configuration()
-                configuration.store = try? CredentialStore.loadDefault()
+                configuration.store = store
                 return SigningClient(configuration: configuration)
             }()
+            // Quota service (Task 8): billing auth is the store's zcode
+            // identity JWT (live-pinned — see QuotaService); no store, no
+            // quota, and the router seam stays fail-open. Counting relayed
+            // requests rides the context, so the 25-request poll trigger is
+            // wired exactly where relay exchanges happen.
+            if quotaService == nil, let store {
+                let service = QuotaService(
+                    authBearer: { try store.zcodeJwtToken() },
+                    events: quotaEvents)
+                quotaService = service
+                service.startPolling()
+                AppLog.proxy.info("[ProxyServer] Quota service polling (relay vendor configured)")
+            }
             relayContext = RelayTarget.Context(
-                signingClient: signingClient, credentialEvents: credentialEvents)
+                signingClient: signingClient,
+                credentialEvents: credentialEvents,
+                quota: quotaService)
             AppLog.proxy.info("[ProxyServer] Relay signing context ready (relay vendor configured)")
         }
         let relayContext = self.relayContext
@@ -136,6 +159,12 @@ final class ProxyServer {
         localHealthMonitor?.startProbing()
         if healthProvider == nil {
             healthProvider = localHealthMonitor
+        }
+        // Same lifecycle rule for the quota seam: routers capture the
+        // provider at construction below; an injected `quotaProvider`
+        // (tests) is never overridden.
+        if quotaProvider == nil {
+            quotaProvider = quotaService
         }
 
         for clientCfg in config.clients {

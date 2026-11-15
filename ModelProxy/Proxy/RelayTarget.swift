@@ -93,6 +93,10 @@ enum RelayTarget {
     final class Context {
         let signingClient: SigningClient
         let credentialEvents: CredentialEventChannel?
+        /// Quota poll request-counter (Task 8): notified once per relayed
+        /// request so QuotaService refreshes after every 25th one. nil in
+        /// tests and when no quota service is configured.
+        let quota: (any QuotaRelayCounting)?
         /// Stable per-process relay session id (`x-session-id`).
         let sessionID = UUID().uuidString.lowercased()
         /// Relay 429 backoff before the single retry (tests shorten it).
@@ -101,9 +105,14 @@ enum RelayTarget {
         /// the only state from which the unsigned fail-open attempt may run.
         private(set) var establishedSignedSession = false
 
-        init(signingClient: SigningClient, credentialEvents: CredentialEventChannel? = nil) {
+        init(
+            signingClient: SigningClient,
+            credentialEvents: CredentialEventChannel? = nil,
+            quota: (any QuotaRelayCounting)? = nil
+        ) {
             self.signingClient = signingClient
             self.credentialEvents = credentialEvents
+            self.quota = quota
         }
 
         func noteSignedSessionEstablished() {
@@ -122,6 +131,10 @@ enum RelayTarget {
         context: Context,
         requestID: String
     ) async -> Outcome {
+        // One relayed request = one counter tick for the quota poll cadence
+        // (retry ladders below are the same client request, so they tick once).
+        context.quota?.noteRelayedRequest()
+
         // Signing first: a cold start waits for the handshake here, and a
         // handshake failure NEVER falls back to an unsigned request.
         let session: SigningSession

@@ -272,8 +272,11 @@ The Task 7 gap (LocalTarget built but not branched into `forward`) is closed:
 `executeLocal` → `LocalTarget.executeWithFallback(targets:)` where `targets` comes from
 `router.targets(for: model)` (same eligibility + class-rule failover arrays the resolver
 used), and step 8 streams via `LocalTarget.relayStream` (cut-protected passthrough) instead
-of `ResponseRelay.relay` for local responses. Route-state bookkeeping mirrors the mapped
-path (non-2xx counts a failure; a fully unreachable chain flips activeTarget after 10).
+of `ResponseRelay.relay` for local responses. Route-state bookkeeping on the local path
+does NOT mirror the mapped path's "non-2xx counts a failure" rule: a served <400 splash
+response resets the failure count, only an exhausted primary ladder (5xx error body or
+unreachable) counts one failure (flipping activeTarget after 10), and a served ≥400
+passthrough counts nothing.
 The generic mapped path for non-splash anthropic vendors is untouched.
 
 - **Local targets opt OUT of branch coordination:** `forward` drops the projector's
@@ -301,3 +304,78 @@ The generic mapped path for non-splash anthropic vendors is untouched.
   (`sortedKeys`) for `.portableOnly` targets, so byte-parity holds only in the module-level
   test (`LocalTarget.execute` without projection). The E2E pin asserts semantic
   preservation: model swapped, thinking/signature gone, all other content identical.
+### Task 8 — QuotaService + live billing wire capture (2026-11-16, executor-run)
+
+`ModelProxy/Services/QuotaService.swift`, `ModelProxy/Models/QuotaEvent.swift`,
+fixtures `ModelProxyTests/Fixtures/quota-balance.json` / `quota-current.json` (values
+synthetic), tests `ModelProxyTests/QuotaServiceTests.swift` (12 offline + env-gated live
+smoke). Suite 297 tests / 20 suites green.
+
+**Auth discovery — the brief's assumption ("quota endpoints take the same auth as the
+relay", project-token `relayAuthHeaders`) is disproven by the wire.** Live probe matrix
+against the scratch session (minted project token via SigningClient, zcode identity JWT
+via CredentialStore):
+
+- `zcode.z.ai` + project token: 401 in every form (bare Bearer+x-api-key, + CLI identity
+  headers, + full V4 signing quartet). The gateway does not recognize the project token.
+- `api.z.ai` + project token + identity + quartet: gateway 200 but inner `404 NOT_FOUND`
+  (`{"code":500,"msg":"404 NOT_FOUND","success":false}`) — no such service behind api.z.ai.
+- `zcode.z.ai` + **`Authorization: Bearer <zcodejwttoken>`** (the store's 255-char zcode
+  identity JWT, no quartet): **`current` → HTTP 200 `code 0`**. This is the billing auth.
+  Confirmed against the ZCode.app bundle (`app.asar`): its billing client
+  (`dR`/`Cl`/`AUe`) sends exactly `Authorization: Bearer <zcodejwttoken>` and appends
+  `?app_version=<version>` to the balance URL (15 s timeout).
+
+**Pinned response shapes (field names/types only, values never recorded):**
+
+- `GET /api/v1/zcode-plan/billing/current` → `{code: int, msg: string, logid: string,
+  data: {plans: array, server_time: int}}`; `plans[]` rows (from the bundle's
+  summarizer): `{name: string, plan_id: string, status: string,
+  ends_at: number(seconds), user_plan_id: string}`. Live 2026-11-16: 200/code 0,
+  `plans` EMPTY for this coding-plan account, byte length 109.
+- `GET /api/v1/zcode-plan/billing/balance` → HTTP 400 `{"code":3001,"msg":"parameter
+  error","logid":string}` for EVERY reconstructable request form (tried: app_version
+  0.0.0-dev / 0.17.1 / 3.18.2, no query, +platform=darwin-aarch64). The success-payload
+  shape is pinned from the bundle's own parsers instead:
+  `data: {server_time: int, plans: [rows as above], balances: array}` with
+  `balances[]` rows `{entitlement_id, show_name, total_units, used_units,
+  remaining_units, available_units, reserved_units, user_plan_id, plan_id}` (numbers /
+  strings). The bundle normalizes client-side: a plan with `status "active"` but
+  `ends_at <= server_time` is expired, and balances of expired plans are dropped;
+  balance→plan correlation by `user_plan_id`, else `plan_id`.
+- Business-success predicate (bundle `isSuccessfulBusinessEnvelope`):
+  `success !== false && (code undefined || 0 || 200)`.
+- Version sensitivity: `current` returns `data` only for CLI-style `app_version` values
+  (0.17.1 / 0.0.0-dev), not for the desktop app version 3.18.2 (200/code 0, no `data`).
+
+**Data-availability gap (honest):** on the capture day neither endpoint yields quota
+numbers for this account (`current` has empty `plans`; `balance` rejects the request
+form). The desktop app's actual usage-stats endpoint is
+`GET /api/v1/mcp/usage` (`app.asar`: schema `{used, limit, remaining}` wrapped in
+`{server_time, next_refresh_at?, level?}`, 15 s timeout) — but its auth needs a
+`codingPlanAuthorization` header (a fresh OAuth access token) that ZGate cannot mint
+headlessly (store OAuth token is 1 h TTL, no refresh token; probed live: identity JWT
+alone → 400/inner-404 on both origins). So the quota % is machinery-complete but
+data-empty until either the balance request form or a headless usage-stats auth is
+pinned. Until then the service holds no snapshot → router `quotaBelow` fail-opens,
+and Task 9's bar shows unknown.
+
+**Service:** lock-guarded `QuotaService: QuotaSnapshotProviding` (LocalHealthMonitor
+pattern) — `pollIfDue()` decides due-ness (30 min interval OR ≥25 relayed requests
+since the last attempt; an attempt consumes both triggers), background 60 s tick loop
+starts at `ProxyServer.start` and outlives server stop; `noteRelayedRequest()` is
+counted by RelayTarget's context (one tick per relayed request); thresholds 25%/10%
+emit `QuotaEvent.levelChanged` through `QuotaEventChannel` (@MainActor, CredentialEventChannel
+pattern) on band CROSSINGS only (first observation is silent); failed polls keep the
+last-known snapshot and set `stale`; history in `quota-history-<date>.json`
+(token-stats pattern, Application Support, fraction+timestamp only), pruned >30 days.
+Registration mirrors Task 7: `quotaProvider` set in `ProxyServer.start` BEFORE routers
+are built; injected providers never overridden; polling only when a relay vendor AND
+the credential store exist.
+
+**Live smoke** (`QuotaServiceLiveSmokeTests`, `TEST_RUNNER_ZGATE_LIVE_SMOKE=1`):
+balance 400/3001 recorded, current 200 + shape printed, then `pollNow()` through the
+real service — `stale=true hasSnapshot=false` (the correct live outcome today). One
+excursion outside the file list: `RelayTarget.Context` gained an optional
+`quota: (any QuotaRelayCounting)?` + one call at `execute()` entry (4 additive lines,
+default nil) — required to wire the "after every 25th relayed request" trigger.

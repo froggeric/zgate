@@ -1,0 +1,17 @@
+{
+  "code": 0,
+  "msg": "",
+  "logid": "synthetic-logid-current",
+  "data": {
+    "plans": [
+      {
+        "name": "Synthetic Start Plan",
+        "plan_id": "start-plan-synthetic-001",
+        "status": "active",
+        "ends_at": 4102444800,
+        "user_plan_id": "up-synthetic-001"
+      }
+    ],
+    "server_time": 1763000000
+  }
+}
