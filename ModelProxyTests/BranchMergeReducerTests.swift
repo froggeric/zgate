@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import NIOCore
-@testable import ModelProxy
+@testable import ZGate
 
 @Suite(.serialized)
 struct BranchMergeReducerTests {

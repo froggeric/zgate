@@ -1,7 +1,7 @@
 import Foundation
 import NIOCore
 import Testing
-@testable import ModelProxy
+@testable import ZGate
 
 struct ToolCallInputGuardTests {
 

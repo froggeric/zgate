@@ -4,7 +4,7 @@ import AsyncHTTPClient
 import NIOCore
 import NIOEmbedded
 import NIOHTTP1
-@testable import ModelProxy
+@testable import ZGate
 
 struct ResponseRelayTests {
 

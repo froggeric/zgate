@@ -6,7 +6,7 @@ source "$(dirname "$0")/env.sh"
 
 if [ -f "$E2E_PID_FILE" ]; then
     pid="$(cat "$E2E_PID_FILE")"
-    if ps -p "$pid" -o command= 2>/dev/null | grep -q "ModelProxy.app/Contents/MacOS/ModelProxy"; then
+    if ps -p "$pid" -o command= 2>/dev/null | grep -q "ZGate.app/Contents/MacOS/ZGate"; then
         kill "$pid"
     fi
     rm -f "$E2E_PID_FILE"

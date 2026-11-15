@@ -8,7 +8,7 @@ E2E_ROOT="${MP_E2E_ROOT:-${TMPDIR%/}/modelproxy-e2e}"
 # Mapped client port and a second client whose unmapped models pass through to Anthropic.
 E2E_PORT="${MP_E2E_PORT:-19090}"
 E2E_PASSTHROUGH_PORT="${MP_E2E_PASSTHROUGH_PORT:-19092}"
-E2E_BUNDLE_ID="com.90percent.ModelProxy.e2e"
+E2E_BUNDLE_ID="local.zgate.mac.e2e"
 # The E2E build is not sandboxed, so AppPaths.appSupport resolves here (the App Store app uses its container).
 E2E_APP_SUPPORT="$HOME/Library/Application Support/ModelProxy"
 E2E_MARKER="$E2E_APP_SUPPORT/.modelproxy-e2e"

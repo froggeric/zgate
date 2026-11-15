@@ -35,7 +35,7 @@ E2E_PORT="$E2E_PORT" E2E_PASSTHROUGH_PORT="$E2E_PASSTHROUGH_PORT" \
 open -n "$app"
 pid=""
 for _ in $(seq 1 20); do
-    pid="$(pgrep -f "$app/Contents/MacOS/ModelProxy" | head -1 || true)"
+    pid="$(pgrep -f "$app/Contents/MacOS/ZGate" | head -1 || true)"
     [ -n "$pid" ] && break
     sleep 0.5
 done

@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import ModelProxy
+@testable import ZGate
 
 struct TranscriptProjectorTests {
 

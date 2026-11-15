@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import NIOCore
-@testable import ModelProxy
+@testable import ZGate
 
 struct ModelProxyTests {
 
@@ -966,12 +966,12 @@ struct ModelProxyTests {
 
     @Test func hostAppBundleHasExpectedIdentity() throws {
         let hostBundle = Bundle.main
-        #expect(hostBundle.bundleIdentifier == "com.90percent.ModelProxy")
-        #expect(hostBundle.bundleURL.lastPathComponent == "ModelProxy.app")
+        #expect(hostBundle.bundleIdentifier == "local.zgate.mac")
+        #expect(hostBundle.bundleURL.lastPathComponent == "ZGate.app")
 
         let executableURL = try #require(hostBundle.executableURL)
         #expect(FileManager.default.fileExists(atPath: executableURL.path))
-        #expect(executableURL.lastPathComponent == "ModelProxy")
+        #expect(executableURL.lastPathComponent == "ZGate")
     }
 
     // MARK: - Projection diagnostics

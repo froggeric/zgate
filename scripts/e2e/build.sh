@@ -32,7 +32,7 @@ EOF
 
 derived="$E2E_ROOT/dd-$name"
 log="$E2E_ROOT/build-$name.log"
-if ! xcodebuild -project "$src/ModelProxy.xcodeproj" -scheme ModelProxy -configuration Debug \
+if ! xcodebuild -project "$src/ZGate.xcodeproj" -scheme ZGate -configuration Debug \
     -destination 'platform=macOS' -derivedDataPath "$derived" \
     PRODUCT_BUNDLE_IDENTIFIER="$E2E_BUNDLE_ID" ENABLE_APP_SANDBOX=NO \
     CODE_SIGN_ENTITLEMENTS="$entitlements" CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
@@ -41,6 +41,6 @@ if ! xcodebuild -project "$src/ModelProxy.xcodeproj" -scheme ModelProxy -configu
     e2e_die "build failed, see $log"
 fi
 
-app="$derived/Build/Products/Debug/ModelProxy.app"
+app="$derived/Build/Products/Debug/ZGate.app"
 echo "$app" > "$E2E_ROOT/last-app-path"
 echo "$app"

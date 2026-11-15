@@ -3,7 +3,7 @@ import NIOCore
 import NIOEmbedded
 import NIOHTTP1
 import Testing
-@testable import ModelProxy
+@testable import ZGate
 
 struct ProxyForwarderTests {
 

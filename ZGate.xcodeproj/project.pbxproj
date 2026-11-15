@@ -20,30 +20,30 @@
 			containerPortal = 993E69DE2F5A71A800B382DB /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 993E69E52F5A71A800B382DB;
-			remoteInfo = ModelProxy;
+			remoteInfo = ZGate;
 		};
 		993E6A002F5A71AC00B382DB /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 993E69DE2F5A71A800B382DB /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 993E69E52F5A71A800B382DB;
-			remoteInfo = ModelProxy;
+			remoteInfo = ZGate;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		993E69E62F5A71A800B382DB /* ModelProxy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ModelProxy.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		993E69F52F5A71AC00B382DB /* ModelProxyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ModelProxyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		993E69FF2F5A71AC00B382DB /* ModelProxyUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ModelProxyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		993E69E62F5A71A800B382DB /* ZGate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZGate.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		993E69F52F5A71AC00B382DB /* ZGateTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZGateTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		993E69FF2F5A71AC00B382DB /* ZGateUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZGateUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		996E98132F5C1DA70037799F /* Exceptions for "ModelProxy" folder in "ModelProxy" target */ = {
+		996E98132F5C1DA70037799F /* Exceptions for "ModelProxy" folder in "ZGate" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
-			target = 993E69E52F5A71A800B382DB /* ModelProxy */;
+			target = 993E69E52F5A71A800B382DB /* ZGate */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -51,7 +51,7 @@
 		993E69E82F5A71A800B382DB /* ModelProxy */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				996E98132F5C1DA70037799F /* Exceptions for "ModelProxy" folder in "ModelProxy" target */,
+				996E98132F5C1DA70037799F /* Exceptions for "ModelProxy" folder in "ZGate" target */,
 			);
 			path = ModelProxy;
 			sourceTree = "<group>";
@@ -111,9 +111,9 @@
 		993E69E72F5A71A800B382DB /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				993E69E62F5A71A800B382DB /* ModelProxy.app */,
-				993E69F52F5A71AC00B382DB /* ModelProxyTests.xctest */,
-				993E69FF2F5A71AC00B382DB /* ModelProxyUITests.xctest */,
+				993E69E62F5A71A800B382DB /* ZGate.app */,
+				993E69F52F5A71AC00B382DB /* ZGateTests.xctest */,
+				993E69FF2F5A71AC00B382DB /* ZGateUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -121,9 +121,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		993E69E52F5A71A800B382DB /* ModelProxy */ = {
+		993E69E52F5A71A800B382DB /* ZGate */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 993E6A092F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ModelProxy" */;
+			buildConfigurationList = 993E6A092F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ZGate" */;
 			buildPhases = (
 				993E69E22F5A71A800B382DB /* Sources */,
 				993E69E32F5A71A800B382DB /* Frameworks */,
@@ -136,7 +136,7 @@
 			fileSystemSynchronizedGroups = (
 				993E69E82F5A71A800B382DB /* ModelProxy */,
 			);
-			name = ModelProxy;
+			name = ZGate;
 			packageProductDependencies = (
 				993E6A132F5A8E2300B382DB /* NIO */,
 				993E6A152F5A8E2300B382DB /* NIOCore */,
@@ -144,13 +144,13 @@
 				993E6A192F5A8E2300B382DB /* NIOPosix */,
 				993E6A1C2F5A8E8600B382DB /* AsyncHTTPClient */,
 			);
-			productName = ModelProxy;
-			productReference = 993E69E62F5A71A800B382DB /* ModelProxy.app */;
+			productName = ZGate;
+			productReference = 993E69E62F5A71A800B382DB /* ZGate.app */;
 			productType = "com.apple.product-type.application";
 		};
-		993E69F42F5A71AC00B382DB /* ModelProxyTests */ = {
+		993E69F42F5A71AC00B382DB /* ZGateTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 993E6A0C2F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ModelProxyTests" */;
+			buildConfigurationList = 993E6A0C2F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ZGateTests" */;
 			buildPhases = (
 				993E69F12F5A71AC00B382DB /* Sources */,
 				993E69F22F5A71AC00B382DB /* Frameworks */,
@@ -164,16 +164,16 @@
 			fileSystemSynchronizedGroups = (
 				993E69F82F5A71AC00B382DB /* ModelProxyTests */,
 			);
-			name = ModelProxyTests;
+			name = ZGateTests;
 			packageProductDependencies = (
 			);
-			productName = ModelProxyTests;
-			productReference = 993E69F52F5A71AC00B382DB /* ModelProxyTests.xctest */;
+			productName = ZGateTests;
+			productReference = 993E69F52F5A71AC00B382DB /* ZGateTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		993E69FE2F5A71AC00B382DB /* ModelProxyUITests */ = {
+		993E69FE2F5A71AC00B382DB /* ZGateUITests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 993E6A0F2F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ModelProxyUITests" */;
+			buildConfigurationList = 993E6A0F2F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ZGateUITests" */;
 			buildPhases = (
 				993E69FB2F5A71AC00B382DB /* Sources */,
 				993E69FC2F5A71AC00B382DB /* Frameworks */,
@@ -187,11 +187,11 @@
 			fileSystemSynchronizedGroups = (
 				993E6A022F5A71AC00B382DB /* ModelProxyUITests */,
 			);
-			name = ModelProxyUITests;
+			name = ZGateUITests;
 			packageProductDependencies = (
 			);
-			productName = ModelProxyUITests;
-			productReference = 993E69FF2F5A71AC00B382DB /* ModelProxyUITests.xctest */;
+			productName = ZGateUITests;
+			productReference = 993E69FF2F5A71AC00B382DB /* ZGateUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
@@ -217,7 +217,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 993E69E12F5A71A800B382DB /* Build configuration list for PBXProject "ModelProxy" */;
+			buildConfigurationList = 993E69E12F5A71A800B382DB /* Build configuration list for PBXProject "ZGate" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -235,9 +235,9 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				993E69E52F5A71A800B382DB /* ModelProxy */,
-				993E69F42F5A71AC00B382DB /* ModelProxyTests */,
-				993E69FE2F5A71AC00B382DB /* ModelProxyUITests */,
+				993E69E52F5A71A800B382DB /* ZGate */,
+				993E69F42F5A71AC00B382DB /* ZGateTests */,
+				993E69FE2F5A71AC00B382DB /* ZGateUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -293,12 +293,12 @@
 /* Begin PBXTargetDependency section */
 		993E69F72F5A71AC00B382DB /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 993E69E52F5A71A800B382DB /* ModelProxy */;
+			target = 993E69E52F5A71A800B382DB /* ZGate */;
 			targetProxy = 993E69F62F5A71AC00B382DB /* PBXContainerItemProxy */;
 		};
 		993E6A012F5A71AC00B382DB /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 993E69E52F5A71A800B382DB /* ModelProxy */;
+			target = 993E69E52F5A71A800B382DB /* ZGate */;
 			targetProxy = 993E6A002F5A71AC00B382DB /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -339,7 +339,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 2JXYA862GQ;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -403,7 +403,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 2JXYA862GQ;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -430,18 +430,18 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ModelProxy/ModelProxy.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "-";
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 2JXYA862GQ;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ModelProxy/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Model Proxy";
+				INFOPLIST_KEY_CFBundleDisplayName = "ZGate";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = YES;
@@ -452,7 +452,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 2.6;
-				PRODUCT_BUNDLE_IDENTIFIER = com.90percent.ModelProxy;
+				PRODUCT_BUNDLE_IDENTIFIER = local.zgate.mac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
@@ -471,18 +471,18 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ModelProxy/ModelProxy.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "-";
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 2JXYA862GQ;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ModelProxy/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Model Proxy";
+				INFOPLIST_KEY_CFBundleDisplayName = "ZGate";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = YES;
@@ -493,7 +493,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 2.6;
-				PRODUCT_BUNDLE_IDENTIFIER = com.90percent.ModelProxy;
+				PRODUCT_BUNDLE_IDENTIFIER = local.zgate.mac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
@@ -510,20 +510,21 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "-";
 				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 2JXYA862GQ;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.90percent.ModelProxyTests;
+				PRODUCT_BUNDLE_IDENTIFIER = local.zgate.macTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ModelProxy.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ModelProxy";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ZGate.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ZGate";
 			};
 			name = Debug;
 		};
@@ -531,67 +532,70 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "-";
 				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 2JXYA862GQ;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.90percent.ModelProxyTests;
+				PRODUCT_BUNDLE_IDENTIFIER = local.zgate.macTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ModelProxy.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ModelProxy";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ZGate.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ZGate";
 			};
 			name = Release;
 		};
 		993E6A102F5A71AC00B382DB /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "-";
 				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 2JXYA862GQ;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.90percent.ModelProxyUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = local.zgate.macUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_TARGET_NAME = ModelProxy;
+				TEST_TARGET_NAME = ZGate;
 			};
 			name = Debug;
 		};
 		993E6A112F5A71AC00B382DB /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "-";
 				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 2JXYA862GQ;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.90percent.ModelProxyUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = local.zgate.macUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_TARGET_NAME = ModelProxy;
+				TEST_TARGET_NAME = ZGate;
 			};
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		993E69E12F5A71A800B382DB /* Build configuration list for PBXProject "ModelProxy" */ = {
+		993E69E12F5A71A800B382DB /* Build configuration list for PBXProject "ZGate" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				993E6A072F5A71AC00B382DB /* Debug */,
@@ -600,7 +604,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		993E6A092F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ModelProxy" */ = {
+		993E6A092F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ZGate" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				993E6A0A2F5A71AC00B382DB /* Debug */,
@@ -609,7 +613,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		993E6A0C2F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ModelProxyTests" */ = {
+		993E6A0C2F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ZGateTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				993E6A0D2F5A71AC00B382DB /* Debug */,
@@ -618,7 +622,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		993E6A0F2F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ModelProxyUITests" */ = {
+		993E6A0F2F5A71AC00B382DB /* Build configuration list for PBXNativeTarget "ZGateUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				993E6A102F5A71AC00B382DB /* Debug */,

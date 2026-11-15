@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import AsyncHTTPClient
-@testable import ModelProxy
+@testable import ZGate
 
 struct WebSearchBridgeTests {
 
