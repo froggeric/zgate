@@ -34,6 +34,9 @@ struct RoutingSnapshot: Sendable {
         let repairsAnthropicToolCalls: Bool
         /// Whether Claude-only request fields and `anthropic-beta` are removed before forwarding.
         let stripsClaudeOnlyRequestFields: Bool
+        /// Auth/forward mode: static-key vendor (`.anthropic`) or the signed
+        /// zcode relay (`.relay` — routed through RelayTarget).
+        let vendorKind: VendorKind
 
         init(
             baseURL: String,
@@ -49,7 +52,8 @@ struct RoutingSnapshot: Sendable {
             supportsThinkingBlocks: Bool = VendorDefaults.supportsThinkingBlocks,
             supportsAnthropicCountTokens: Bool = VendorDefaults.supportsAnthropicCountTokens,
             repairsAnthropicToolCalls: Bool = VendorDefaults.repairsAnthropicToolCalls,
-            stripsClaudeOnlyRequestFields: Bool = VendorDefaults.stripsClaudeOnlyRequestFields
+            stripsClaudeOnlyRequestFields: Bool = VendorDefaults.stripsClaudeOnlyRequestFields,
+            vendorKind: VendorKind = .anthropic
         ) {
             self.baseURL = baseURL
             self.apiKey = apiKey
@@ -65,6 +69,7 @@ struct RoutingSnapshot: Sendable {
             self.supportsAnthropicCountTokens = supportsAnthropicCountTokens
             self.repairsAnthropicToolCalls = repairsAnthropicToolCalls
             self.stripsClaudeOnlyRequestFields = stripsClaudeOnlyRequestFields
+            self.vendorKind = vendorKind
         }
     }
 
@@ -124,7 +129,8 @@ struct RoutingSnapshot: Sendable {
                 supportsThinkingBlocks: vendor.supportsThinkingBlocks,
                 supportsAnthropicCountTokens: vendor.supportsAnthropicCountTokens,
                 repairsAnthropicToolCalls: vendor.repairsAnthropicToolCalls,
-                stripsClaudeOnlyRequestFields: vendor.stripsClaudeOnlyRequestFields
+                stripsClaudeOnlyRequestFields: vendor.stripsClaudeOnlyRequestFields,
+                vendorKind: vendor.vendorKind
             )
             var targets = [primary]
 
@@ -146,7 +152,8 @@ struct RoutingSnapshot: Sendable {
                     supportsThinkingBlocks: backupVendor.supportsThinkingBlocks,
                     supportsAnthropicCountTokens: backupVendor.supportsAnthropicCountTokens,
                     repairsAnthropicToolCalls: backupVendor.repairsAnthropicToolCalls,
-                    stripsClaudeOnlyRequestFields: backupVendor.stripsClaudeOnlyRequestFields
+                    stripsClaudeOnlyRequestFields: backupVendor.stripsClaudeOnlyRequestFields,
+                    vendorKind: backupVendor.vendorKind
                 )
                 targets.append(backup)
             }
@@ -183,7 +190,8 @@ struct RoutingSnapshot: Sendable {
                 supportsThinkingBlocks: vendor.supportsThinkingBlocks,
                 supportsAnthropicCountTokens: vendor.supportsAnthropicCountTokens,
                 repairsAnthropicToolCalls: vendor.repairsAnthropicToolCalls,
-                stripsClaudeOnlyRequestFields: vendor.stripsClaudeOnlyRequestFields
+                stripsClaudeOnlyRequestFields: vendor.stripsClaudeOnlyRequestFields,
+                vendorKind: vendor.vendorKind
             )
         } else {
             self.fallbackTarget = nil

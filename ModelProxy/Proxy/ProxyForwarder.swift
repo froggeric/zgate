@@ -36,7 +36,8 @@ enum ProxyForwarder {
         portableNormalizer: any PortableContentNormalizing,
         requestCoordinator: any BranchRequestCoordinating,
         webSearchProvider: (any WebSearchBridgeProviding)?,
-        webSearchForwardAsIs: Bool = false
+        webSearchForwardAsIs: Bool = false,
+        relayContext: RelayTarget.Context? = nil
     ) async {
         let requestID = String(UUID().uuidString.prefix(8))
         let startTime = Date.now
@@ -413,23 +414,44 @@ enum ProxyForwarder {
         // 3b. Sanitize tools for mapped vendors (always, regardless of web search config).
         // WebSearchBridge handles web_search_* tools separately; this catches other
         // vendor-incompatible tools (empty name, missing input_schema, server-side types).
+        // Relay targets are exempt: the body stays byte-identical except the
+        // model rewrite (zbridge parity).
         var forwardBodyData = preparedRequest.bodyData
-        if !target.isPassthrough {
+        if !target.isPassthrough && target.vendorKind != .relay {
             forwardBodyData = Self.sanitizeToolsForVendor(in: forwardBodyData)
         }
         let toolCatalog = ToolCallInputGuard.ToolCatalog.fromRequestBody(forwardBodyData)
 
-        // 4. Build and send upstream request.
-        let (upstreamResponse, usedTarget) = await Self.executeWithFailover(
-            head: head,
-            bodyData: forwardBodyData,
-            primaryTarget: target,
-            model: model,
-            router: router,
-            httpClient: httpClient,
-            routeState: &routeState,
-            requestID: requestID
-        )
+        // 4. Build and send upstream request. Relay-kind rules run the signed
+        // ladder (RelayTarget): cold starts wait for the handshake, 401s walk
+        // the reject ladder, 429s retry once then fall back / answer 529.
+        var relayTerminal: RelayTarget.UpstreamTerminal? = nil
+        let upstreamResponse: HTTPClientResponse?
+        let usedTarget: RoutingSnapshot.RouteTarget?
+        if target.vendorKind == .relay {
+            (upstreamResponse, usedTarget, relayTerminal) = await Self.executeRelay(
+                head: head,
+                bodyData: forwardBodyData,
+                primaryTarget: target,
+                model: model,
+                router: router,
+                httpClient: httpClient,
+                routeState: &routeState,
+                requestID: requestID,
+                relayContext: relayContext
+            )
+        } else {
+            (upstreamResponse, usedTarget) = await Self.executeWithFailover(
+                head: head,
+                bodyData: forwardBodyData,
+                primaryTarget: target,
+                model: model,
+                router: router,
+                httpClient: httpClient,
+                routeState: &routeState,
+                requestID: requestID
+            )
+        }
 
         // 5. Write back mutated route state.
         await router.updateRouteState(model: model, state: routeState)
@@ -438,7 +460,6 @@ enum ProxyForwarder {
             if let branchLease {
                 await requestCoordinator.complete(lease: branchLease, replay: nil)
             }
-            // executeWithFailover already sent error to channel on total failure.
             let duration = Date.now.timeIntervalSince(startTime)
             let entryRouteType: TrafficEntry.RouteType = target.isPassthrough
                 ? .passthrough
@@ -447,11 +468,19 @@ enum ProxyForwarder {
                 model: model,
                 routeType: entryRouteType,
                 requestKind: requestKind,
-                httpStatus: 502,
+                httpStatus: relayTerminal?.status ?? 502,
                 duration: duration
             )
             await MainActor.run { trafficLog.append(entry.with(requestClass: requestClass)) }
-            await Self.sendError(channel: channel, status: .badGateway, message: "Upstream unreachable")
+            if let relayTerminal {
+                await Self.sendAnthropicError(
+                    channel: channel,
+                    status: HTTPResponseStatus(statusCode: relayTerminal.status),
+                    type: relayTerminal.anthropicType,
+                    message: relayTerminal.message)
+            } else {
+                await Self.sendError(channel: channel, status: .badGateway, message: "Upstream unreachable")
+            }
             return
         }
 
@@ -485,19 +514,26 @@ enum ProxyForwarder {
             "[Proxy] [\(requestID)] Response: \(statusCode) \(HTTPStatusText.text(for: statusCode)) model=\(model) vendor=\(usedTarget.vendorName) \(elapsedMS)ms"
         )
 
-        // 8. Relay response.
-        let replayableResponse = await ResponseRelay.relay(
-            upstreamResponse: upstreamResponse,
-            to: channel,
-            onUsage: onUsage,
-            requestID: requestID,
-            branchContext: preparedRequest.context,
-            branchLease: branchLease,
-            portableNormalizer: portableNormalizer,
-            toolCallGuard: toolCallGuard,
-            lineageBroker: lineageBroker,
-            requestCoordinator: requestCoordinator
-        )
+        // 8. Relay response. The stream runs in a child task that is cancelled
+        // when the client channel goes away, so a mid-stream client disconnect
+        // aborts the upstream body (AsyncHTTPClient cancels the request and
+        // tears the connection down).
+        let relayStreamTask = Task {
+            await ResponseRelay.relay(
+                upstreamResponse: upstreamResponse,
+                to: channel,
+                onUsage: onUsage,
+                requestID: requestID,
+                branchContext: preparedRequest.context,
+                branchLease: branchLease,
+                portableNormalizer: portableNormalizer,
+                toolCallGuard: toolCallGuard,
+                lineageBroker: lineageBroker,
+                requestCoordinator: requestCoordinator
+            )
+        }
+        channel.closeFuture.whenComplete { _ in relayStreamTask.cancel() }
+        let replayableResponse = await relayStreamTask.value
         if let branchLease {
             await requestCoordinator.complete(lease: branchLease, replay: replayableResponse)
         }
@@ -762,6 +798,102 @@ enum ProxyForwarder {
         }
 
         return (primaryResponse, primaryTarget)
+    }
+
+    // MARK: - Relay execution (signed ladder)
+
+    /// Relay-kind execution: the signed ladder (RelayTarget) plus the 429
+    /// next-rule fallback that mirrors the plain failover path. Returns the
+    /// streamable response + serving target, or a terminal the caller writes
+    /// to the client when no response survived the policy.
+    private static func executeRelay(
+        head: HTTPRequestHead,
+        bodyData: Data,
+        primaryTarget: RoutingSnapshot.RouteTarget,
+        model: String,
+        router: RequestRouter,
+        httpClient: HTTPClient,
+        routeState: inout RoutingSnapshot.RouteState,
+        requestID: String,
+        relayContext: RelayTarget.Context?
+    ) async -> (HTTPClientResponse?, RoutingSnapshot.RouteTarget?, RelayTarget.UpstreamTerminal?) {
+        guard let relayContext else {
+            return (nil, nil, RelayTarget.UpstreamTerminal(
+                status: 502,
+                anthropicType: "api_error",
+                message: "Relay vendor '\(primaryTarget.vendorName)' requires signing but no signing context is configured."))
+        }
+        let outcome = await RelayTarget.execute(
+            head: head,
+            bodyData: bodyData,
+            target: primaryTarget,
+            httpClient: httpClient,
+            context: relayContext,
+            requestID: requestID)
+
+        if case .rateLimitedAfterRetry = outcome {
+            // The backoff retry already ran inside the ladder: fall back to
+            // the rule's next target if one exists, else answer 529.
+            if let allTargets = await router.targets(for: model), allTargets.count > 1 {
+                let backupTarget = (primaryTarget.vendorID == allTargets[0].vendorID) ? allTargets[1] : allTargets[0]
+                AppLog.proxy.info(
+                    "[Proxy] [\(requestID)] Rate limited on relay \(primaryTarget.vendorName), failing over to \(backupTarget.vendorName)"
+                )
+                if backupTarget.vendorKind == .relay {
+                    // A relay backup runs its own signed ladder (no further fallback).
+                    switch await RelayTarget.execute(
+                        head: head, bodyData: bodyData, target: backupTarget,
+                        httpClient: httpClient, context: relayContext, requestID: requestID)
+                    {
+                    case .responded(let response):
+                        if Int(response.status.code) < 400 { routeState.failCount = 0 }
+                        return (response, backupTarget, nil)
+                    case let terminalOutcome:
+                        return (nil, nil, Self.terminal(for: terminalOutcome))
+                    }
+                }
+                if let backupResponse = await Self.executeUpstream(
+                    head: head, bodyData: bodyData, target: backupTarget,
+                    httpClient: httpClient, requestID: requestID)
+                {
+                    if Int(backupResponse.status.code) < 400 { routeState.failCount = 0 }
+                    return (backupResponse, backupTarget, nil)
+                }
+                return (nil, nil, RelayTarget.UpstreamTerminal(
+                    status: 502, anthropicType: "api_error", message: "Upstream unreachable"))
+            }
+        }
+
+        if case .responded(let response) = outcome {
+            if Int(response.status.code) < 400 { routeState.failCount = 0 }
+            return (response, primaryTarget, nil)
+        }
+        return (nil, nil, Self.terminal(for: outcome))
+    }
+
+    /// Maps a relay outcome that produced no streamable response to the
+    /// proxy-authored terminal the client receives instead.
+    private static func terminal(for outcome: RelayTarget.Outcome) -> RelayTarget.UpstreamTerminal {
+        switch outcome {
+        case .signingUnavailable(let reason):
+            return RelayTarget.UpstreamTerminal(
+                status: 502, anthropicType: "api_error",
+                message: "Relay signing unavailable: \(reason)")
+        case .credentialsExpired(let reason):
+            return RelayTarget.UpstreamTerminal(
+                status: 502, anthropicType: "authentication_error",
+                message: "zcode credentials expired — re-login required. (\(reason))")
+        case .transportFailed(let reason):
+            return RelayTarget.UpstreamTerminal(
+                status: 502, anthropicType: "api_error",
+                message: "Relay upstream unreachable: \(reason)")
+        case .rateLimitedAfterRetry:
+            return RelayTarget.UpstreamTerminal(
+                status: 529, anthropicType: "overloaded_error",
+                message: "Relay rate limited (429 after retry) and no fallback rule is configured.")
+        case .responded:
+            preconditionFailure("responded outcomes stream; they do not map to a terminal")
+        }
     }
 
     /// Build and execute a single upstream request for a given target.
@@ -1253,6 +1385,18 @@ enum ProxyForwarder {
 
     static func sendError(channel: any Channel, status: HTTPResponseStatus, message: String) async {
         await sendResponse(channel: channel, status: status, contentType: "text/plain", body: Data(message.utf8))
+    }
+
+    /// Anthropic-shaped JSON error body (relay terminal outcomes — zbridge parity).
+    static func sendAnthropicError(
+        channel: any Channel, status: HTTPResponseStatus, type: String, message: String
+    ) async {
+        let body: [String: Any] = [
+            "type": "error",
+            "error": ["type": type, "message": message]
+        ]
+        let data = (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
+        await sendResponse(channel: channel, status: status, contentType: "application/json", body: data)
     }
 
     /// Write a complete proxy-generated response with an explicit `Content-Length`, then close.

@@ -1,5 +1,14 @@
 import Foundation
 
+/// How requests to a vendor are authenticated and forwarded.
+enum VendorKind: String, Codable, Sendable {
+    /// Anthropic-compatible vendor with a static configured API key.
+    case anthropic
+    /// The zcode signed relay: per-request V4 signing headers built from the
+    /// SigningClient chain (see RelayTarget). The configured API key is unused.
+    case relay
+}
+
 enum VendorDefaults {
     static let supportsThinkingBlocks = false
     static let supportsAnthropicCountTokens = true
@@ -45,6 +54,9 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
     var repairsAnthropicToolCalls: Bool
     /// Whether ModelProxy removes Claude-only request fields and `anthropic-beta` before forwarding.
     var stripsClaudeOnlyRequestFields: Bool
+    /// How this vendor is authenticated: static key (`.anthropic`) or the
+    /// signed zcode relay (`.relay`). Legacy configs decode as `.anthropic`.
+    var vendorKind: VendorKind
     /// Which signing domain this vendor belongs to for transcript replay compatibility.
     var signingDomain: SigningDomain
     /// Whether requests to this vendor should preserve raw replay-sensitive transcript blocks.
@@ -63,6 +75,7 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
         supportsAnthropicCountTokens: Bool? = nil,
         repairsAnthropicToolCalls: Bool? = nil,
         stripsClaudeOnlyRequestFields: Bool = VendorDefaults.stripsClaudeOnlyRequestFields,
+        vendorKind: VendorKind = .anthropic,
         signingDomain: SigningDomain? = nil,
         replayPolicy: TranscriptReplayPolicy? = nil
     ) {
@@ -81,8 +94,14 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
         self.repairsAnthropicToolCalls = repairsAnthropicToolCalls
             ?? VendorDefaults.repairsAnthropicToolCalls(forBaseURL: baseURL)
         self.stripsClaudeOnlyRequestFields = stripsClaudeOnlyRequestFields
+        self.vendorKind = vendorKind
         self.signingDomain = resolvedSigningDomain
-        self.replayPolicy = replayPolicy ?? TranscriptReplayPolicy.defaultPolicy(for: resolvedSigningDomain)
+        // The relay speaks the Anthropic protocol end to end: transcript
+        // blocks pass through untouched (zbridge forwards byte-for-byte).
+        self.replayPolicy = replayPolicy
+            ?? (vendorKind == .relay
+                ? .transparent
+                : TranscriptReplayPolicy.defaultPolicy(for: resolvedSigningDomain))
     }
 
     // MARK: - Codable (legacy-tolerant)
@@ -96,6 +115,7 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
         case supportsAnthropicCountTokens
         case repairsAnthropicToolCalls
         case stripsClaudeOnlyRequestFields
+        case vendorKind
         case signingDomain
         case replayPolicy
     }
@@ -118,10 +138,15 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
             ?? VendorDefaults.repairsAnthropicToolCalls(forBaseURL: baseURL)
         stripsClaudeOnlyRequestFields = (try? c.decodeIfPresent(Bool.self, forKey: .stripsClaudeOnlyRequestFields))
             ?? VendorDefaults.stripsClaudeOnlyRequestFields
+        let decodedVendorKind = (try? c.decodeIfPresent(VendorKind.self, forKey: .vendorKind))
+            ?? .anthropic
+        vendorKind = decodedVendorKind
         let resolvedSigningDomain = (try? c.decode(SigningDomain.self, forKey: .signingDomain))
             ?? SigningDomain.infer(fromBaseURL: baseURL)
         signingDomain = resolvedSigningDomain
         replayPolicy = (try? c.decode(TranscriptReplayPolicy.self, forKey: .replayPolicy))
-            ?? TranscriptReplayPolicy.defaultPolicy(for: resolvedSigningDomain)
+            ?? (decodedVendorKind == .relay
+                ? .transparent
+                : TranscriptReplayPolicy.defaultPolicy(for: resolvedSigningDomain))
     }
 }
