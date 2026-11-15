@@ -31,18 +31,38 @@ final class ProxyServer {
     private(set) var webSearchProvider: (any WebSearchBridgeProviding)?
     private(set) var webSearchForwardAsIs: Bool = false
 
+    /// Relay signing context — built once per process on the first `start`
+    /// with a relay-kind vendor configured. One SigningClient + a stable
+    /// `x-session-id` for the whole run (zbridge per-process parity). The
+    /// reference is passed around; its contents are never logged.
+    private(set) var relayContext: RelayTarget.Context?
+    /// Credential events surfaced to the UI (re-login alert observes).
+    let credentialEvents = CredentialEventChannel()
+    /// Routing-condition seams; Tasks 7 (health) / 8 (quota) provide the
+    /// real implementations. nil = fail-open (see RouterExtensions).
+    var healthProvider: (any TargetHealthProviding)?
+    var quotaProvider: (any QuotaSnapshotProviding)?
+    /// SigningClient factory for the relay context. Injectable for tests;
+    /// the default is the production chain — best-effort store load, so a
+    /// missing store surfaces at request time as the relay's
+    /// signing-unavailable 502, never an unsigned request.
+    @ObservationIgnored
+    private let makeSigningClient: (@Sendable () -> SigningClient)?
+
     // MARK: - Init
 
     init(
         tokenStatsStore: TokenStatsStore,
         lineageBroker: any SessionLineageBrokering = SessionLineageBroker(store: LineageStoreFactory.makeDefaultStore()),
         portableNormalizer: any PortableContentNormalizing = PortableContentNormalizer(),
-        requestCoordinator: any BranchRequestCoordinating = BranchRequestCoordinator()
+        requestCoordinator: any BranchRequestCoordinating = BranchRequestCoordinator(),
+        makeSigningClient: (@Sendable () -> SigningClient)? = nil
     ) {
         self.tokenStatsStore = tokenStatsStore
         self.lineageBroker = lineageBroker
         self.portableNormalizer = portableNormalizer
         self.requestCoordinator = requestCoordinator
+        self.makeSigningClient = makeSigningClient
     }
 
     // MARK: - Internal State
@@ -84,9 +104,28 @@ final class ProxyServer {
         let trafficLog = self.trafficLog
         let tokenStatsStore = self.tokenStatsStore
 
+        // Relay signing context: one per process, only when a relay-kind
+        // vendor is configured. Best-effort store load (no secret leaves the
+        // SigningClient); a cold start with no store fails later as the
+        // signing-unavailable 502, never an unsigned request.
+        if relayContext == nil, config.vendors.contains(where: { $0.vendorKind == .relay }) {
+            let signingClient = makeSigningClient?() ?? {
+                var configuration = SigningClient.Configuration()
+                configuration.store = try? CredentialStore.loadDefault()
+                return SigningClient(configuration: configuration)
+            }()
+            relayContext = RelayTarget.Context(
+                signingClient: signingClient, credentialEvents: credentialEvents)
+            AppLog.proxy.info("[ProxyServer] Relay signing context ready (relay vendor configured)")
+        }
+        let relayContext = self.relayContext
+
         for clientCfg in config.clients {
             let snapshot = RoutingSnapshot(from: config, for: clientCfg)
-            let router = RequestRouter(snapshot: snapshot)
+            let router = RequestRouter(
+                snapshot: snapshot,
+                healthProvider: healthProvider,
+                quotaProvider: quotaProvider)
 
             let bootstrap = ServerBootstrap(group: group)
                 .serverChannelOption(ChannelOptions.backlog, value: 256)
@@ -104,7 +143,8 @@ final class ProxyServer {
                                 portableNormalizer: self.portableNormalizer,
                                 requestCoordinator: self.requestCoordinator,
                                 webSearchProvider: self.webSearchProvider,
-                                webSearchForwardAsIs: self.webSearchForwardAsIs
+                                webSearchForwardAsIs: self.webSearchForwardAsIs,
+                                relayContext: relayContext
                             )
                         )
                     }

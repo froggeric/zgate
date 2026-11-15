@@ -410,14 +410,16 @@ struct ModelProxyTests {
 
     @Test func defaultConfigHasExpectedShape() {
         let config = AppConfig.makeDefault()
-        #expect(config.vendors.isEmpty)
+        // Clients stay upstream model-proxy's; vendors + rules are the ZGate
+        // spec §2 default routing table (pinned in detail by RouterTests).
+        #expect(config.vendors.count == 2)
         #expect(config.clients.count == 2)
         #expect(config.clients[0].clientName == "Claude Code")
         #expect(config.clients[0].port == 8080)
         #expect(config.clients[0].defaultUpstream == "https://api.anthropic.com")
         #expect(config.clients[1].clientName == "Codex")
         #expect(config.clients[1].port == 8081)
-        #expect(config.modelMappings.isEmpty)
+        #expect(config.modelMappings.count == 6)
     }
 
     @Test func routingSnapshotCarriesVendorStripFlagToPrimaryAndFallbackTargets() {

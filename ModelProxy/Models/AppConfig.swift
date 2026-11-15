@@ -105,7 +105,9 @@ final class AppConfig: Codable {
 // MARK: - Default config
 
 extension AppConfig {
-    /// Sensible defaults created on first launch.
+    /// Sensible defaults created on first launch. Clients are upstream
+    /// model-proxy's; vendors and routing rules are the ZGate spec §2
+    /// default matrix (see `makeZGateDefaultRouting`).
     static func makeDefault() -> AppConfig {
         let claudeCodeClient = ClientConfig(
             clientName: "Claude Code",
@@ -117,10 +119,63 @@ extension AppConfig {
             port: 8081,
             defaultUpstream: "https://api.openai.com"
         )
-        return AppConfig(
-            vendors: [],
-            clients: [claudeCodeClient, codexClient],
-            modelMappings: []
-        )
+        return makeZGateDefaultRouting(
+            AppConfig(clients: [claudeCodeClient, codexClient]))
+    }
+
+    /// Spec §2 default matrix, editable in Settings. Ordered rules, first
+    /// match wins: `auto` first (CC auto mode), then the class rules; the
+    /// opus peak-hours cost lever ships DISABLED (user opts in) but sits
+    /// before the plain opus rule so enabling it wins during the window; a
+    /// terminal catch-all fallback to relay flash means no request is ever
+    /// dropped for an unmatched model.
+    ///
+    /// No secrets: the relay vendor's key is empty (`.relay` auth comes from
+    /// the signing chain), splash is a local server.
+    static func makeZGateDefaultRouting(_ config: AppConfig) -> AppConfig {
+        var config = config
+        let relay = Vendor(
+            name: "zcode relay",
+            baseURL: "https://zcode.z.ai/api/v1/ultra-zai/anthropic",
+            apiKey: "",
+            connectTimeoutSeconds: 10,
+            readTimeoutSeconds: 300,
+            supportsThinkingBlocks: true,
+            supportsAnthropicCountTokens: false,
+            vendorKind: .relay)
+        let splash = Vendor(
+            name: "splash (local)",
+            baseURL: "http://127.0.0.1:8000",
+            apiKey: "",
+            replayPolicy: .portableOnly)
+        config.vendors = [relay, splash]
+
+        let peakHours = RuleCondition(
+            type: .timeWindow, days: .weekdays, from: "07:00", to: "11:00", tz: "Europe/Paris")
+        config.modelMappings = [
+            ModelMapping(
+                sourceModel: "auto", targetModel: "GLM-5.3", targetVendorID: relay.id,
+                matchClass: .auto),
+            ModelMapping(
+                sourceModel: "haiku", targetModel: "Qwen3.8-27B-4bit", targetVendorID: splash.id,
+                backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: relay.id,
+                matchClass: .haiku),
+            ModelMapping(
+                sourceModel: "sonnet", targetModel: "GLM-5.3", targetVendorID: relay.id,
+                matchClass: .sonnet),
+            // Cost lever: opus downgrades to flash during Paris weekday peak
+            // (3× metering). Disabled until the user opts in.
+            ModelMapping(
+                sourceModel: "opus (peak hours)", targetModel: "GLM-5.3-Flash",
+                targetVendorID: relay.id, isEnabled: false,
+                matchClass: .opus, conditions: [peakHours]),
+            ModelMapping(
+                sourceModel: "opus", targetModel: "GLM-5.3", targetVendorID: relay.id,
+                matchClass: .opus),
+            ModelMapping(
+                sourceModel: "fallback", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id,
+                catchAll: true),
+        ]
+        return config
     }
 }

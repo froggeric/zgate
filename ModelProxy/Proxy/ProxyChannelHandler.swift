@@ -21,6 +21,9 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
     private let requestCoordinator: any BranchRequestCoordinating
     private let webSearchProvider: (any WebSearchBridgeProviding)?
     private let webSearchForwardAsIs: Bool
+    /// Relay signing context (per-process, built by ProxyServer). Passed by
+    /// reference down to ProxyForwarder; never logged.
+    private let relayContext: RelayTarget.Context?
 
     // Accumulated state for the current request.
     private var requestHead: HTTPRequestHead?
@@ -36,7 +39,8 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
         portableNormalizer: any PortableContentNormalizing,
         requestCoordinator: any BranchRequestCoordinating,
         webSearchProvider: (any WebSearchBridgeProviding)?,
-        webSearchForwardAsIs: Bool
+        webSearchForwardAsIs: Bool,
+        relayContext: RelayTarget.Context? = nil
     ) {
         self.clientName = clientName
         self.router = router
@@ -48,6 +52,7 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
         self.requestCoordinator = requestCoordinator
         self.webSearchProvider = webSearchProvider
         self.webSearchForwardAsIs = webSearchForwardAsIs
+        self.relayContext = relayContext
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -82,6 +87,7 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
             let requestCoordinator = self.requestCoordinator
             let webSearchProvider = self.webSearchProvider
             let webSearchForwardAsIs = self.webSearchForwardAsIs
+            let relayContext = self.relayContext
 
             Task {
                 await ProxyForwarder.forward(
@@ -97,7 +103,8 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
                     portableNormalizer: portableNormalizer,
                     requestCoordinator: requestCoordinator,
                     webSearchProvider: webSearchProvider,
-                    webSearchForwardAsIs: webSearchForwardAsIs
+                    webSearchForwardAsIs: webSearchForwardAsIs,
+                    relayContext: relayContext
                 )
             }
 

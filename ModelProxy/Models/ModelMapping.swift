@@ -17,6 +17,15 @@ struct ModelMapping: Identifiable, Codable, Equatable, Sendable {
     var backupTargetVendorID: UUID?
     /// Whether this routing rule participates in runtime routing.
     var isEnabled: Bool
+    /// Class-pattern match (spec §2): when set, the rule matches any model
+    /// whose class equals this value instead of `sourceModel` exactly.
+    /// `sourceModel` then serves as a display label only.
+    var matchClass: ModelClass?
+    /// Terminal fallback rule: matches every model that no earlier rule
+    /// matched (evaluated after all class rules; spec §2 "terminal fallback").
+    var catchAll: Bool
+    /// ALL must hold for the rule to serve a request (nil/empty = always).
+    var conditions: [RuleCondition]?
 
     init(
         id: UUID = UUID(),
@@ -25,7 +34,10 @@ struct ModelMapping: Identifiable, Codable, Equatable, Sendable {
         targetVendorID: UUID,
         backupTargetModel: String? = nil,
         backupTargetVendorID: UUID? = nil,
-        isEnabled: Bool = true
+        isEnabled: Bool = true,
+        matchClass: ModelClass? = nil,
+        catchAll: Bool = false,
+        conditions: [RuleCondition]? = nil
     ) {
         self.id = id
         self.sourceModel = sourceModel
@@ -34,6 +46,9 @@ struct ModelMapping: Identifiable, Codable, Equatable, Sendable {
         self.backupTargetModel = backupTargetModel
         self.backupTargetVendorID = backupTargetVendorID
         self.isEnabled = isEnabled
+        self.matchClass = matchClass
+        self.catchAll = catchAll
+        self.conditions = conditions
     }
 
     // MARK: - Codable (legacy-tolerant)
@@ -41,6 +56,7 @@ struct ModelMapping: Identifiable, Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, sourceModel, targetModel, targetVendorID
         case backupTargetModel, backupTargetVendorID, isEnabled
+        case matchClass, catchAll, conditions
     }
 
     init(from decoder: Decoder) throws {
@@ -56,6 +72,23 @@ struct ModelMapping: Identifiable, Codable, Equatable, Sendable {
         } else {
             isEnabled = true
         }
+        matchClass = try? c.decode(ModelClass.self, forKey: .matchClass)
+        catchAll = (try? c.decode(Bool.self, forKey: .catchAll)) ?? false
+        conditions = try? c.decode([RuleCondition].self, forKey: .conditions)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(sourceModel, forKey: .sourceModel)
+        try c.encode(targetModel, forKey: .targetModel)
+        try c.encode(targetVendorID, forKey: .targetVendorID)
+        try c.encodeIfPresent(backupTargetModel, forKey: .backupTargetModel)
+        try c.encodeIfPresent(backupTargetVendorID, forKey: .backupTargetVendorID)
+        try c.encode(isEnabled, forKey: .isEnabled)
+        try c.encodeIfPresent(matchClass, forKey: .matchClass)
+        try c.encode(catchAll, forKey: .catchAll)
+        try c.encodeIfPresent(conditions, forKey: .conditions)
     }
 }
 

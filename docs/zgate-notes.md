@@ -133,3 +133,71 @@ Streaming back stays ResponseRelay's job.
   passthrough, `token expired` → event + no retry, 2-reject ladder (expired + recovery),
   fail-open gate, 429 retry/fallback/529, and full `forward()` integration (200/502/529/backup).
 
+
+## Task 6 — Conditional router (2026-11-15)
+
+`ModelProxy/Proxy/RouterExtensions.swift` + schema in `ModelProxy/Models/RuleSchema.swift`;
+evaluation order extended, not replaced: **exact-match mappings (upstream, untouched) → class
+rules in config order (first eligible wins) → terminal catch-all rules → client unmapped
+policy** (final safety net; the catch-all normally wins first).
+
+- **Class map** (`ModelClass.classify`): case-insensitive substrings `haiku`→haiku,
+  `opus|fable`→opus, `sonnet`→sonnet, `default|^auto`→auto; unset/empty model → auto. CC env
+  aliases are first-class: `flash` substring → haiku is checked BEFORE the `glm-5.3` prefix →
+  sonnet, so `glm-5.3-flash` → haiku while `glm-5.3` / `glm-5.3[1m]` → sonnet. Unknown names
+  classify nil → terminal fallback rule (relay GLM-5.3-Flash in the default table) — a request
+  is never dropped for an unmatched model.
+- **Rule schema** (`ModelMapping` additions, legacy-tolerant decode): `matchClass: ModelClass?`
+  (nil = legacy exact-match on `sourceModel`; for class rules `sourceModel` is a display
+  label), `catchAll: Bool`, `conditions: [RuleCondition]?`. `RuleCondition` is the flat spec-§2
+  JSON shape (`{"type":"timeWindow","days":"weekdays","from":"07:00","to":"11:00",
+  "tz":"Europe/Paris"}` / `{"type":"quotaBelow","percent":20}`). `to` is exclusive; `from > to`
+  wraps midnight; `tz` nil = local.
+- **Seams for Tasks 7/8** (in RouterExtensions, fakes in tests): `TargetHealthProviding`
+  (`lastSuccess(forVendor:) -> Date?`) and `QuotaSnapshotProviding` (`quotaSnapshot() ->
+  QuotaSnapshot{fractionRemaining, fetchedAt}`). Conditions evaluate against
+  `ConditionContext{now, health, quota}` — `now` injected so tests pin fixed dates.
+- **Fail-open semantics:** a condition that cannot be evaluated reads false (rule skipped,
+  next rule serves): quota snapshot missing OR older than 2h → `quotaBelow` false (pinned,
+  boundary exactly 2h still usable); health seam nil OR vendor never probed → treated healthy;
+  a *stale* probe (> 60s old) → primary target unhealthy → rule skipped (boundary exactly 60s
+  still healthy). Health gates the rule's PRIMARY target only; backup targets rely on the
+  existing failover machinery.
+- **Missing model field:** with class/catch-all rules configured it routes as class auto
+  (spec §2) instead of the legacy 400; an unparseable body still 400s. Legacy configs (no
+  pattern rules) keep the 400 (`RequestRouter`).
+- **Failover symmetry:** `targets(for:)` and `updateRouteState(for:)` consult the rule table
+  too; failover state keys by `class:<class>:<vendor>` / `catchall:<vendor>`, so the default
+  table's two opus rules (same relay vendor) share one state key — read and write agree.
+- **Default rule table** (`AppConfig.makeZGateDefaultRouting`, called by `makeDefault()` —
+  first launch only): vendors `zcode relay` (baseURL
+  `https://zcode.z.ai/api/v1/ultra-zai/anthropic`, apiKey "", `vendorKind: .relay`,
+  `supportsThinkingBlocks: true`, `supportsAnthropicCountTokens: false` → count_tokens
+  answered 404 locally) and `splash (local)` (`http://127.0.0.1:8000`, `replayPolicy:
+  .portableOnly`). Rules ordered: auto→relay GLM-5.3, haiku→splash Qwen3.8-27B-4bit (backup
+  relay GLM-5.3-Flash), sonnet→relay GLM-5.3, opus-peak→relay GLM-5.3-Flash **disabled**
+  (weekdays 07:00–11:00 Europe/Paris — placed before plain opus so enabling it wins in the
+  window), opus→relay GLM-5.3, fallback (catchAll)→relay GLM-5.3-Flash. JSON pinned by
+  `defaultConfigJSONCarriesSpecSection2RuleTable`; upstream's `defaultConfigHasExpectedShape`
+  updated (vendors 2 / mappings 6). Existing config.json files are NOT reinstalled.
+- **Signing wiring (Task 5's known gap, closed):** `ProxyServer.start` builds ONE
+  `RelayTarget.Context` per process when any `.relay` vendor is configured —
+  `SigningClient` with a best-effort `CredentialStore.loadDefault()` (no store → requests fail
+  as the relay's signing-unavailable 502, never unsigned; the reference is passed around and
+  never logged) — plus the shared `CredentialEventChannel` the re-login alert will observe.
+  The context flows ProxyServer → ProxyChannelHandler (new `relayContext` param, default nil)
+  → `ProxyForwarder.forward` → `executeRelay` → `RelayTarget`. Injectable
+  `makeSigningClient` factory for tests. Verified end-to-end over a real socket: a relay-kind
+  class rule reaches the signed ladder and its 502 names the signing chain, not the old "no
+  signing context configured" guard (which still stands for context-less calls).
+- **Tests** (`ModelProxyTests/RouterTests.swift`, 17; suite total 261/17 green): class map
+  (CC wire names incl. `glm-5.3[1m]`, missing model, unknown), class-rule resolution through
+  `RoutingSnapshot.resolve`, exact-match precedence, timeWindow (fixed 2026-11-09 Monday /
+  2026-11-14 Saturday Paris dates, edges, zone awareness via UTC), quotaBelow staleness +
+  rule-skip, health staleness + rule-skip, RequestRouter actor path (missing model + legacy
+  400), failover targets/state write-back, default-config JSON, legacy decode, wiring (server
+  context construction/stability + end-to-end signed-ladder 502).
+- Note: the pre-existing "EmbeddedEventLoop is not thread-safe" stderr noise in
+  RelayTargetTests (Task 5's documented EmbeddedChannel caveat) is unchanged by Task 6 —
+  verified identical counts (84) against the true HEAD baseline (an earlier mis-baseline used
+  `git stash` without `-u`, leaving new files behind → build failure read as "0 errors").

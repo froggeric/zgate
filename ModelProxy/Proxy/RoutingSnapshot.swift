@@ -101,6 +101,9 @@ struct RoutingSnapshot: Sendable {
     private let unmappedPolicy: UnmappedModelPolicy
     /// Fallback vendor target (resolved at snapshot build time); used when policy is .routeAll.
     private let fallbackTarget: RouteTarget?
+    /// Class-pattern / terminal-fallback rules (spec §2), evaluated after
+    /// exact-match mappings and before the unmapped policy.
+    let ruleTable: ClassRuleTable
 
     /// Build a snapshot for a specific client port.
     /// - Parameters:
@@ -167,6 +170,8 @@ struct RoutingSnapshot: Sendable {
         self.routeStates = [:]
         self.passthroughBaseURL = clientConfig.defaultUpstream
         self.unmappedPolicy = clientConfig.unmappedPolicy
+        self.ruleTable = ClassRuleTable(
+            from: config.modelMappings, vendors: config.vendors, clientID: clientConfig.id)
 
         // Resolve fallback vendor for .routeAll at build time.
         if clientConfig.unmappedPolicy == .routeAll,
@@ -199,12 +204,26 @@ struct RoutingSnapshot: Sendable {
     }
 
     /// Resolve a route for the given model.
-    func resolve(model: String, originalAPIKey: String) -> (result: ResolveResult, state: RouteState) {
+    /// Order: exact-match mappings (upstream engine, untouched) → class /
+    /// catch-all rules (spec §2, conditions + health per request) → unmapped
+    /// policy (final safety net; a terminal catch-all rule normally wins).
+    func resolve(
+        model: String,
+        originalAPIKey: String,
+        conditions: ConditionContext = ConditionContext()
+    ) -> (result: ResolveResult, state: RouteState) {
         // Exact match first, then prefix match (longest-prefix-wins).
         if let targets = modelMappings[model]
             ?? modelMappings.filter({ model.hasPrefix($0.key) }).max(by: { $0.key.count < $1.key.count })?.value {
             let state = routeStates[model] ?? RouteState()
             let target = selectTarget(from: targets, state: state)
+            return (.routed(target), state)
+        }
+
+        // Class-pattern rules, then terminal catch-all rules (first eligible wins).
+        if let rule = ruleTable.firstMatch(model: model, context: conditions) {
+            let state = routeStates[rule.stateKey] ?? RouteState()
+            let target = selectTarget(from: rule.targets, state: state)
             return (.routed(target), state)
         }
 
@@ -246,15 +265,27 @@ struct RoutingSnapshot: Sendable {
     }
 
     /// Returns all targets for a mapped model (for failover use by ProxyForwarder).
-    /// Returns nil if model is not mapped.
+    /// Consults the class-rule table too, so class-routed requests get the
+    /// same 429 backup behavior. Returns nil if model is not mapped.
     func targets(for model: String) -> [RouteTarget]? {
-        modelMappings[model]
-            ?? modelMappings.filter({ model.hasPrefix($0.key) }).max(by: { $0.key.count < $1.key.count })?.value
+        if let targets = modelMappings[model]
+            ?? modelMappings.filter({ model.hasPrefix($0.key) }).max(by: { $0.key.count < $1.key.count })?.value {
+            return targets
+        }
+        return ruleTable.targets(for: model)
     }
 
-    /// Write back mutated failover state from ProxyForwarder.
+    /// Write back mutated failover state from ProxyForwarder. Class-routed
+    /// models key by rule class, mirroring the key `resolve` read.
     mutating func updateRouteState(for model: String, state: RouteState) {
-        routeStates[model] = state
+        if modelMappings[model] != nil
+            || modelMappings.contains(where: { model.hasPrefix($0.key) }) {
+            routeStates[model] = state
+            return
+        }
+        if let key = ruleTable.stateKey(for: model) {
+            routeStates[key] = state
+        }
     }
 
     // MARK: - Private
