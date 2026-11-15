@@ -12,7 +12,15 @@ appears anywhere in this document; token references are by length and truncation
 - **Relay `authorization` + `x-api-key` provenance (live-confirmed 18:25Z):** both headers
   carry the *same* value — the **project access token**, minted per CLI run by
   `POST https://api.z.ai/api/biz/v1/organization/<orgId>/projects/<projectId>/api_keys/<apiKeyId>/access_tokens`
-  (body `{"clientType":"zcode","clientVersion":"0.17.1"}`, 50 B). `x-api-key` = the token raw
+  (body `{"clientType":"zcode","clientVersion":"0.0.0-dev"}` — exactly 50 B, matching the
+  observed `bodyLen` in both captures; bundle-derived, not wire-captured: the CLI computes
+  `JSON.stringify({clientType:"zcode",clientVersion:dx})` with `dx = __ZCODE_VERSION__ ??
+  "0.0.0-dev"`, and the standalone CLI leaves `__ZCODE_VERSION__` undefined — corroborated at
+  runtime by `client/configs?app_version=0.0.0-dev`. **Task 4 note:** the mint body carries
+  the bundle-version constant `"0.0.0-dev"`, *not* the app version — `x-client-version:
+  0.17.1` on the relay comes from a different version source (the signer's `clientVersion`
+  input), so the two are genuinely different values in the real client; re-derive from a fresh
+  capture when implementing the mint). `x-api-key` = the token raw
   (463-char JWT); `authorization` = `"Bearer " + token` (470 = 7 + 463). It is **not** a
   credential-store field (store has `oauth:zai:access_token` 404-char and `zcodejwttoken`
   255-char — no length match) and **not** a handshake response field (the handshake response
