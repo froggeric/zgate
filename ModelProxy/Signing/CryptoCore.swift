@@ -77,29 +77,57 @@ enum CryptoCore {
 
     // MARK: Proof of work
 
-    /// Finds a 32-hex proof whose PoW message hashes (SHA-256) to at least
-    /// `leadingZeroBits` leading zero bits. Expected attempts are 2^8 = 256
-    /// at the protocol's 8 bits; the default bound allows 32× that headroom.
+    /// A solved proof of work.
+    nonisolated struct ProofOfWork: Equatable {
+        /// The challenge: first 32 hex chars of SHA-256("apiKeyId\nappId\nsessionId\nts").
+        let n: String
+        /// The proof (sent as the relay's `x-client-pow`): 24-hex random prefix
+        /// + 8-hex counter suffix; SHA-256("n\nvalue") has ≥ 8 leading zero bits.
+        let value: String
+    }
+
+    /// Solves the relay's proof of work (bundle-derived, live-verified 2026-11-15).
+    ///
+    /// `n` comes from the request identity — `sha256("apiKeyId\nappId\nsessionId\nts").hex[0:32]` —
+    /// and the search walks counter values `i`, forming `value = <24-hex prefix><i as 8-hex>`
+    /// and accepting the first whose `sha256("n\nvalue")` has `leadingZeroBitBudget`
+    /// leading zero bits (first byte 0x00 at the protocol's 8 bits; expected ~2^8
+    /// attempts, the default bound allows 32× headroom). The prefix is normally
+    /// 12 random bytes; pass a fixed one to make the search deterministic (tests do).
     /// Returns nil if no proof is found within `maxAttempts`.
-    nonisolated static func pow(nonce: String, ts: String, maxAttempts: Int = 1 << 13) -> String? {
-        for attempt in 0..<max(0, maxAttempts) {
-            let candidate = String(hex(sha256(Data("\(nonce)\n\(ts)\n\(attempt)".utf8))).prefix(32))
-            let digest = sha256(Data(powMessage(nonce: nonce, ts: ts, pow: candidate).utf8))
-            if hasLeadingZeroBits(digest, bits: leadingZeroBitBudget) { return candidate }
+    nonisolated static func pow(
+        apiKeyId: String,
+        appId: String,
+        sessionId: String,
+        ts: String,
+        prefix: String? = nil,
+        maxAttempts: Int = 1 << 13
+    ) -> ProofOfWork? {
+        let n = powN(apiKeyId: apiKeyId, appId: appId, sessionId: sessionId, ts: ts)
+        let base = prefix ?? randomHexPrefix()
+        for attempt in 0 ..< UInt32(clamping: max(0, maxAttempts)) {
+            let value = base + String(format: "%08x", attempt)
+            if hasLeadingZeroBits(sha256(Data("\(n)\n\(value)".utf8)), bits: leadingZeroBitBudget) {
+                return ProofOfWork(n: n, value: value)
+            }
         }
         return nil
     }
 
-    /// Verifies a 32-hex proof against the same PoW message `pow(nonce:ts:)` builds.
-    nonisolated static func verifyPow(nonce: String, ts: String, pow: String, leadingZeroBits: Int = 8) -> Bool {
-        guard pow.count == 32, pow.unicodeScalars.allSatisfy({ isHexScalar($0) }) else { return false }
-        let digest = sha256(Data(powMessage(nonce: nonce, ts: ts, pow: pow).utf8))
-        return hasLeadingZeroBits(digest, bits: leadingZeroBits)
-    }
-
-    /// The preimage hashed for the proof of work.
-    nonisolated static func powMessage(nonce: String, ts: String, pow: String) -> String {
-        "\(ts)\n\(nonce)\n\(pow)"
+    /// Verifies a 32-hex `value` against the same identity inputs `pow(...)` takes.
+    /// Hex letters are case-insensitive; the preimage uses the lowercase form.
+    nonisolated static func verifyPow(
+        apiKeyId: String,
+        appId: String,
+        sessionId: String,
+        ts: String,
+        pow value: String,
+        leadingZeroBits: Int = 8
+    ) -> Bool {
+        let normalized = value.lowercased()
+        guard normalized.count == 32, normalized.unicodeScalars.allSatisfy({ isHexScalar($0) }) else { return false }
+        let n = powN(apiKeyId: apiKeyId, appId: appId, sessionId: sessionId, ts: ts)
+        return hasLeadingZeroBits(sha256(Data("\(n)\n\(normalized)".utf8)), bits: leadingZeroBits)
     }
 
     // MARK: Ed25519
@@ -115,6 +143,16 @@ enum CryptoCore {
     /// Leading zero bits the solver targets (protocol `powBits: 8`).
     private nonisolated static let leadingZeroBitBudget = 8
 
+    /// The PoW challenge `n`: first 32 hex chars of SHA-256 over the identity fields.
+    private nonisolated static func powN(apiKeyId: String, appId: String, sessionId: String, ts: String) -> String {
+        String(hex(sha256(Data("\(apiKeyId)\n\(appId)\n\(sessionId)\n\(ts)".utf8))).prefix(32))
+    }
+
+    /// 24 lowercase hex chars of randomness (CryptoKit's RNG, 32 bytes kept as 24).
+    private nonisolated static func randomHexPrefix() -> String {
+        String(SymmetricKey(size: .bits256).withUnsafeBytes { hex(Data($0)) }.prefix(24))
+    }
+
     private nonisolated static func hmac(_ data: Data, key: Data) -> Data {
         Data(HMAC<SHA256>.authenticationCode(for: data, using: SymmetricKey(data: key)))
     }
@@ -128,7 +166,7 @@ enum CryptoCore {
     }
 
     private nonisolated static func isHexScalar(_ scalar: Unicode.Scalar) -> Bool {
-        ("0"..."9").contains(scalar) || ("a"..."f").contains(scalar)
+        ("0"..."9").contains(scalar) || ("a"..."f").contains(scalar) || ("A"..."F").contains(scalar)
     }
 
     private nonisolated static func hasLeadingZeroBits(_ data: Data, bits: Int) -> Bool {

@@ -92,39 +92,94 @@ struct CryptoCoreTests {
         #expect(bytes.map { String(format: "%02x", $0) }.joined() == CryptoCore.hmacHex(message: message, key: key))
     }
 
+    @Test func testHandshakeHmacGoldenVector() {
+        // Synthetic fixture; expected outputs precomputed with node crypto
+        // (hkdfSync + createHmac) over the pinned constants.
+        let credential = Data("0123456789abcdef0123456789abcdef".utf8)
+        let key = CryptoCore.hkdf(
+            ikm: credential,
+            salt: Data(CryptoCore.kdfSalt.utf8),
+            info: Data(CryptoCore.hmacInfo.utf8),
+            length: 32
+        )
+        #expect(key.map { String(format: "%02x", $0) }.joined() ==
+                "239805cbcbd068c2213b828a56db86f51077780998391f7521a50536bc45f6d1")
+        let message = CryptoCore.handshakeSigMessage(
+            apiKeyId: "test-api-key-id",
+            ts: "1794762508234",
+            nonce: "00112233445566778899aabbccddeeff"
+        )
+        #expect(CryptoCore.hmacHex(message: message, key: key) ==
+                "be16b78e86bf5a48b115239b694130f8e68df355fa2bac979b65664d16c9b6f9")
+        #expect(CryptoCore.hmacBase64(message: message, key: key) == "vha3joa/WkixFSObaUEw+OaN81X6K6yXm2VmTRbJtvk=")
+    }
+
     // MARK: Proof of work
 
     @Test func testPowFindsLeadingZeroHash() throws {
-        let nonce = "00112233445566778899aabbccddeeff"
+        let apiKeyId = "b5f4e6998889200000000000000088920"
+        let appId = "zcode"
+        let sessionId = "6f9619ff-8b86-d011-b42d-00cf4fc964ff"
         let ts = "1760000000000"
-        let pow = CryptoCore.pow(nonce: nonce, ts: ts)
-        let value = try #require(pow)
-        #expect(value.count == 32)
-        #expect(value.unicodeScalars.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) })
-        // Independent check: the digest of the exact PoW message starts with a zero byte.
-        let digest = SHA256.hash(data: Data(CryptoCore.powMessage(nonce: nonce, ts: ts, pow: value).utf8))
-        #expect(digest.starts(with: [UInt8(0)]))
+        let solution = try #require(CryptoCore.pow(apiKeyId: apiKeyId, appId: appId, sessionId: sessionId, ts: ts))
+        #expect(solution.value.count == 32)
+        #expect(solution.value.unicodeScalars.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) })
+        // n is derived independently here: first 32 hex of sha256 over the identity fields.
+        let n = String(SHA256.hash(data: Data("\(apiKeyId)\n\(appId)\n\(sessionId)\n\(ts)".utf8))
+            .map { String(format: "%02x", $0) }.joined().prefix(32))
+        #expect(solution.n == n)
+        // Independent check: the digest of "n\nvalue" starts with a zero byte.
+        #expect(SHA256.hash(data: Data("\(solution.n)\n\(solution.value)".utf8)).starts(with: [UInt8(0)]))
         // Round-trip through the verifier.
-        #expect(CryptoCore.verifyPow(nonce: nonce, ts: ts, pow: value))
+        #expect(CryptoCore.verifyPow(apiKeyId: apiKeyId, appId: appId, sessionId: sessionId, ts: ts, pow: solution.value))
+    }
+
+    @Test func testPowGoldenVector() throws {
+        // Synthetic fixture; expected outputs precomputed with node crypto over the
+        // live-verified scheme. With the prefix pinned the search is deterministic:
+        // the solution sits at counter 292 (0x124).
+        let apiKeyId = "test-api-key-id"
+        let appId = "zcode"
+        let sessionId = "6f9619ff-8b86-d011-b42d-00cf4fc964ff"
+        let ts = "1794762508234"
+        let prefix = "0123456789abcdef01234567"
+        let solution = try #require(CryptoCore.pow(apiKeyId: apiKeyId, appId: appId, sessionId: sessionId, ts: ts, prefix: prefix))
+        #expect(solution.n == "6011d46a3b27c008e74df9423e976962")
+        #expect(solution.value == "0123456789abcdef0123456700000124")
+        #expect(CryptoCore.verifyPow(apiKeyId: apiKeyId, appId: appId, sessionId: sessionId, ts: ts, pow: solution.value))
+        // Hex letters are case-insensitive on verification.
+        #expect(CryptoCore.verifyPow(apiKeyId: apiKeyId, appId: appId, sessionId: sessionId, ts: ts, pow: solution.value.uppercased()))
+        // The bound is exact: 292 attempts (counters 0...291) find nothing, 293 succeeds.
+        #expect(CryptoCore.pow(apiKeyId: apiKeyId, appId: appId, sessionId: sessionId, ts: ts, prefix: prefix, maxAttempts: 292) == nil)
+        #expect(CryptoCore.pow(apiKeyId: apiKeyId, appId: appId, sessionId: sessionId, ts: ts, prefix: prefix, maxAttempts: 293)?.value == solution.value)
     }
 
     @Test func testPowRespectsAttemptBound() {
-        #expect(CryptoCore.pow(nonce: "00112233445566778899aabbccddeeff", ts: "1760000000000", maxAttempts: 0) == nil)
+        #expect(CryptoCore.pow(
+            apiKeyId: "b5f4e6998889200000000000000088920",
+            appId: "zcode",
+            sessionId: "6f9619ff-8b86-d011-b42d-00cf4fc964ff",
+            ts: "1760000000000",
+            maxAttempts: 0
+        ) == nil)
     }
 
     @Test func testVerifyPowRejectsNonSolutions() throws {
-        let nonce = "00112233445566778899aabbccddeeff"
+        let apiKeyId = "b5f4e6998889200000000000000088920"
+        let appId = "zcode"
+        let sessionId = "6f9619ff-8b86-d011-b42d-00cf4fc964ff"
         let ts = "1760000000000"
-        // Find a tampered 32-hex value whose PoW message does NOT start with a zero byte
+        let n = String(SHA256.hash(data: Data("\(apiKeyId)\n\(appId)\n\(sessionId)\n\(ts)".utf8))
+            .map { String(format: "%02x", $0) }.joined().prefix(32))
+        // Find a tampered 32-hex value whose PoW digest does NOT start with a zero byte
         // (picking the first of a few deterministic candidates guarantees one exists).
         let bad = try #require((0..<64).compactMap { i -> String? in
             let candidate = String(format: "%032d", i)
-            let digest = SHA256.hash(data: Data(CryptoCore.powMessage(nonce: nonce, ts: ts, pow: candidate).utf8))
-            return digest.starts(with: [UInt8(0)]) ? nil : candidate
+            return SHA256.hash(data: Data("\(n)\n\(candidate)".utf8)).starts(with: [UInt8(0)]) ? nil : candidate
         }.first)
-        #expect(!CryptoCore.verifyPow(nonce: nonce, ts: ts, pow: bad))
+        #expect(!CryptoCore.verifyPow(apiKeyId: apiKeyId, appId: appId, sessionId: sessionId, ts: ts, pow: bad))
         // Malformed inputs are not solutions either.
-        #expect(!CryptoCore.verifyPow(nonce: nonce, ts: ts, pow: "tooshort"))
+        #expect(!CryptoCore.verifyPow(apiKeyId: apiKeyId, appId: appId, sessionId: sessionId, ts: ts, pow: "tooshort"))
     }
 
     // MARK: Ed25519 request signature
