@@ -162,7 +162,8 @@ final class ProxyServer {
                                 requestCoordinator: self.requestCoordinator,
                                 webSearchProvider: self.webSearchProvider,
                                 webSearchForwardAsIs: self.webSearchForwardAsIs,
-                                relayContext: relayContext
+                                relayContext: relayContext,
+                                localHealth: self.localHealthMonitor
                             )
                         )
                     }

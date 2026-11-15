@@ -239,10 +239,12 @@ import Testing
 
     /// A CC-style replay transcript: an assistant turn carrying a signed
     /// `thinking` block (synthetic signature — never real material).
+    private func transcriptBodyText() -> String {
+        #"{"model":"glm-5.3-flash","max_tokens":128,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"thinking","thinking":"prior reasoning","signature":"fake-signature-synthetic-0001"},{"type":"text","text":"answer"}]}]}"#
+    }
+
     private func transcriptBody() -> Data {
-        Data(
-            #"{"model":"glm-5.3-flash","max_tokens":128,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"thinking","thinking":"prior reasoning","signature":"fake-signature-synthetic-0001"},{"type":"text","text":"answer"}]}]}"#
-                .utf8)
+        Data(transcriptBodyText().utf8)
     }
 
     private func makeHTTPClient() -> HTTPClient {
@@ -283,6 +285,10 @@ import Testing
             }
         }
         return (try #require(head), body, sawEnd)
+    }
+
+    private func finishChannel(_ channel: EmbeddedChannel) {
+        _ = try? channel.finish()
     }
 
     // MARK: - Thinking-block contract (splash strips, relay keeps)
@@ -634,5 +640,253 @@ import Testing
         let error = try #require(json["error"] as? [String: Any])
         #expect(error["type"] as? String == "api_error")
         #expect((error["message"] as? String)?.isEmpty == false)
+    }
+
+    // MARK: - Forward-path wiring (end-to-end through ProxyForwarder)
+
+    private struct ForwardFixture {
+        let router: RequestRouter
+        let trafficLog: TrafficLog
+        let tokenStatsStore: TokenStatsStore
+        let lineageBroker: SessionLineageBroker
+        let portableNormalizer: PortableContentNormalizer
+        let requestCoordinator: BranchRequestCoordinator
+        let splashVendorID: UUID
+        let directory: URL
+    }
+
+    /// Exact-match mapping `glm-5.3-flash` → splash (+ optional loopback
+    /// backup), the same routing table shape ProxyServer builds per client.
+    private func makeForwardFixture(splashPort: Int, backupPort: Int?) throws -> ForwardFixture {
+        let splashVendorID = UUID()
+        var vendors = [Vendor(
+            id: splashVendorID, name: "splash (local)",
+            baseURL: "http://127.0.0.1:\(splashPort)", apiKey: "",
+            readTimeoutSeconds: 10, replayPolicy: .portableOnly)]
+        var mapping = ModelMapping(
+            sourceModel: "glm-5.3-flash", targetModel: "Qwen3.8-27B-4bit",
+            targetVendorID: splashVendorID, isEnabled: true)
+        if let backupPort {
+            let backupVendor = Vendor(
+                id: UUID(), name: "Backup Vendor",
+                baseURL: "http://127.0.0.1:\(backupPort)",
+                apiKey: "backup-key-synthetic", readTimeoutSeconds: 10)
+            vendors.append(backupVendor)
+            mapping.backupTargetVendorID = backupVendor.id
+            mapping.backupTargetModel = "glm-4.7"
+        }
+        let clientConfig = ClientConfig(
+            clientName: "Claude Code", port: 0,
+            defaultUpstream: "https://api.anthropic.com", unmappedPolicy: .block)
+        let config = AppConfig(vendors: vendors, clients: [clientConfig], modelMappings: [mapping])
+        let snapshot = RoutingSnapshot(from: config, for: clientConfig)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zgate-localtarget-fwd-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let lineageBroker = SessionLineageBroker(
+            store: FileLineageStore(fileURL: directory.appendingPathComponent("lineages.json")))
+        return ForwardFixture(
+            router: RequestRouter(snapshot: snapshot),
+            trafficLog: TrafficLog(),
+            tokenStatsStore: TokenStatsStore(),
+            lineageBroker: lineageBroker,
+            portableNormalizer: PortableContentNormalizer(),
+            requestCoordinator: BranchRequestCoordinator(),
+            splashVendorID: splashVendorID,
+            directory: directory)
+    }
+
+    @discardableResult
+    private func forward(
+        _ fixture: ForwardFixture, httpClient: HTTPClient, channel: any Channel,
+        bodyText: String, localHealth: LocalHealthMonitor? = nil
+    ) async -> Void {
+        var body = ByteBufferAllocator().buffer(capacity: 0)
+        body.writeData(Data(bodyText.utf8))
+        await ProxyForwarder.forward(
+            clientName: "Claude Code",
+            head: postHead(),
+            body: body,
+            channel: channel,
+            router: fixture.router,
+            httpClient: httpClient,
+            trafficLog: fixture.trafficLog,
+            tokenStatsStore: fixture.tokenStatsStore,
+            lineageBroker: fixture.lineageBroker,
+            portableNormalizer: fixture.portableNormalizer,
+            requestCoordinator: fixture.requestCoordinator,
+            webSearchProvider: nil,
+            webSearchForwardAsIs: false,
+            relayContext: nil,
+            localHealth: localHealth)
+    }
+
+    @Test func forwardLocal5xxFallsBackToRuleBackup() async throws {
+        let splash = MockSplashServer(scripts: [
+            .json(["type": "error", "error": ["type": "api_error", "message": "boom"]], status: 500),
+        ])
+        let backup = MockSplashServer(scripts: [.json(["servedBy": "backup-marker"])])
+        let splashPort = try await splash.start()
+        let backupPort = try await backup.start()
+        defer {
+            Task { await splash.shutdown() }
+            Task { await backup.shutdown() }
+        }
+        let fixture = try makeForwardFixture(splashPort: splashPort, backupPort: backupPort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, channel: client, bodyText: passthroughBody())
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .ok)
+        #expect(sawEnd)
+        #expect(String(data: body, encoding: .utf8)?.contains("backup-marker") == true)
+
+        // The fallback request rode the rule's backup target and its model.
+        #expect(splash.requests.count == 1)
+        #expect(backup.requests.count == 1)
+        let sent = try #require(
+            try JSONSerialization.jsonObject(with: backup.requests[0].body) as? [String: Any])
+        #expect(sent["model"] as? String == "glm-4.7")
+        finishChannel(client)
+    }
+
+    @Test func forwardLocalRouteStripsThinkingCredentialsAndRewritesModel() async throws {
+        let splash = MockSplashServer(scripts: [.json(["id": "msg_local", "role": "assistant"])])
+        let splashPort = try await splash.start()
+        defer { Task { await splash.shutdown() } }
+        let fixture = try makeForwardFixture(splashPort: splashPort, backupPort: nil)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+        let monitor = LocalHealthMonitor()
+        defer { Task { await monitor.stopProbing() } }
+
+        let client = EmbeddedChannel()
+        await forward(
+            fixture, httpClient: httpClient, channel: client,
+            bodyText: transcriptBodyText(), localHealth: monitor)
+
+        // Client got the local response.
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .ok)
+        #expect(sawEnd)
+        #expect(String(data: body, encoding: .utf8)?.contains("msg_local") == true)
+
+        // The splash request: foreign-signature thinking stripped by the
+        // live projection path, credentials stripped, model rewritten.
+        let request = try #require(splash.requests.first)
+        #expect(request.headers["authorization"] == nil)
+        #expect(request.headers["x-api-key"] == nil)
+        #expect(request.body.range(of: Data("signature".utf8)) == nil)
+        let sent = try #require(
+            try JSONSerialization.jsonObject(with: request.body) as? [String: Any])
+        #expect(sent["model"] as? String == "Qwen3.8-27B-4bit")
+        let messages = try #require(sent["messages"] as? [[String: Any]])
+        #expect(messages.count == 2)
+        // The user message's string content rides along untouched; every
+        // block-bearing message has its thinking blocks stripped.
+        #expect(messages[0]["content"] as? String == "hi")
+        for message in messages {
+            guard let blocks = message["content"] as? [[String: Any]] else { continue }
+            #expect(blocks.contains { ($0["type"] as? String) == "thinking" } == false)
+        }
+        let assistantBlocks = try #require(messages[1]["content"] as? [[String: Any]])
+        #expect(assistantBlocks.contains { ($0["type"] as? String) == "text" } == true)
+
+        // A 2xx local exchange keeps the vendor healthy on the wire.
+        #expect(monitor.lastSuccess(forVendor: fixture.splashVendorID) != nil)
+        finishChannel(client)
+    }
+
+    @Test func forwardLocalStreamCutAnswersCleanErrorEventNotHang() async throws {
+        let firstEvent = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n"
+        let cutEvent = "event: content_block_delta\ndata: {\"type\":\"content_block_"
+        let splash = MockSplashServer(scripts: [
+            MockSplashServer.Script(
+                status: 200,
+                headers: ["content-type": "text/event-stream"],
+                chunks: [Data(firstEvent.utf8), Data(cutEvent.utf8)],
+                cutAfterChunks: true),
+        ])
+        let splashPort = try await splash.start()
+        defer { Task { await splash.shutdown() } }
+        let fixture = try makeForwardFixture(splashPort: splashPort, backupPort: nil)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        // Bounded completion through the whole forward path: the cut must not
+        // hang the request.
+        let client = EmbeddedChannel()
+        let done = LockedFlag()
+        let forwardTask = Task {
+            await forward(fixture, httpClient: httpClient, channel: client, bodyText: passthroughBody())
+            done.set()
+        }
+        let finished = await waitUntil(timeout: 5) { done.isSet }
+        #expect(finished)
+        forwardTask.cancel()
+
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        let bodyText = String(data: body, encoding: .utf8) ?? ""
+        #expect(head.status == .ok)
+        #expect(bodyText.contains("message_start"))  // early events delivered
+        #expect(bodyText.contains("event: error"))  // clean terminal error event
+        #expect(bodyText.contains("Local model stream ended unexpectedly"))
+        #expect(sawEnd)
+        finishChannel(client)
+    }
+
+    @Test func forwardLocalUnreachableWithoutBackupAnswers502() async throws {
+        let gone = MockSplashServer(scripts: [])
+        let splashPort = try await gone.start()
+        await gone.shutdown()
+        let fixture = try makeForwardFixture(splashPort: splashPort, backupPort: nil)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, channel: client, bodyText: passthroughBody())
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .badGateway)
+        #expect(sawEnd)
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let error = try #require(json["error"] as? [String: Any])
+        #expect(error["type"] as? String == "api_error")
+        #expect((error["message"] as? String)?.localizedCaseInsensitiveContains("local target unreachable") == true)
+        finishChannel(client)
+    }
+
+    @Test func forwardLocal5xxWithFailingBackupReturnsSplashError() async throws {
+        // Splash 500s AND the backup is unreachable: the client gets splash's
+        // own error body — drained + rewrapped on the live path (the
+        // single-iterator workaround; a regression here crashes the process).
+        let splash = MockSplashServer(scripts: [
+            .json(["type": "error", "error": ["type": "api_error", "message": "splash-failed-marker"]], status: 500),
+        ])
+        let splashPort = try await splash.start()
+        defer { Task { await splash.shutdown() } }
+        let goneBackup = MockSplashServer(scripts: [])
+        let backupPort = try await goneBackup.start()
+        await goneBackup.shutdown()
+
+        let fixture = try makeForwardFixture(splashPort: splashPort, backupPort: backupPort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, channel: client, bodyText: passthroughBody())
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .internalServerError)
+        #expect(sawEnd)
+        #expect(String(data: body, encoding: .utf8)?.contains("splash-failed-marker") == true)
+        finishChannel(client)
     }
 }

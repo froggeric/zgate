@@ -37,7 +37,8 @@ enum ProxyForwarder {
         requestCoordinator: any BranchRequestCoordinating,
         webSearchProvider: (any WebSearchBridgeProviding)?,
         webSearchForwardAsIs: Bool = false,
-        relayContext: RelayTarget.Context? = nil
+        relayContext: RelayTarget.Context? = nil,
+        localHealth: LocalHealthMonitor? = nil
     ) async {
         let requestID = String(UUID().uuidString.prefix(8))
         let startTime = Date.now
@@ -155,6 +156,18 @@ enum ProxyForwarder {
         }
 
         var preparedRequest = initialPreparedRequest
+        // Local (splash) targets skip branch coordination: the local relay
+        // streams pure passthrough (a cut ends in a terminal error event, no
+        // replayable capture), and a local model never needs cross-vendor
+        // thinking restore. The projector's vendor-ready body above still
+        // applies; dropping the context only opts this route out of in-flight
+        // dedup/replay/commit.
+        if LocalTarget.isLocalTarget(target) {
+            preparedRequest = PreparedRequest(
+                bodyData: preparedRequest.bodyData,
+                context: nil,
+                projectedPortableMessagesData: nil)
+        }
         var branchLease: BranchRequestLease?
         var waitBudget = BranchWaitBudget()
         while let context = preparedRequest.context {
@@ -425,9 +438,13 @@ enum ProxyForwarder {
         // 4. Build and send upstream request. Relay-kind rules run the signed
         // ladder (RelayTarget): cold starts wait for the handshake, 401s walk
         // the reject ladder, 429s retry once then fall back / answer 529.
+        // Local (splash) targets run LocalTarget's ladder: credential-free
+        // passthrough, 5xx/transport fallback over the rule's targets, and a
+        // cut-protected stream relay.
         var relayTerminal: RelayTarget.UpstreamTerminal? = nil
         let upstreamResponse: HTTPClientResponse?
         let usedTarget: RoutingSnapshot.RouteTarget?
+        let streamsViaLocalRelay: Bool
         if target.vendorKind == .relay {
             (upstreamResponse, usedTarget, relayTerminal) = await Self.executeRelay(
                 head: head,
@@ -440,6 +457,21 @@ enum ProxyForwarder {
                 requestID: requestID,
                 relayContext: relayContext
             )
+            streamsViaLocalRelay = false
+        } else if LocalTarget.isLocalTarget(target) {
+            (upstreamResponse, usedTarget, relayTerminal) = await Self.executeLocal(
+                head: head,
+                bodyData: forwardBodyData,
+                primaryTarget: target,
+                model: model,
+                router: router,
+                httpClient: httpClient,
+                routeState: &routeState,
+                requestID: requestID,
+                health: localHealth,
+                relayContext: relayContext
+            )
+            streamsViaLocalRelay = upstreamResponse != nil
         } else {
             (upstreamResponse, usedTarget) = await Self.executeWithFailover(
                 head: head,
@@ -451,6 +483,7 @@ enum ProxyForwarder {
                 routeState: &routeState,
                 requestID: requestID
             )
+            streamsViaLocalRelay = false
         }
 
         // 5. Write back mutated route state.
@@ -517,9 +550,17 @@ enum ProxyForwarder {
         // 8. Relay response. The stream runs in a child task that is cancelled
         // when the client channel goes away, so a mid-stream client disconnect
         // aborts the upstream body (AsyncHTTPClient cancels the request and
-        // tears the connection down).
-        let relayStreamTask = Task {
-            await ResponseRelay.relay(
+        // tears the connection down). Local (splash) targets stream through
+        // LocalTarget's cut-protected passthrough instead — no usage
+        // extraction or branch capture (local model, no replayable vendor
+        // thinking).
+        let relayStreamTask = Task { () -> ReplayableBranchResponse? in
+            if streamsViaLocalRelay {
+                await LocalTarget.relayStream(
+                    upstreamResponse: upstreamResponse, to: channel, requestID: requestID)
+                return nil
+            }
+            return await ResponseRelay.relay(
                 upstreamResponse: upstreamResponse,
                 to: channel,
                 onUsage: onUsage,
@@ -893,6 +934,58 @@ enum ProxyForwarder {
                 message: "Relay rate limited (429 after retry) and no fallback rule is configured.")
         case .responded:
             preconditionFailure("responded outcomes stream; they do not map to a terminal")
+        }
+    }
+
+    // MARK: - Local execution (splash ladder)
+
+    /// Local-target execution: `LocalTarget.executeWithFallback` over the
+    /// rule's target array (`router.targets(for:)` — the same class-rule
+    /// failover arrays and eligibility the resolver applied). Route-state
+    /// bookkeeping mirrors the mapped path: non-2xx responses count as
+    /// failures, a fully unreachable chain flips the active target after 10
+    /// consecutive failures.
+    private static func executeLocal(
+        head: HTTPRequestHead,
+        bodyData: Data,
+        primaryTarget: RoutingSnapshot.RouteTarget,
+        model: String,
+        router: RequestRouter,
+        httpClient: HTTPClient,
+        routeState: inout RoutingSnapshot.RouteState,
+        requestID: String,
+        health: LocalHealthMonitor?,
+        relayContext: RelayTarget.Context?
+    ) async -> (HTTPClientResponse?, RoutingSnapshot.RouteTarget?, RelayTarget.UpstreamTerminal?) {
+        let targets = await router.targets(for: model) ?? [primaryTarget]
+        switch await LocalTarget.executeWithFallback(
+            head: head,
+            bodyData: bodyData,
+            targets: targets,
+            httpClient: httpClient,
+            requestID: requestID,
+            health: health,
+            relayContext: relayContext)
+        {
+        case .served(let response, let target):
+            if Int(response.status.code) < 400 { routeState.failCount = 0 }
+            return (response, target, nil)
+        case .primaryError(let response, let target):
+            routeState.failCount += 1
+            if routeState.failCount >= 10 {
+                routeState.activeTarget = (routeState.activeTarget == .primary) ? .backup : .primary
+                routeState.failCount = 0
+            }
+            return (response, target, nil)
+        case .unreachable(let reason):
+            routeState.failCount += 1
+            if routeState.failCount >= 10 {
+                routeState.activeTarget = (routeState.activeTarget == .primary) ? .backup : .primary
+                routeState.failCount = 0
+            }
+            return (nil, nil, RelayTarget.UpstreamTerminal(
+                status: 502, anthropicType: "api_error",
+                message: "Local target unreachable: \(reason)"))
         }
     }
 

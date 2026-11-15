@@ -256,17 +256,46 @@ constraint — see below), so live splash traffic still rides the generic mapped
   note: routers capture the provider at construction); reconfigured on
   `updateRouting`, stopped in `stop()`. Injected `healthProvider`s (tests) never
   overridden.
-- **Tests** (`ModelProxyTests/LocalTargetTests.swift`, 13; suite total 277/18 green):
+- **Tests** (`ModelProxyTests/LocalTargetTests.swift`, 18; suite total 282/18 green):
   strip/keep thinking contract, byte-parity passthrough + credential-stripping header
   capture, no-targetModel passthrough, loopback classification, wire-success health note,
   probe up/down/stale-preserved (ephemeral listener), 5xx→rule-backup fallback THROUGH
   `RoutingSnapshot.targets(for:)` + relayStream to an EmbeddedChannel, 5xx-no-backup
   passthrough, unreachable→backup, stream-cut clean error event (bounded 5 s) + SSE
-  well-formedness. Mock splash server pattern from RelayTargetTests; synthetic
-  credentials/signatures only.
-- **Known gap (deliberate, file-scope constraint):** `ProxyForwarder.forward` still routes
-  splash-kind targets through `executeUpstream`, so live traffic gets empty auth headers,
-  no 5xx fallback, no cut-protect. Wiring is a small follow-up: branch local targets to
-  `LocalTarget.executeWithFallback` + `relayStream` (ProxyChannelHandler/ProxyServer need
-  to pass the health monitor + relay context through). The router-side skip (health) IS
-  live via the registered monitor.
+  well-formedness — plus 5 end-to-end `ProxyForwarder.forward` tests (below). Mock
+  splash server pattern from RelayTargetTests; synthetic credentials/signatures only.
+
+### Task 7 wiring round 2 — forward path (2026-11-15)
+
+The Task 7 gap (LocalTarget built but not branched into `forward`) is closed:
+`ProxyForwarder.forward` now branches `LocalTarget.isLocalTarget(target)` →
+`executeLocal` → `LocalTarget.executeWithFallback(targets:)` where `targets` comes from
+`router.targets(for: model)` (same eligibility + class-rule failover arrays the resolver
+used), and step 8 streams via `LocalTarget.relayStream` (cut-protected passthrough) instead
+of `ResponseRelay.relay` for local responses. Route-state bookkeeping mirrors the mapped
+path (non-2xx counts a failure; a fully unreachable chain flips activeTarget after 10).
+The generic mapped path for non-splash anthropic vendors is untouched.
+
+- **Local targets opt OUT of branch coordination:** `forward` drops the projector's
+  branch context for local targets (no in-flight dedup/replay/commit). Rationale: the
+  local relay is pure passthrough with no replayable capture (a cut ends in a terminal
+  error event), and a local model never needs cross-vendor thinking restore; keeping the
+  lease would surface 409s to concurrent duplicates for no benefit. Consequence: no
+  token-usage extraction and no branch-transcript commit on the splash route (splash is
+  local/free; CC resends its own context). `WebSearchBridge` (only active with a
+  configured search provider AND server-side web_search tools) still uses the generic
+  `executeWithFailover` path — edge case, unchanged.
+- **Monitor chain:** ProxyServer → `ProxyChannelHandler(localHealth:)` →
+  `forward(localHealth:)` → `executeLocal` — so wire-level 2xx splash exchanges warm the
+  registered health monitor.
+- **E2E pins (5 tests, through forward with mock splash/backup):** 5xx→rule-backup
+  (client gets backup's 200, backup request carries the backup rule model), thinking-strip
+  + credential-strip + model rewrite on the live path (+ monitor warmed), mid-stream cut →
+  clean error SSE event with bounded completion, unreachable-no-backup → 502
+  "Local target unreachable", 5xx+failing-backup → splash's own error body streams (the
+  drain-then-rewrap single-iterator workaround pinned on the live path — a regression
+  here is a process crash, not a test failure).
+- **Note on "body byte-unchanged":** on the live splash path the projector re-serializes
+  (`sortedKeys`) for `.portableOnly` targets, so byte-parity holds only in the module-level
+  test (`LocalTarget.execute` without projection). The E2E pin asserts semantic
+  preservation: model swapped, thinking/signature gone, all other content identical.

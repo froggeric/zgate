@@ -24,6 +24,9 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
     /// Relay signing context (per-process, built by ProxyServer). Passed by
     /// reference down to ProxyForwarder; never logged.
     private let relayContext: RelayTarget.Context?
+    /// Splash health monitor (per-process, built by ProxyServer): wire-level
+    /// successes on the local route keep the router's health entries warm.
+    private let localHealth: LocalHealthMonitor?
 
     // Accumulated state for the current request.
     private var requestHead: HTTPRequestHead?
@@ -40,7 +43,8 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
         requestCoordinator: any BranchRequestCoordinating,
         webSearchProvider: (any WebSearchBridgeProviding)?,
         webSearchForwardAsIs: Bool,
-        relayContext: RelayTarget.Context? = nil
+        relayContext: RelayTarget.Context? = nil,
+        localHealth: LocalHealthMonitor? = nil
     ) {
         self.clientName = clientName
         self.router = router
@@ -53,6 +57,7 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
         self.webSearchProvider = webSearchProvider
         self.webSearchForwardAsIs = webSearchForwardAsIs
         self.relayContext = relayContext
+        self.localHealth = localHealth
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -88,6 +93,7 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
             let webSearchProvider = self.webSearchProvider
             let webSearchForwardAsIs = self.webSearchForwardAsIs
             let relayContext = self.relayContext
+            let localHealth = self.localHealth
 
             Task {
                 await ProxyForwarder.forward(
@@ -104,7 +110,8 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
                     requestCoordinator: requestCoordinator,
                     webSearchProvider: webSearchProvider,
                     webSearchForwardAsIs: webSearchForwardAsIs,
-                    relayContext: relayContext
+                    relayContext: relayContext,
+                    localHealth: localHealth
                 )
             }
 
