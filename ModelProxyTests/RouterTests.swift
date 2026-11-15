@@ -384,6 +384,40 @@ struct RouterTests {
         }
     }
 
+    @Test func unparseableBodiesAnswerLocal400WhenClassRulesExist() async throws {
+        let fixture = makeFixture()
+        let router = RequestRouter(
+            snapshot: RoutingSnapshot(from: fixture.config, for: fixture.client))
+
+        func raw(_ string: String) -> ByteBuffer {
+            var buffer = ByteBufferAllocator().buffer(capacity: 0)
+            buffer.writeData(Data(string.utf8))
+            return buffer
+        }
+
+        // Garbage JSON → local 400, never routed.
+        await #expect(throws: RouterError.missingModelField) {
+            _ = try await router.resolve(bodyBytes: raw("not json at all"), originalAPIKey: "k")
+        }
+        // Empty body → local 400.
+        await #expect(throws: RouterError.missingModelField) {
+            _ = try await router.resolve(
+                bodyBytes: ByteBufferAllocator().buffer(capacity: 0), originalAPIKey: "k")
+        }
+        // Non-object JSON (bare array) → local 400.
+        await #expect(throws: RouterError.missingModelField) {
+            _ = try await router.resolve(bodyBytes: raw("[1,2,3]"), originalAPIKey: "k")
+        }
+        // Only a parsed object LACKING a model field routes as auto.
+        let noModel = try await router.resolve(
+            bodyBytes: raw(#"{"messages":[]}"#), originalAPIKey: "k")
+        if case .routed(let target) = noModel.result {
+            #expect(target.targetModel == "GLM-5.3")
+        } else {
+            Issue.record("expected routed auto target for object without model")
+        }
+    }
+
     @Test func failoverTargetsAndStateWritebackCoverClassRoutes() async throws {
         let fixture = makeFixture()
         let snapshot = RoutingSnapshot(from: fixture.config, for: fixture.client)
@@ -409,6 +443,81 @@ struct RouterTests {
             Issue.record("expected routed backup target")
         }
         #expect(resolved.state.activeTarget == .backup)
+    }
+
+    @Test func failoverTargetsHonorRuleEligibility() async throws {
+        let fixture = makeFixture()
+        let health = FakeHealth()
+        // Stale splash probe: the resolver must skip the haiku rule.
+        health.setLastSuccess(Date().addingTimeInterval(-120), forVendor: fixture.splashVendor.id)
+        let router = RequestRouter(
+            snapshot: RoutingSnapshot(from: fixture.config, for: fixture.client),
+            healthProvider: health)
+
+        // The catch-all (relay flash) serves the haiku-classed request.
+        let resolved = try await router.resolve(
+            bodyBytes: fixedBody(model: "claude-3-5-haiku-20241022"), originalAPIKey: "k")
+        if case .routed(let target) = resolved.result {
+            #expect(target.targetModel == "GLM-5.3-Flash")
+        } else {
+            Issue.record("expected catch-all to serve while splash is stale")
+        }
+
+        // 429 failover consults the ELIGIBLE rule: the catch-all's relay
+        // target only — never the skipped splash rule's targets.
+        let failoverTargets = try #require(await router.targets(for: "claude-3-5-haiku-20241022"))
+        #expect(!failoverTargets.isEmpty)
+        #expect(failoverTargets.allSatisfy { $0.vendorKind == .relay })
+        #expect(!failoverTargets.contains { $0.vendorName == "splash (local)" })
+
+        // Probe fresh again → the haiku rule is eligible → its targets
+        // (splash primary + relay flash backup) come back.
+        health.setLastSuccess(Date().addingTimeInterval(-5), forVendor: fixture.splashVendor.id)
+        let eligibleTargets = try #require(await router.targets(for: "claude-3-5-haiku-20241022"))
+        #expect(eligibleTargets.count == 2)
+        #expect(eligibleTargets[0].vendorName == "splash (local)")
+        #expect(eligibleTargets[1].targetModel == "GLM-5.3-Flash")
+    }
+
+    @Test func routeStateWritebackKeysTheServedRuleNotTheSkippedOne() async throws {
+        let fixture = makeFixture()
+        let health = FakeHealth()
+        health.setLastSuccess(Date().addingTimeInterval(-120), forVendor: fixture.splashVendor.id)
+        let router = RequestRouter(
+            snapshot: RoutingSnapshot(from: fixture.config, for: fixture.client),
+            healthProvider: health)
+
+        // Catch-all serves (splash skipped): state read starts at primary.
+        let served = try await router.resolve(
+            bodyBytes: fixedBody(model: "claude-3-5-haiku-20241022"), originalAPIKey: "k")
+        #expect(served.state.activeTarget == .primary)
+
+        // Failover write-back: must land on the catch-all's key — the rule
+        // that served — not the skipped haiku rule's key.
+        var state = served.state
+        state.failCount = 10
+        state.activeTarget = .backup
+        await router.updateRouteState(model: "claude-3-5-haiku-20241022", state: state)
+
+        // The catch-all re-reads its own written state.
+        let again = try await router.resolve(
+            bodyBytes: fixedBody(model: "claude-3-5-haiku-20241022"), originalAPIKey: "k")
+        #expect(again.state.activeTarget == .backup)
+        #expect(again.state.failCount == 10)
+
+        // And the skipped haiku rule's state stayed untouched: once splash is
+        // healthy it serves from primary (a mis-keyed write would have
+        // flipped it to backup → relay flash).
+        health.setLastSuccess(Date().addingTimeInterval(-5), forVendor: fixture.splashVendor.id)
+        let healthy = try await router.resolve(
+            bodyBytes: fixedBody(model: "claude-3-5-haiku-20241022"), originalAPIKey: "k")
+        #expect(healthy.state.activeTarget == .primary)
+        #expect(healthy.state.failCount == 0)
+        if case .routed(let target) = healthy.result {
+            #expect(target.vendorName == "splash (local)")
+        } else {
+            Issue.record("expected splash to serve once healthy")
+        }
     }
 
     // MARK: - Default rule table (AC: installs on first launch, JSON pinned)

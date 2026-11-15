@@ -265,25 +265,30 @@ struct RoutingSnapshot: Sendable {
     }
 
     /// Returns all targets for a mapped model (for failover use by ProxyForwarder).
-    /// Consults the class-rule table too, so class-routed requests get the
-    /// same 429 backup behavior. Returns nil if model is not mapped.
-    func targets(for model: String) -> [RouteTarget]? {
+    /// Consults the class-rule table too — with the same eligibility the
+    /// resolver applied — so class-routed requests get the same 429 backup
+    /// behavior without resurrecting a skipped rule. Returns nil if model is
+    /// not mapped.
+    func targets(for model: String, conditions: ConditionContext = ConditionContext()) -> [RouteTarget]? {
         if let targets = modelMappings[model]
             ?? modelMappings.filter({ model.hasPrefix($0.key) }).max(by: { $0.key.count < $1.key.count })?.value {
             return targets
         }
-        return ruleTable.targets(for: model)
+        return ruleTable.targets(for: model, context: conditions)
     }
 
     /// Write back mutated failover state from ProxyForwarder. Class-routed
-    /// models key by rule class, mirroring the key `resolve` read.
-    mutating func updateRouteState(for model: String, state: RouteState) {
+    /// models key by the first eligible rule — mirroring the key `resolve`
+    /// read for the rule that actually served.
+    mutating func updateRouteState(
+        for model: String, state: RouteState, conditions: ConditionContext = ConditionContext()
+    ) {
         if modelMappings[model] != nil
             || modelMappings.contains(where: { model.hasPrefix($0.key) }) {
             routeStates[model] = state
             return
         }
-        if let key = ruleTable.stateKey(for: model) {
+        if let key = ruleTable.stateKey(for: model, context: conditions) {
             routeStates[key] = state
         }
     }

@@ -163,12 +163,17 @@ policy** (final safety net; the catch-all normally wins first).
   a *stale* probe (> 60s old) → primary target unhealthy → rule skipped (boundary exactly 60s
   still healthy). Health gates the rule's PRIMARY target only; backup targets rely on the
   existing failover machinery.
-- **Missing model field:** with class/catch-all rules configured it routes as class auto
-  (spec §2) instead of the legacy 400; an unparseable body still 400s. Legacy configs (no
-  pattern rules) keep the 400 (`RequestRouter`).
-- **Failover symmetry:** `targets(for:)` and `updateRouteState(for:)` consult the rule table
-  too; failover state keys by `class:<class>:<vendor>` / `catchall:<vendor>`, so the default
-  table's two opus rules (same relay vendor) share one state key — read and write agree.
+- **Missing model field (fix round 1 precision):** with class/catch-all rules configured, a
+  PARSED JSON OBJECT lacking a `model` field routes as class auto (spec §2) instead of the
+  legacy 400. Unparseable, empty, or non-object bodies (garbage JSON, bare arrays) are
+  answered 400 LOCALLY and never routed — pinned by `unparseableBodiesAnswerLocal400…`.
+  Legacy configs (no pattern rules) keep the 400 for both (`RequestRouter`).
+- **Failover symmetry (fix round 1):** `targets(for:)` and `updateRouteState(for:)` share
+  `firstMatch`'s ELIGIBILITY (conditions + health at call time) — a rule the resolver just
+  skipped is never resurrected as a 429-failover candidate, and state writes key by the rule
+  that actually served (e.g. the catch-all), not by a skipped class rule. Failover state keys
+  by `class:<class>:<vendor>` / `catchall:<vendor>`, so the default table's two opus rules
+  (same relay vendor) share one state key — read and write agree.
 - **Default rule table** (`AppConfig.makeZGateDefaultRouting`, called by `makeDefault()` —
   first launch only): vendors `zcode relay` (baseURL
   `https://zcode.z.ai/api/v1/ultra-zai/anthropic`, apiKey "", `vendorKind: .relay`,

@@ -209,30 +209,20 @@ struct ClassRuleTable: Sendable {
         return nil
     }
 
-    /// All targets of the first class rule matching the model (used by the
-    /// 429 failover path); nil when the model matches no class rule.
-    func targets(for model: String) -> [RoutingSnapshot.RouteTarget]? {
-        let modelClass = ModelClass.classify(model)
-        if let rule = rules.first(where: { !$0.catchAll && $0.matchClass == modelClass }) {
-            return rule.targets
-        }
-        if let catchAll = rules.first(where: { $0.catchAll }) {
-            return catchAll.targets
-        }
-        return nil
+    /// All targets of the first ELIGIBLE rule matching the model (used by
+    /// the 429 failover path) — the same eligibility `firstMatch` applies, so
+    /// a rule the resolver just skipped (conditions failed, stale probe) is
+    /// never resurrected as a failover candidate. nil when nothing eligible
+    /// matches.
+    func targets(for model: String, context: ConditionContext) -> [RoutingSnapshot.RouteTarget]? {
+        firstMatch(model: model, context: context)?.targets
     }
 
-    /// Failover-state key for a model routed by this table (mirrors the rule
-    /// `firstMatch` would have chosen for `updateRouteState` symmetry).
-    func stateKey(for model: String) -> String? {
-        let modelClass = ModelClass.classify(model)
-        if let rule = rules.first(where: { !$0.catchAll && $0.matchClass == modelClass }) {
-            return rule.stateKey
-        }
-        if let catchAll = rules.first(where: { $0.catchAll }) {
-            return catchAll.stateKey
-        }
-        return nil
+    /// Failover-state key of the first eligible rule — the same derivation
+    /// `resolve` used for its read, so `updateRouteState` writes the key of
+    /// the rule that actually served, never a skipped rule's key.
+    func stateKey(for model: String, context: ConditionContext) -> String? {
+        firstMatch(model: model, context: context)?.stateKey
     }
 
     /// A target is skipped only when its last successful probe is stale

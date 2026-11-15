@@ -29,8 +29,10 @@ actor RequestRouter {
     }
 
     /// Parse raw HTTP body bytes, extract the `model` field, and return a resolved target.
-    /// With class/catch-all rules configured, a missing or empty model field
-    /// routes as class `auto` (spec §2); without them the legacy 400 stands.
+    /// With class/catch-all rules configured, a parsed object LACKING a model
+    /// field routes as class `auto` (spec §2); without them the legacy 400
+    /// stands. An unparseable, empty, or non-object body always 400s locally —
+    /// it never routes.
     func resolve(
         bodyBytes: ByteBuffer,
         originalAPIKey: String
@@ -38,30 +40,36 @@ actor RequestRouter {
         guard let data = bodyBytes.getData(at: bodyBytes.readerIndex, length: bodyBytes.readableBytes) else {
             throw RouterError.unreadableBody
         }
-        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw RouterError.missingModelField  // garbage/empty/non-object body: local 400
+        }
         let model: String
-        if let parsed = json?["model"] as? String, !parsed.isEmpty {
+        if let parsed = json["model"] as? String, !parsed.isEmpty {
             model = parsed
         } else if snapshot.ruleTable.allowsMissingModel {
-            model = ""  // unset model field → class auto
+            model = ""  // parsed object without a model field → class auto
         } else {
             throw RouterError.missingModelField
         }
-        let conditions = ConditionContext(
-            now: Date(), health: healthProvider, quota: quotaProvider)
         let (result, state) = snapshot.resolve(
-            model: model, originalAPIKey: originalAPIKey, conditions: conditions)
+            model: model, originalAPIKey: originalAPIKey, conditions: currentConditions())
         return (result, model, state)
     }
 
-    /// Returns all targets for a mapped model (for failover).
+    /// Returns all targets for a mapped model (for failover). Shares the
+    /// resolver's eligibility so a rule it just skipped is never returned.
     func targets(for model: String) -> [RoutingSnapshot.RouteTarget]? {
-        snapshot.targets(for: model)
+        snapshot.targets(for: model, conditions: currentConditions())
     }
 
-    /// Write back mutated failover state from ProxyForwarder.
+    /// Write back mutated failover state from ProxyForwarder. Keys by the
+    /// first eligible rule — the same key `resolve` read.
     func updateRouteState(model: String, state: RoutingSnapshot.RouteState) {
-        snapshot.updateRouteState(for: model, state: state)
+        snapshot.updateRouteState(for: model, state: state, conditions: currentConditions())
+    }
+
+    private func currentConditions() -> ConditionContext {
+        ConditionContext(now: Date(), health: healthProvider, quota: quotaProvider)
     }
 }
 
