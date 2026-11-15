@@ -45,17 +45,17 @@ enum CredentialError: Error, Equatable, LocalizedError {
     }
 }
 
-/// Decoded `project-key-location:v1:<percent-encoded>` store entry: the
-/// persisted org/project location cache for the api_keys mint flow. Plaintext
-/// shape (docs/signing-notes.md): `["<origin>", "<family>", "<account>", null, <generation>, "<label>"]`.
+/// Decoded `project-key-location:v1:*` store entry: the persisted
+/// org/project/apiKeyId location the api_keys mint call targets.
+///
+/// Live-verified shape (2026-11-15): the percent-encoded identity array
+/// lives in the field NAME and is ignored here; the field's VALUE is the
+/// JSON object `{"organizationId", "projectId", "apiKeyId"}`.
 struct ProjectKeyLocation: Equatable {
-    /// API origin, e.g. `"https://api.z.ai"`.
-    let origin: String
-    /// Account family, e.g. `"zai"`.
-    let family: String
-    /// Account UUID.
-    let account: String
-    /// Full decrypted JSON array, for fields later tasks may need.
+    let organizationId: String
+    let projectId: String
+    let apiKeyId: String
+    /// Full decrypted JSON object, for fields later tasks may need.
     let rawJSON: String
 }
 
@@ -231,15 +231,17 @@ struct CredentialStore {
         let json: Any
         do { json = try JSONSerialization.jsonObject(with: Data(raw.utf8)) }
         catch { throw CredentialError.malformedValue(field: field, reason: "location value is not JSON") }
-        guard let elements = json as? [Any], elements.count >= 3,
-            let origin = elements[0] as? String,
-            let family = elements[1] as? String,
-            let account = elements[2] as? String
+        guard let object = json as? [String: Any],
+            let organizationId = object["organizationId"] as? String,
+            let projectId = object["projectId"] as? String,
+            let apiKeyId = object["apiKeyId"] as? String
         else {
             throw CredentialError.malformedValue(
-                field: field, reason: "location value is not a [origin, family, account, …] JSON array")
+                field: field,
+                reason: "location value is not a {organizationId, projectId, apiKeyId} JSON object")
         }
-        return ProjectKeyLocation(origin: origin, family: family, account: account, rawJSON: raw)
+        return ProjectKeyLocation(
+            organizationId: organizationId, projectId: projectId, apiKeyId: apiKeyId, rawJSON: raw)
     }
 
     // MARK: - Envelope parsing

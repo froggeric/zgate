@@ -646,6 +646,34 @@ struct SigningClientTests {
         #expect(mock.count(matching: "/access_tokens") == 2)
     }
 
+    @Test func cacheSaveReplacesExistingFileAt0600() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = BizSessionCache(fileURL: directory.appendingPathComponent("biz-session.cache"))
+
+        // Second save renames over the existing file — an implementation
+        // using moveItem (which refuses existing destinations) would throw.
+        try cache.save(BizSession(
+            bizJwt: ChainFixtures.bizJwt(tag: "first"),
+            acquiredAtMs: SigningClientTests.baseMs - 1_000,
+            location: nil))
+        try cache.save(BizSession(
+            bizJwt: ChainFixtures.bizJwt(tag: "second"),
+            acquiredAtMs: SigningClientTests.baseMs,
+            location: ChainFixtures.location))
+
+        let reloaded = try #require(cache.load())
+        #expect(reloaded.acquiredAtMs == SigningClientTests.baseMs)
+        #expect(reloaded.location == ChainFixtures.location)
+        // The replacement keeps owner-only permissions.
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: directory.appendingPathComponent("biz-session.cache").path)
+        #expect(((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o777 == 0o600)
+        // No temporary files are left behind.
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        #expect(leftovers == ["biz-session.cache"])
+    }
+
     @Test func unusableCacheFallsBackToStoreLogin() async throws {
         let mock = SigningMock()
         installMock(mock)
@@ -719,6 +747,65 @@ struct SigningClientTests {
             _ = try await client.ensureSession()
         }
         #expect(mock.count(matching: "/access_tokens") == 0)
+    }
+
+    // MARK: - Cold-start location from the store (real store value shape)
+
+    /// A store with no location entry, loaded successfully — plaintext
+    /// passthrough values need no secret agreement.
+    private func storeWithoutLocation() throws -> CredentialStore {
+        let dir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try JSONEncoder()
+            .encode([CredentialStore.accessTokenField: "synthetic-token"])
+            .write(to: dir.appendingPathComponent("credentials.json"))
+        try Data("any-secret".utf8).write(to: dir.appendingPathComponent("secret.txt"))
+        return try CredentialStore(
+            storeURL: dir.appendingPathComponent("credentials.json"),
+            secretURL: dir.appendingPathComponent("secret.txt"))
+    }
+
+    @Test func coldStartResolvesLocationFromStore() async throws {
+        let mock = SigningMock()
+        installMock(mock)
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // No cache, no injected location — only the synthetic store's
+        // {organizationId, projectId, apiKeyId} value object can supply one.
+        let store = try syntheticStore()
+        let storedLocation = try #require(try store.projectKeyLocation())
+        let client = SigningClient(configuration: makeConfiguration(
+            clock: mock.clock, store: store, location: nil, cacheDirectory: directory))
+        _ = try await client.ensureSession()
+        #expect(await client.currentPhase() == .signed)
+
+        // The mint targeted the store's location triple (synthetic UUIDs —
+        // exact values are pinned in CredentialStoreTests).
+        let mintRequest = try #require(mock.requests(matching: "/access_tokens").first)
+        #expect(mintRequest.url.path.contains("/organization/\(storedLocation.organizationId)/"))
+        #expect(mintRequest.url.path.contains("/projects/\(storedLocation.projectId)/"))
+        #expect(mintRequest.url.path.contains("/api_keys/\(storedLocation.apiKeyId)/"))
+    }
+
+    @Test func noLocationOnColdStartFailsFastBeforeAnyNetwork() async throws {
+        let mock = SigningMock()
+        installMock(mock)
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // No cache, no injected location, and a store with no location entry:
+        // noLocation must surface BEFORE z/login leaves the process.
+        let client = SigningClient(configuration: makeConfiguration(
+            clock: mock.clock, store: try storeWithoutLocation(),
+            location: nil, cacheDirectory: directory))
+
+        await #expect(throws: SigningClientError.noLocation) {
+            _ = try await client.ensureSession()
+        }
+        #expect(mock.count(matching: "/api/auth/z/login") == 0)
+        #expect(mock.count(matching: "/access_tokens") == 0)
+        #expect(mock.count(matching: "/api/paas/c1f3a7e2") == 0)
     }
 
     @Test func handshakeBusinessFailureLeavesClientUnsigned() async throws {

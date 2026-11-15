@@ -61,12 +61,35 @@ struct BizSessionCache {
 
     /// Writes the session as JSON with owner-only permissions (0600).
     /// The parent directory is created when missing.
+    ///
+    /// `Data.write(.atomic)` would create the file with default permissions
+    /// and chmod it to 0600 only afterwards — a brief world-readable window
+    /// holding the biz JWT. Instead a temporary file is created with 0600
+    /// from its first byte and renamed over the target (rename(2) replaces
+    /// atomically).
     func save(_ session: BizSession) throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(session)
-        try data.write(to: fileURL, options: .atomic)
-        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+
+        let temporaryURL = fileURL.deletingLastPathComponent()
+            .appendingPathComponent(".biz-session.cache.\(UUID().uuidString).tmp")
+        guard fileManager.createFile(
+            atPath: temporaryURL.path, contents: data,
+            attributes: [.posixPermissions: 0o600])
+        else {
+            throw NSError(
+                domain: "BizSessionCache", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "could not create temporary cache file at \(temporaryURL.path)"])
+        }
+        if rename(temporaryURL.path, fileURL.path) != 0 {
+            let errorCode = errno
+            let reason = String(cString: strerror(errorCode))
+            try? fileManager.removeItem(at: temporaryURL)
+            throw NSError(
+                domain: NSPOSIXErrorDomain, code: Int(errorCode),
+                userInfo: [NSLocalizedDescriptionKey: "could not replace cache file: \(reason)"])
+        }
     }
 }

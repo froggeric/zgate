@@ -7,10 +7,8 @@ enum SigningClientError: Error, Equatable, LocalizedError {
     /// The chain cannot proceed without a human re-login; Task 5 surfaces
     /// this as the re-login alert (the `CredentialError.expired`-style case).
     case reloginRequired(ReloginReason)
-    /// No usable org/project/apiKeyId location (cache empty, none injected).
-    /// The store's location value cannot be read through `CredentialStore`'s
-    /// typed accessor (it models the field-name array, not the value object),
-    /// so the first build needs a location from the cache or configuration.
+    /// No usable org/project/apiKeyId location (cache empty, none injected,
+    /// store yielded none) — checked before any network call.
     case noLocation
     /// `z/login` transport-level failure (non-200 HTTP status).
     case loginFailed(status: Int, code: Int?)
@@ -110,8 +108,9 @@ actor SigningClient {
         /// the cached biz session is unusable or a mint auth-reject needs a
         /// transparent re-login.
         var store: CredentialStore?
-        /// Mint location until a cached biz session supplies one. The mint
-        /// cannot run without a location.
+        /// Mint location until a cached biz session or the store's
+        /// project-key-location entry supplies one. The mint cannot run
+        /// without a location.
         var initialLocation: MintLocation?
         var cacheURL = BizSessionCache.defaultFileURL()
         /// Proactive refresh this far before project-token expiry.
@@ -228,8 +227,23 @@ actor SigningClient {
             location = cached.location ?? location
             cameFromCache = true
         } else {
+            // Cold start: the store's project-key-location entry is the last
+            // location source. Resolve it BEFORE z/login — without a location
+            // the chain can only end in noLocation, so the login would be
+            // wasted network. A malformed store value falls through to nil
+            // (mirrors zbridge's readLocation).
+            if location == nil, let store = configuration.store,
+                let stored = try? await store.projectKeyLocation()
+            {
+                location = MintLocation(
+                    organizationId: stored.organizationId,
+                    projectId: stored.projectId,
+                    apiKeyId: stored.apiKeyId)
+            }
+            guard let location else { throw SigningClientError.noLocation }
             bizJwt = try await loginViaStore()
         }
+        // Cache path: a usable cached session may still carry no location.
         guard let location else { throw SigningClientError.noLocation }
 
         // 2. Mint the project token. A cached session's auth-reject triggers

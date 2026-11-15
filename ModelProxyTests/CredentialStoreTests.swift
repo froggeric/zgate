@@ -34,7 +34,9 @@ struct CredentialStoreTests {
 
     /// Known synthetic values — must match make-fixture.sh.
     private static let accessTokenExp: Double = 1_763_003_600
-    private static let syntheticAccount = "11111111-2222-3333-4444-555555555555"
+    private static let syntheticOrganizationId = "11111111-2222-3333-4444-555555555555"
+    private static let syntheticProjectId = "22222222-3333-4444-5555-666666666666"
+    private static let syntheticAPIKeyId = "89abcdef89abcdef89abcdef89abcdef"
     /// First field in the store's sorted key order (validation order contract).
     private static let firstSortedField = "oauth:active_provider"
 
@@ -86,12 +88,77 @@ struct CredentialStoreTests {
         #expect(access.split(separator: ".").count == 3)
 
         let location = try #require(try store.projectKeyLocation())
-        #expect(location.origin == "https://api.z.ai")
-        #expect(location.family == "zai")
-        #expect(location.account == Self.syntheticAccount)
-        #expect(location.rawJSON.contains(Self.syntheticAccount))
+        #expect(location.organizationId == Self.syntheticOrganizationId)
+        #expect(location.projectId == Self.syntheticProjectId)
+        #expect(location.apiKeyId == Self.syntheticAPIKeyId)
+        #expect(location.rawJSON.contains(Self.syntheticProjectId))
 
         #expect(try store.value(for: "oauth:active_provider") == "zai")
+    }
+
+    /// Writes a one-field plaintext store (passthrough values need no secret
+    /// agreement) so location-shape tests can pick the exact field and value.
+    private static func writePlaintextStore(
+        into dir: URL, field: String, value: String
+    ) throws -> (storeURL: URL, secretURL: URL) {
+        let storeURL = dir.appendingPathComponent("credentials.json")
+        let secretURL = dir.appendingPathComponent("secret.txt")
+        try JSONEncoder().encode([field: value]).write(to: storeURL)
+        try Data("any-secret".utf8).write(to: secretURL)
+        return (storeURL, secretURL)
+    }
+
+    /// The percent-encoded field name the real store uses — the identity
+    /// array lives in the NAME; the accessor must ignore it.
+    private static func locationFieldName() throws -> String {
+        let array = #"["https://api.z.ai","zai","# + Self.syntheticOrganizationId
+            + #",null,1,"default"]"#
+        let encoded = try #require(array.addingPercentEncoding(withAllowedCharacters: .alphanumerics))
+        return CredentialStore.projectKeyLocationFieldPrefix + encoded
+    }
+
+    @Test func locationValueObjectParsesAndNamePayloadIsIgnored() throws {
+        let dir = try Self.makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let field = try Self.locationFieldName()
+        let (storeURL, secretURL) = try Self.writePlaintextStore(
+            into: dir, field: field,
+            value: #"{"organizationId":"\#(Self.syntheticOrganizationId)","projectId":"\#(Self.syntheticProjectId)","apiKeyId":"\#(Self.syntheticAPIKeyId)"}"#)
+
+        let store = try CredentialStore(storeURL: storeURL, secretURL: secretURL)
+        let location = try #require(try store.projectKeyLocation())
+        #expect(location.organizationId == Self.syntheticOrganizationId)
+        #expect(location.projectId == Self.syntheticProjectId)
+        #expect(location.apiKeyId == Self.syntheticAPIKeyId)
+    }
+
+    @Test func arrayShapedLocationValueThrowsMalformedValue() throws {
+        let dir = try Self.makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let field = try Self.locationFieldName()
+        // The pre-fix belief: the array as the VALUE. The live store keeps it
+        // in the field name — such a value is malformed now.
+        let (storeURL, secretURL) = try Self.writePlaintextStore(
+            into: dir, field: field,
+            value: #"["https://api.z.ai","zai","\#(Self.syntheticOrganizationId)",null,1,"default"]"#)
+
+        let store = try CredentialStore(storeURL: storeURL, secretURL: secretURL)
+        #expect(throws: CredentialError.malformedValue(
+            field: field,
+            reason: "location value is not a {organizationId, projectId, apiKeyId} JSON object")
+        ) {
+            try store.projectKeyLocation()
+        }
+    }
+
+    @Test func storeWithoutLocationFieldYieldsNil() throws {
+        let dir = try Self.makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (storeURL, secretURL) = try Self.writePlaintextStore(
+            into: dir, field: CredentialStore.accessTokenField, value: "any-token")
+
+        let store = try CredentialStore(storeURL: storeURL, secretURL: secretURL)
+        #expect(try store.projectKeyLocation() == nil)
     }
 
     @Test func tamperedTagThrowsDecryptFailed() throws {

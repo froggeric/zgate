@@ -47,14 +47,22 @@ function fakeJwt(payloadObject) {
 const accessTokenJwt = fakeJwt({ iss: 'user-service', token_type: 'access_token', iat: 1763000000, exp: 1763003600 });
 const identityJwt = fakeJwt({ user_id: 'synthetic-user', token_version: 1, sub: 'synthetic-sub', iat: 1763000000 }); // no exp, like the real one
 
+// Real store shape (live-verified 2026-11-15): the field NAME carries the
+// percent-encoded identity array; the VALUE is the location OBJECT
+// {"organizationId","projectId","apiKeyId"} that the mint call targets.
 const locationArray = JSON.stringify(['https://api.z.ai', 'zai', '11111111-2222-3333-4444-555555555555', null, 1, 'default']);
+const locationObject = JSON.stringify({
+  organizationId: '11111111-2222-3333-4444-555555555555',
+  projectId: '22222222-3333-4444-5555-666666666666',
+  apiKeyId: '89abcdef89abcdef89abcdef89abcdef',
+});
 const locationKey = 'project-key-location:v1:' + encodeURIComponent(locationArray);
 
 const store = {
   'oauth:active_provider': seal('oauth:active_provider', 'zai'),
   'oauth:zai:access_token': seal('oauth:zai:access_token', accessTokenJwt),
   'zcodejwttoken': seal('zcodejwttoken', identityJwt),
-  [locationKey]: seal(locationKey, locationArray),
+  [locationKey]: seal(locationKey, locationObject),
 };
 
 fs.writeFileSync('credentials.json', JSON.stringify(store, null, 2) + '\n');
