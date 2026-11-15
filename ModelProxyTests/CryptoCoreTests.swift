@@ -68,6 +68,30 @@ struct CryptoCoreTests {
         #expect(CryptoCore.hmacHex(message: message, key: key) == sig)
     }
 
+    @Test func testHandshakeHmacBase64Is44Chars() throws {
+        let credential = Data("fake-project-access-token".utf8)
+        let key = CryptoCore.hkdf(
+            ikm: credential,
+            salt: Data(CryptoCore.kdfSalt.utf8),
+            info: Data(CryptoCore.hmacInfo.utf8),
+            length: 32
+        )
+        let message = CryptoCore.handshakeSigMessage(
+            apiKeyId: "b5f4e6998889200000000000000088920",
+            ts: "1760000000000",
+            nonce: "00112233445566778899aabbccddeeff"
+        )
+        // Raw HMAC is the 32-byte HMAC-SHA256 output.
+        #expect(CryptoCore.hmac(message: message, key: key).count == 32)
+        // Wire form (live capture): base64, 44 chars — one per 3 bytes of the 32-byte MAC.
+        let sig = CryptoCore.hmacBase64(message: message, key: key)
+        #expect(sig.count == 44)
+        let bytes = try #require(Data(base64Encoded: sig))
+        #expect(bytes.count == 32)
+        // Both encodings carry the same MAC bytes.
+        #expect(bytes.map { String(format: "%02x", $0) }.joined() == CryptoCore.hmacHex(message: message, key: key))
+    }
+
     // MARK: Proof of work
 
     @Test func testPowFindsLeadingZeroHash() throws {

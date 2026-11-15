@@ -46,7 +46,8 @@ enum CryptoCore {
 
     // MARK: Signing messages
 
-    /// Message signed by the handshake request's `sig` field.
+    /// Message signed by the handshake request's `sig` field
+    /// (`ts` is the 13-char ms-epoch string).
     nonisolated static func handshakeSigMessage(apiKeyId: String, ts: String, nonce: String) -> String {
         "get_sign_key\n\(apiKeyId)\n\(ts)\n\(nonce)"
     }
@@ -58,9 +59,20 @@ enum CryptoCore {
 
     // MARK: HMAC
 
-    /// HMAC-SHA256 of `message` (UTF-8) under `key`, as lowercase hex (64 chars).
+    /// HMAC-SHA256 of `message` (UTF-8) under `key`, raw 32 bytes.
+    nonisolated static func hmac(message: String, key: Data) -> Data {
+        hmac(Data(message.utf8), key: key)
+    }
+
+    /// HMAC-SHA256 as lowercase hex (64 chars).
     nonisolated static func hmacHex(message: String, key: Data) -> String {
-        hex(hmac(Data(message.utf8), key: key))
+        hex(hmac(message: message, key: key))
+    }
+
+    /// HMAC-SHA256 as base64 (44 chars) — the handshake `sig` wire form
+    /// (live capture 2026-11-15: handshake body carries `sig` as a 44-char string).
+    nonisolated static func hmacBase64(message: String, key: Data) -> String {
+        hmac(message: message, key: key).base64EncodedString()
     }
 
     // MARK: Proof of work
