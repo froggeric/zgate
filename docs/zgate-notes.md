@@ -84,8 +84,52 @@ All observed lengths match the wire facts pinned in the task brief (1402/463/124
 Live-checked against the real store (metadata only): the `project-key-location:v1:*` field's
 **name** carries the percent-encoded array `["https://api.z.ai","zai",<account>,null,1,"default"]`
 while its **value** is the object `{"organizationId":36c,"projectId":37c,"apiKeyId":32c}` —
-the mint location. Task 2's `CredentialStore.projectKeyLocation()` parses the value as the
-array shape (its synthetic fixture models that), so it throws on the real store. SigningClient
-takes the location from the persisted biz session or `Configuration.initialLocation` instead;
-the app's first cold start needs either a zbridge cache seed, an injected location, or a Task 2
-follow-up accessor that parses the value object.
+the mint location. ~~Task 2's `CredentialStore.projectKeyLocation()` parses the value as the
+array shape, so it throws on the real store.~~ **Fixed in `b8e7f8c`** — the accessor now parses
+the value object (shape-shimmed fixtures), and SigningClient resolves a cold-start location
+from the store directly.
+
+## Task 5 — RelayTarget (2026-11-15)
+
+`ModelProxy/Proxy/RelayTarget.swift`: the zcode relay as a forward target (`Vendor.vendorKind
+== .relay`). Builds the full header set from scratch (client headers never leak — `anthropic-beta`
+is a pinned static, not the client's), rewrites the top-level `model` to the GLM-canonical rule
+target via the byte-preserving splice, and signs per request: `x-client-ts/nonce/pow/sig` over
+the SigningClient session (stable per-process `x-session-id`, zbridge SESSION_ID parity).
+Streaming back stays ResponseRelay's job.
+
+- **Failure policy** (RelayTarget.execute): signing first — cold start waits for the handshake,
+  failure is a terminal 502, NEVER an unsigned request (live-verified: the relay 401s valid
+  tokens without signing headers). Relay 401 → `noteRelayRejection()`; 2nd consecutive reject →
+  one forced chain rebuild + one signed retry; a failing rebuild allows ONE unsigned fail-open
+  attempt (auth headers, no signing quartet) but only if a chain had been established in-process;
+  terminal 401 paths emit `CredentialEvent.expired`. Relay 429 → one retry after a 1 s backoff,
+  then next-rule fallback / 529 (`ProxyForwarder.executeRelay`, same backup selection as the
+  plain failover path).
+- **Naming note:** the brief's "`CredentialError.expired` event" is implemented as
+  `Models/CredentialEvent.swift`'s `CredentialEvent.expired` on a `@MainActor` `CredentialEventChannel`
+  (TrafficLog pattern). `CredentialError` is the CredentialStore error enum (Services) — adding a
+  case there was outside Task 5's file list; the event type keeps the UI surface in Models.
+- **Streaming disconnect:** `ProxyForwarder` step 8 now runs `ResponseRelay.relay` in a child task
+  cancelled via `channel.closeFuture` — a mid-stream client disconnect aborts the upstream body
+  (AsyncHTTPClient cancels and closes). Without the explicit cancel, the abandoned response body
+  does NOT reliably tear the connection down (NIOAsyncSequenceProducer defers deinit-termination
+  while elements are buffered). Caveat found while testing: **EmbeddedChannel succeeds writes
+  after close** (its `write0` never checks `isOpen`), so disconnect tests must use a real socket
+  for the client channel.
+- **Relay body is exempt from `sanitizeToolsForVendor`** (byte-unchanged except model, zbridge
+  parity), and a relay Vendor's default `replayPolicy` is `.transparent` (the relay is
+  Anthropic-protocol end to end; no portable projection).
+- **Wiring status:** `ProxyForwarder.forward` takes `relayContext: RelayTarget.Context? = nil`
+  (ProxyChannelHandler unchanged). A relay rule reached with no context gets a 502 "no signing
+  context configured". Task 6 (Router) constructs the Context (SigningClient + event channel)
+  in the server layer and passes it down.
+- **Tests** (`ModelProxyTests/RelayTargetTests.swift`, 19): mock relay = local SwiftNIO server
+  (scripted responses, chunked SSE with delays, held-open streams, mid-stream disconnect
+  counting); signing chain via URLProtocol mock with synthetic JWTs + fixed Ed25519 seed.
+  Covers: fixture statics + volatile shapes (sig verified against the fixture public key, PoW
+  verified against its identity inputs), model rewrite byte-parity (canonical round-trip), SSE
+  byte-identity incl. a split-mid-JSON event, cold start never-unsigned, first-reject
+  passthrough, `token expired` → event + no retry, 2-reject ladder (expired + recovery),
+  fail-open gate, 429 retry/fallback/529, and full `forward()` integration (200/502/529/backup).
+
