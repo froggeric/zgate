@@ -337,6 +337,13 @@ enum RelayTarget {
                 let reason = message ?? previousMessage ?? "relay 401 (unsigned fail-open)"
                 context.credentialEvents?.emit(.expired(reason: reason))
                 return .credentialsExpired(reason)
+            case 429:
+                // Same rate-limit policy as the signed path: one backoff
+                // retry (also unsigned), then the caller's decision.
+                return await handleRateLimited(
+                    response: response, head: head, wireBody: wireBody, target: target,
+                    httpClient: httpClient, session: session, signed: false,
+                    context: context, requestID: requestID)
             default:
                 return .responded(response)
             }

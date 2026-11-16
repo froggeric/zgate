@@ -87,7 +87,11 @@ struct ModelMapping: Identifiable, Codable, Equatable, Sendable {
         try c.encodeIfPresent(backupTargetVendorID, forKey: .backupTargetVendorID)
         try c.encode(isEnabled, forKey: .isEnabled)
         try c.encodeIfPresent(matchClass, forKey: .matchClass)
-        try c.encode(catchAll, forKey: .catchAll)
+        // Legacy shape: absent when false (decode defaults false), so a
+        // plain rule re-saved by the app doesn't grow a new field.
+        if catchAll {
+            try c.encode(catchAll, forKey: .catchAll)
+        }
         try c.encodeIfPresent(conditions, forKey: .conditions)
     }
 }

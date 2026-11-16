@@ -406,6 +406,24 @@ struct ModelProxyTests {
         #expect(decoded.clients.first?.defaultUpstream == config.clients.first?.defaultUpstream)
     }
 
+    @Test func catchAllIsEncodedOnlyWhenTrue() throws {
+        // A plain rule encodes the legacy shape: no `catchAll` field at all.
+        let plain = ModelMapping(sourceModel: "opus", targetModel: "GLM-5.3", targetVendorID: UUID())
+        let plainJSON = try #require(
+            try JSONSerialization.jsonObject(with: try JSONEncoder().encode(plain)) as? [String: Any])
+        #expect(plainJSON["catchAll"] == nil)
+        // Absent still decodes false (legacy configs decode unchanged).
+        let decoded = try JSONDecoder().decode(ModelMapping.self, from: try JSONEncoder().encode(plain))
+        #expect(!decoded.catchAll)
+        // A catch-all rule encodes the field explicitly.
+        let fallback = ModelMapping(
+            sourceModel: "fallback", targetModel: "GLM-5.3-Flash",
+            targetVendorID: UUID(), catchAll: true)
+        let fallbackJSON = try #require(
+            try JSONSerialization.jsonObject(with: try JSONEncoder().encode(fallback)) as? [String: Any])
+        #expect(fallbackJSON["catchAll"] as? Bool == true)
+    }
+
     // MARK: - AppConfig default shape
 
     @Test func defaultConfigHasExpectedShape() {

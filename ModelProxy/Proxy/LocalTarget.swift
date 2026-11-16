@@ -44,10 +44,11 @@ enum LocalTarget {
         return loopbackHosts.contains(host)
     }
 
-    /// True for the splash-shaped route target: loopback and not the signed
-    /// relay (`vendorKind == .anthropic` per the routing spec).
+    /// True for the splash-shaped route target: loopback, not the signed
+    /// relay, and NOT passthrough — a passthrough route is untouched by
+    /// definition, even when its baseURL happens to be loopback.
     static func isLocalTarget(_ target: RoutingSnapshot.RouteTarget) -> Bool {
-        target.vendorKind != .relay && isLoopbackBaseURL(target.baseURL)
+        !target.isPassthrough && target.vendorKind != .relay && isLoopbackBaseURL(target.baseURL)
     }
 
     // MARK: - Wire request
