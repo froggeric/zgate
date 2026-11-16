@@ -131,8 +131,11 @@ enum RelayTarget {
         context: Context,
         requestID: String
     ) async -> Outcome {
-        // One relayed request = one counter tick for the quota poll cadence
-        // (retry ladders below are the same client request, so they tick once).
+        // One counter tick per relay EXCHANGE (execute entry) for the quota
+        // poll cadence: the 429 backoff retry runs inside this call (one
+        // tick), but a rate-limit failover re-enters execute for the backup
+        // relay and ticks again — an exchange is real relay work, and the
+        // 25-request trigger counts exchanges, not client requests.
         context.quota?.noteRelayedRequest()
 
         // Signing first: a cold start waits for the handshake here, and a

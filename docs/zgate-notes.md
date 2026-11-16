@@ -364,7 +364,8 @@ and Task 9's bar shows unknown.
 pattern) — `pollIfDue()` decides due-ness (30 min interval OR ≥25 relayed requests
 since the last attempt; an attempt consumes both triggers), background 60 s tick loop
 starts at `ProxyServer.start` and outlives server stop; `noteRelayedRequest()` is
-counted by RelayTarget's context (one tick per relayed request); thresholds 25%/10%
+counted by RelayTarget's context (one tick per relay EXCHANGE — a rate-limit failover
+to a backup relay re-enters execute and ticks again); thresholds 25%/10%
 emit `QuotaEvent.levelChanged` through `QuotaEventChannel` (@MainActor, CredentialEventChannel
 pattern) on band CROSSINGS only (first observation is silent); failed polls keep the
 last-known snapshot and set `stale`; history in `quota-history-<date>.json`

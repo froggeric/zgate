@@ -263,6 +263,7 @@ struct QuotaServiceTests {
         #expect(!service.isStale)
         #expect(service.currentLevel == .normal)
 
+        // The formatter is UTC-pinned, so the filename day is runner-TZ-independent.
         let day = "2025-11-13"  // 1_763_000_000 = 2025-11-13T01:46:40Z
         let fileURL = history.appendingPathComponent("quota-history-\(day).json")
         let data = try #require(try? Data(contentsOf: fileURL))
@@ -404,7 +405,6 @@ struct QuotaServiceTests {
                 "code": 3001, "msg": "parameter error", "success": false,
             ])
         )
-        installMock(mock)
         let clock = ManualClock(Self.baseDate)
         let service = try makeService(clock: clock)
 

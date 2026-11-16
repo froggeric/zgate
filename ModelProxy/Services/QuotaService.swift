@@ -200,10 +200,13 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
     private var loopActive = false
 
     private static let historyFilePrefix = "quota-history-"
+    /// UTC-pinned day bucketing: the history FILENAME (and prune boundary)
+    /// must be the same on every runner, independent of local timezone.
     private nonisolated(unsafe) static let historyDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
         return formatter
     }()
 
