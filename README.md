@@ -1,286 +1,128 @@
-# ModelProxy
+# ZGate
 
-> macOS menu bar app for routing Claude Code and Codex requests to different upstream model vendors.
+Native macOS menu-bar proxy for Claude Code: routes Anthropic-protocol traffic
+to the **signed zcode relay** (GLM models) with **local-model fallback** and
+**quota-aware routing rules**. Menu-bar app — no dock icon, no window unless
+you open Settings.
 
-![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift)
-![macOS](https://img.shields.io/badge/macOS-15.6+-86909B?logo=apple)
-![SwiftUI](https://img.shields.io/badge/UI-SwiftUI-007AFF)
+ZGate is a fork of [model-proxy](https://github.com/n0rvyn/model-proxy) (MIT).
+The original project's README is preserved at [`README.upstream.md`](README.upstream.md).
 
-## What It Is
+## What it does
 
-ModelProxy runs local HTTP listeners on `127.0.0.1` and forwards each request to the right upstream based on the request's `model` field.
+- Local SwiftNIO listeners on `127.0.0.1` only — point Claude Code at ZGate,
+  keep everything else as-is.
+- Relay requests are signed (V4 signing quartet per request); ZGate never
+  sends an unsigned request to the relay (it 401s them).
+- Requests are logged locally for the traffic view; request/response bodies
+  are never stored or logged. Credentials stay in the scratch store — token
+  values are never displayed or logged.
+- Menu-bar item shows live quota (`ZΓ 63%`), traffic log, rules editor and
+  settings.
 
-The current app ships with two default client listeners:
+## Setup
 
-- `Claude Code` on port `8080`
-- `Codex` on port `8081`
-
-Each client can have its own:
-
-- local proxy port
-- default passthrough upstream
-- policy for unmapped models
-
-Global routing rules then map source model IDs such as `claude-haiku-4-5` to vendor-specific target models.
-
-## Why Use It
-
-| Benefit | Description |
-|---------|-------------|
-| Cost optimization | Route lower-priority models to cheaper vendors while keeping premium models on their default upstreams. |
-| Zero modification | Point Claude Code or Codex at localhost; no app-side plugin or fork is required. |
-| Full visibility | See listener status, recent traffic, and daily token usage from the menu bar app. |
-| Hot-reload config | Saving settings updates routing snapshots for running listeners without restarting the whole app. |
-
-## Current Feature Set
-
-### Proxy and routing
-
-- one SwiftNIO listener per configured client
-- exact-match routing plus longest-prefix routing
-- per-client unmapped model policy:
-  - passthrough to the client's default upstream
-  - route all unmapped models to a chosen vendor
-  - block unmapped models with HTTP 403
-- routing rules can be enabled or disabled without deleting the rule
-- optional backup target per routing rule for failover
-- API key replacement for routed requests
-- top-level `model` field replacement without rewriting the rest of the JSON body
-- streaming response relay
-- signing-domain aware transcript replay:
-  - `transparent` replay for Anthropic API / Bedrock / Vertex style routes
-  - `portableOnly` replay for third-party compatible vendors
-- vendor-local branch reuse for portable routes, so Claude Code / Codex sub-agent follow-up requests can resume on the same upstream transcript without poisoning the main Anthropic session
-- persisted committed branch transcripts across app restarts
-
-### Desktop app
-
-- menu bar popover with:
-  - running state
-  - bound ports
-  - today's token summary
-  - recent traffic
-  - start, stop, settings, and quit controls
-- settings tabs:
-  - `General`
-  - `Clients`
-  - `Vendors`
-  - `Routing`
-  - `Statistics`
-  - `Debug`
-- launch at login
-- copyable quick-start shell command for each client
-
-### Observability
-
-- in-memory traffic log
-- daily token usage persistence
-- persisted lineage cache for committed vendor-local branch transcripts
-- optional file-based debug logging with retention and compression
-- corrupt config reset detection on app launch
-
-## How It Works
-
-```text
-Claude Code / Codex
-        |
-        | HTTP -> 127.0.0.1:<client-port>
-        v
-   ModelProxy listener
-        |
-        | read JSON body -> extract model
-        v
-   RequestRouter
-        |
-        +--> mapped model ----------> vendor base URL + vendor API key
-        |
-        +--> unmapped passthrough --> client default upstream + original API key
-        |
-        +--> unmapped block -------> HTTP 403
-```
-
-For mapped requests, ModelProxy forwards the original request path to the chosen vendor base URL, swaps credentials, optionally swaps the model name, and relays the response back to the client.
-
-For vendors outside the Anthropic signing domain, ModelProxy no longer replays raw Claude thinking/signature history back and forth. Instead it projects the request into a portable transcript, keeps a vendor-local branch transcript for that route, and only merges portable assistant output back into the main session.
-
-## Quick Start
-
-### 1. Build and run
+### 1. Build & install (release)
 
 ```bash
-git clone git@github.com:n0rvyn/model-proxy.git
-cd model-proxy
-open ModelProxy.xcodeproj
+xcodebuild -project ZGate.xcodeproj -scheme ZGate -configuration Release \
+  -destination 'platform=macOS' -derivedDataPath build build
+cp -R build/Build/Products/Release/ZGate.app /Applications/
+open /Applications/ZGate.app
 ```
 
-Run the `ModelProxy` scheme in Xcode.
+(Ad-hoc signed — fine for a personal machine. First build resolves SPM
+packages: swift-nio, async-http-client.)
 
-### 2. Configure clients and vendors
+### 2. Log in once (scratch home)
 
-After launch, open the menu bar app and configure:
-
-- client ports and default upstreams in `Clients`
-- vendor base URLs, API keys, compatible client, timeouts, and supported model lists in `Vendors`
-- vendor signing domain and replay policy in `Vendors`
-- source-model to target-model rules in `Routing`
-
-### 3. Point tools at the local listeners
-
-Example for the default ports:
+ZGate reads credentials from the zcode scratch home. Log in once from a
+terminal (opens a browser):
 
 ```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+ZCODE_DATA_BASE_DIR=$HOME/.zcode-scratch-v3 ZCODE_CREDENTIAL_SECRET_FILE=$HOME/.zcode-scratch-v3/secret.txt node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai
 ```
 
-For Codex installations that need a different local endpoint, use the command shown in the `Clients` tab for that client.
+ZGate also persists a 180-day business session, so a browser re-login is
+needed at most about once per 180 days, or on revocation. When re-login is
+required, ZGate surfaces an alert containing the exact command above (with a
+Copy button) — you don't have to remember it.
 
-## Configuration Model
-
-ModelProxy persists config to:
-
-```text
-~/Library/Application Support/ModelProxy/config.json
-```
-
-The app creates this file on first launch with default clients for Claude Code and Codex.
-
-The config currently contains:
-
-- `vendors`
-- `clients`
-- `modelMappings`
-- `debug`
-
-Example shape:
-
-```json
-{
-  "clients": [
-    {
-      "clientName": "Claude Code",
-      "port": 8080,
-      "defaultUpstream": "https://api.anthropic.com",
-      "unmappedPolicy": "passthrough"
-    },
-    {
-      "clientName": "Codex",
-      "port": 8081,
-      "defaultUpstream": "https://api.openai.com",
-      "unmappedPolicy": "routeAll",
-      "fallbackVendorID": "VENDOR-UUID",
-      "fallbackTargetModel": "qwen-plus"
-    }
-  ],
-  "vendors": [
-    {
-      "name": "DashScope",
-      "baseURL": "https://dashscope.aliyuncs.com/compatible-mode",
-      "apiKey": "sk-...",
-      "connectTimeoutSeconds": 10,
-      "readTimeoutSeconds": 120,
-      "supportedModels": ["qwen-plus", "qwen-max"],
-      "signingDomain": "compatibleThirdParty",
-      "replayPolicy": "portableOnly"
-    }
-  ],
-  "modelMappings": [
-    {
-      "sourceModel": "claude-haiku-4-5",
-      "targetModel": "qwen-plus",
-      "targetVendorID": "VENDOR-UUID",
-      "isEnabled": true,
-      "backupTargetModel": "qwen-max",
-      "backupTargetVendorID": "BACKUP-VENDOR-UUID"
-    }
-  ],
-  "debug": {
-    "isEnabled": false,
-    "minimumLogLevel": "info",
-    "autoCleanupEnabled": true,
-    "cleanupAfterDays": 7,
-    "compressAfterDays": 3
-  }
-}
-```
-
-## Data Storage
-
-- config: `~/Library/Application Support/ModelProxy/config.json`
-- lineage cache: `~/Library/Application Support/ModelProxy/lineages.json`
-- token stats: `~/Library/Application Support/ModelProxy/token-stats-YYYY-MM-DD.json`
-- debug logs: `~/Library/Application Support/ModelProxy/logs/`
-
-API keys are stored in plaintext in the local config file. That is the current product behavior.
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|------------|
-| Language | Swift 6 |
-| UI | SwiftUI + MenuBarExtra |
-| Proxy server | SwiftNIO + NIOHTTP1 + AsyncHTTPClient |
-| Config storage | JSON files in Application Support |
-| Minimum OS | macOS 15.6+ |
-
-## Development
-
-### Build
+### 3. Point Claude Code at ZGate
 
 ```bash
-xcodebuild -project ModelProxy.xcodeproj \
-  -scheme ModelProxy \
-  -destination 'platform=macOS' \
-  build
+export ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
 ```
 
-### Test
+`<port>` is the **Claude Code listener's configured port** — set it in
+Settings → Clients (8787 in this setup; note 8788 is reserved by zbridge on
+this machine). The popover and Settings → Advanced show the *actual bound
+port* with a copy button: if the configured port is taken, ZGate advances to
+the next free port and the displayed line always tells the truth.
 
-```bash
-xcodebuild -project ModelProxy.xcodeproj \
-  -scheme ModelProxy \
-  -destination 'platform=macOS' \
-  test
-```
+### 4. Optional: launch at login
 
-## Code Map
+Settings → General → **Launch at Login** (SMAppService; the toggle registers
+and unregisters ZGate as a login item).
 
-```text
-ModelProxy/
-  App/        app lifecycle, paths, logging
-  Models/     config, routing records, transcript replay domain, traffic, token stats
-  Proxy/      server, router, forwarder, relay
-  Services/   config store, lineage broker, transcript projector, replay recorder, login item, debug log manager
-  Views/      menu bar popover and settings tabs
-```
+## Default rules
 
-Key files:
+First match wins; order and every field are editable in Settings → Rules.
 
-- `ModelProxy/App/ModelProxyApp.swift`
-- `ModelProxy/Services/ConfigStore.swift`
-- `ModelProxy/Proxy/ProxyServer.swift`
-- `ModelProxy/Proxy/RequestRouter.swift`
-- `ModelProxy/Proxy/ProxyForwarder.swift`
-- `ModelProxy/Proxy/ResponseRelay.swift`
-- `ModelProxy/Services/SessionLineageBroker.swift`
-- `ModelProxy/Services/TranscriptProjector.swift`
-- `ModelProxy/Views/StatusPopover.swift`
-- `ModelProxy/Views/SettingsView.swift`
+| Match | Primary target | Backup | Notes |
+|---|---|---|---|
+| `auto` (no/unset model) | zcode relay `GLM-5.3` | — | Claude Code auto mode |
+| `haiku` class (incl. `glm-5.3-flash`) | splash (local) `Qwen3.8-27B-4bit` | relay `GLM-5.3-Flash` | cheap/local first |
+| `sonnet` class (incl. `glm-5.3`, `glm-5.3[1m]`) | zcode relay `GLM-5.3` | — | |
+| `opus` class, weekdays 07:00–11:00 Europe/Paris | zcode relay `GLM-5.3-Flash` | — | cost lever — **disabled** by default (3× peak metering) |
+| `opus` class | zcode relay `GLM-5.3` | — | |
+| fallback (catch-all) | zcode relay `GLM-5.3-Flash` | — | no request is ever dropped |
 
-## Roadmap
+Splash = the local Anthropic-protocol server on `127.0.0.1:8000` (default
+model `mlx-community/Qwen3.8-27B-4bit`). Splash down? The haiku rule's relay
+backup serves the request automatically.
 
-- [ ] MCP server integration
-- [ ] Model capability auto-discovery
-- [ ] Request and response transformation controls
-- [ ] Remote access and multi-user support
+## Quota
 
-## License
+- ZGate polls the zcode billing endpoints every 30 minutes and after every
+  25 relayed requests; thresholds: warning ≤ 25% remaining, critical ≤ 10%.
+  The same values feed `quota below X%` rule conditions (Settings → Rules).
+  Thresholds are fixed in this build.
+- **Current state: fail-open.** Today the billing endpoints return no balance
+  numbers for this account (`balance` rejects the reconstructable request
+  form; `current` returns empty plans), so ZGate holds no quota snapshot:
+  the menu bar shows bare `ZΓ`, quota-gated rules are skipped, and routing is
+  completely unaffected. If/when the endpoints serve data, the bar and
+  percentage go live with no config change. Last-known values are kept and
+  dimmed when a poll fails while data exists.
 
-MIT. See `LICENSE`.
+## Verify install
 
-## Acknowledgments
+- [ ] `ZGate.app` runs from `/Applications` (release build above)
+- [ ] **No dock icon** (LSUIElement menu-bar app) and a **`ZΓ` item is present
+      in the menu bar**
+- [ ] The popover's env line shows `http://127.0.0.1:<port>` and
+      `ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude --model glm-5.3 "say OK"`
+      answers `OK` through the signed relay (full E2E proof:
+      [`docs/e2e-checklist.md`](docs/e2e-checklist.md))
+- [ ] Settings → General: **Launch at Login** toggle works — ZGate appears
+      in/disappears from System Settings → General → Login Items
+- [ ] Quitting from the popover leaves no listeners behind
+      (`lsof -nP -iTCP:<port>` is empty)
 
-Built for developers who switch between multiple model providers in daily tool workflows.
+## Data & config
 
-## Status
+- Config: `~/Library/Application Support/ModelProxy/config.json` (directory
+  name kept from upstream), token stats + quota history alongside.
+- Logs: same directory when file logging is enabled (Settings → Debug);
+  never contains bodies or credentials.
 
-This README reflects the codebase as of May 6, 2026.
+## About / attribution
+
+- **model-proxy** by norvyn — MIT; this fork's `LICENSE` is upstream's.
+  Original README: [`README.upstream.md`](README.upstream.md).
+- **Splash** local target — `splash-m1` Anthropic-protocol server on
+  `127.0.0.1:8000`.
+- End-to-end proof against the live signed relay:
+  [`docs/e2e-checklist.md`](docs/e2e-checklist.md).
+- Working notes for the fork: [`docs/zgate-notes.md`](docs/zgate-notes.md).

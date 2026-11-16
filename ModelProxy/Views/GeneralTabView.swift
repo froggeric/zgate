@@ -18,7 +18,7 @@ struct GeneralTabView: View {
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Launch at Login")
-                        Text("ModelProxy will start automatically when you log in.")
+                        Text("ZGate will start automatically when you log in.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
