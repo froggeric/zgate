@@ -8,24 +8,26 @@ protocol QuotaRelayCounting: Sendable {
     func noteRelayedRequest()
 }
 
-/// Polls the zcode-plan billing endpoints and feeds the router's `quotaBelow`
+/// Polls z.ai's official quota monitor and feeds the router's `quotaBelow`
 /// condition (the Task 6 `QuotaSnapshotProviding` seam's real provider) plus
 /// Task 9's menu-bar quota bar.
 ///
-/// Wire facts (live-pinned 2026-11-16, docs/zgate-notes.md):
-/// - Origin `https://zcode.z.ai`, GET `/api/v1/zcode-plan/billing/balance`
-///   and `/billing/current`, query `app_version`.
-/// - Auth is the credential store's zcode identity JWT (`zcodejwttoken`) as a
-///   plain `Authorization: Bearer` — NOT the relay's minted project token,
-///   and no V4 signing quartet (zcode.z.ai 401s every project-token form).
-/// - `current` answers 200/code 0 with `data.plans[]` + `data.server_time`
-///   (empty `plans` for a coding-plan account like this one).
-///   `balance`'s payload schema is pinned from the ZCode.app bundle's own
-///   parsers (`data.balances[]` with unit counters, correlated to plans by
-///   `user_plan_id`, else `plan_id`); on the capture day the endpoint itself
-///   answered HTTP 400 `code 3001 "parameter error"` to every reconstructable
-///   request form — parsed defensively so the machinery serves real numbers
-///   the moment the request form is pinned.
+/// Wire facts (live-verified 2026-11-16):
+/// - `GET https://api.z.ai/api/monitor/usage/quota/limit`, auth is a plain
+///   `Authorization: Bearer <apiKey>` — the same z.ai API key Claude Code
+///   authenticates with (`MonitorAPIKeyReader` reads it from the Claude
+///   settings file; only its PATH lives in ZGate's config). The earlier
+///   zcode-plan billing endpoints (`zcode.z.ai/api/v1/zcode-plan/billing/*`,
+///   identity-JWT auth) are dead for this account — `current` returns empty
+///   plans and `balance` 400/3001 in every form (Task 8 probes) — and are
+///   gone from this type.
+/// - Response: the standard `{code, msg, success, data}` envelope; `data`
+///   carries `limits[]` rows `{type, unit, number, percentage, nextResetTime}`
+///   and a `level` string. Window identity is `(type, unit, number)`:
+///   `TOKENS_LIMIT`+6+1 = weekly tokens (the binding plan quota — the
+///   snapshot's fraction), `TOKENS_LIMIT`+3+5 = 5-hour tokens, `TIME_LIMIT` =
+///   the monthly MCP window. `percentage` is percent USED; remaining is
+///   `100 − percentage`. `nextResetTime` is epoch milliseconds.
 ///
 /// Cadence: a background tick loop polls when due — every 30 min since the
 /// last attempt, or after every 25th relayed request (`noteRelayedRequest`,
@@ -39,23 +41,22 @@ protocol QuotaRelayCounting: Sendable {
 ///
 /// History: one `quota-history-<date>.json` per day in Application Support
 /// (the `token-stats-<date>.json` pattern), entries carry the derived
-/// fraction + timestamp only — raw unit counters never touch disk here.
+/// fraction + timestamp only — raw window counters never touch disk here.
 /// Files older than 30 days are pruned on write.
 final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked Sendable {
 
     // MARK: - Wire shapes
 
-    /// Business envelope both endpoints share (`code`/`msg`/`success`,
-    /// sometimes `logid`); `data` presence varies with the endpoint state.
-    /// Transient parse result (its raw payload is not Sendable) — consumed
-    /// immediately in `performPoll`.
-    struct BillingEnvelope {
+    /// Business envelope (`code`/`msg`/`success`); `data` presence varies
+    /// with the endpoint state. Transient parse result (its raw payload is
+    /// not Sendable) — consumed immediately in `performPoll`.
+    struct MonitorEnvelope {
         var code: Double?
         var success: Bool?
         var msg: String?
         var payload: [String: Any]?
 
-        static func parse(_ data: Data) -> BillingEnvelope? {
+        static func parse(_ data: Data) -> MonitorEnvelope? {
             guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             else { return nil }
             var success: Bool?
@@ -64,7 +65,7 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
             {
                 success = value.boolValue
             }
-            return BillingEnvelope(
+            return MonitorEnvelope(
                 code: quotaNumber(json["code"]),
                 success: success,
                 msg: json["msg"] as? String,
@@ -80,85 +81,51 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
         }
     }
 
-    /// Shared plan row (both endpoints carry it).
-    struct BillingPlan: Sendable, Equatable {
-        var name: String?
-        var planID: String?
-        var status: String?
-        /// Seconds since epoch; a plan whose `ends_at` ≤ `server_time` reads
-        /// as expired even when its status says "active" (the app normalizes
-        /// exactly this way client-side).
-        var endsAtSeconds: Double?
-        var userPlanID: String?
-    }
+    /// One `data.limits[]` row: a quota window with its identity triple,
+    /// percent used, and reset time (epoch ms).
+    struct MonitorLimit: Sendable, Equatable {
+        var type: String?
+        var unit: Double?
+        var number: Double?
+        /// Percent of this window already consumed (0...100 nominal).
+        var percentage: Double?
+        /// Epoch milliseconds of the next reset.
+        var nextResetTimeMs: Double?
 
-    /// `/billing/balance` payload (fields per the app bundle's
-    /// `summarizeStartPlanBalances` / `normalizeStartPlanExpiry`).
-    struct BillingBalance: Sendable, Equatable {
-        var serverTimeSeconds: Double?
-        var plans: [BillingPlan]
-        var balances: [PlanBalance]
-
-        struct PlanBalance: Sendable, Equatable {
-            var entitlementID: String?
-            var totalUnits: Double?
-            var usedUnits: Double?
-            var remainingUnits: Double?
-            var availableUnits: Double?
-            var reservedUnits: Double?
-            var userPlanID: String?
-            var planID: String?
+        static func parse(_ raw: Any?) -> [MonitorLimit] {
+            ((raw as? [Any]) ?? []).compactMap { entry in
+                guard let entry = entry as? [String: Any] else { return nil }
+                return MonitorLimit(
+                    type: entry["type"] as? String,
+                    unit: quotaNumber(entry["unit"]),
+                    number: quotaNumber(entry["number"]),
+                    percentage: quotaNumber(entry["percentage"]),
+                    nextResetTimeMs: quotaNumber(entry["nextResetTime"]))
+            }
         }
 
-        static func parse(_ envelope: BillingEnvelope) -> BillingBalance {
-            let payload = envelope.payload ?? [:]
-            return BillingBalance(
-                serverTimeSeconds: quotaNumber(payload["server_time"]),
-                plans: parsePlans(payload["plans"]),
-                balances: ((payload["balances"] as? [Any]) ?? []).compactMap { entry in
-                    guard let entry = entry as? [String: Any] else { return nil }
-                    return PlanBalance(
-                        entitlementID: entry["entitlement_id"] as? String,
-                        totalUnits: quotaNumber(entry["total_units"]),
-                        usedUnits: quotaNumber(entry["used_units"]),
-                        remainingUnits: quotaNumber(entry["remaining_units"]),
-                        availableUnits: quotaNumber(entry["available_units"]),
-                        reservedUnits: quotaNumber(entry["reserved_units"]),
-                        userPlanID: entry["user_plan_id"] as? String,
-                        planID: entry["plan_id"] as? String)
-                })
+        /// The weekly tokens window — the coding plan's binding quota and the
+        /// snapshot's source. Identity live-pinned 2026-11-16 (values 6/1;
+        /// the plugin ecosystem uses the same discriminator).
+        var isWeeklyTokensWindow: Bool {
+            type == "TOKENS_LIMIT" && unit == 6 && number == 1
         }
     }
 
-    /// `/billing/current` payload (live-pinned).
-    struct BillingCurrent: Sendable, Equatable {
-        var serverTimeSeconds: Double?
-        var plans: [BillingPlan]
+    /// `/usage/quota/limit` payload.
+    struct MonitorQuota: Sendable, Equatable {
+        var limits: [MonitorLimit]
 
-        static func parse(_ envelope: BillingEnvelope) -> BillingCurrent {
-            let payload = envelope.payload ?? [:]
-            return BillingCurrent(
-                serverTimeSeconds: quotaNumber(payload["server_time"]),
-                plans: parsePlans(payload["plans"]))
-        }
-    }
-
-    private static func parsePlans(_ raw: Any?) -> [BillingPlan] {
-        ((raw as? [Any]) ?? []).compactMap { entry in
-            guard let entry = entry as? [String: Any] else { return nil }
-            return BillingPlan(
-                name: entry["name"] as? String,
-                planID: entry["plan_id"] as? String,
-                status: entry["status"] as? String,
-                endsAtSeconds: quotaNumber(entry["ends_at"]),
-                userPlanID: entry["user_plan_id"] as? String)
+        static func parse(_ envelope: MonitorEnvelope) -> MonitorQuota {
+            MonitorQuota(limits: MonitorLimit.parse(envelope.payload?["limits"]))
         }
     }
 
     // MARK: - Configuration
 
     struct Configuration {
-        var origin = "https://zcode.z.ai"
+        /// Origin of the official quota monitor API family.
+        var origin = "https://api.z.ai/api/monitor"
         var session: URLSession = .shared
         /// Poll at least this far apart (timer trigger).
         var pollInterval: TimeInterval = 30 * 60
@@ -168,8 +135,10 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
         /// so the request trigger lands promptly; the tick itself never makes
         /// a poll due — only the interval and the counter do).
         var pollTick: TimeInterval = 60
-        /// Query param the app's billing URL helper appends.
-        var appVersion = "0.0.0-dev"
+        /// Path of the Claude Code settings file whose
+        /// `env.ANTHROPIC_AUTH_TOKEN` authenticates the monitor endpoint
+        /// (config stores the path, never the key — spec §7).
+        var claudeSettingsURL = MonitorAPIKeyReader.defaultSettingsURL()
         /// History file directory (`quota-history-<date>.json`).
         var historyDirectory = AppPaths.appSupport
         var historyRetention: TimeInterval = 30 * 24 * 3600
@@ -183,10 +152,11 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
 
     private let lock = NSLock()
     private var configuration: Configuration
-    /// Bearer token for the billing endpoints (the store's zcode identity
-    /// JWT). Injected so tests never touch a real store; throws surface the
-    /// poll-failure path.
-    private let authBearer: @Sendable () async throws -> String
+    /// API key for the monitor endpoint. Injected so tests never touch a real
+    /// settings file; throws surface the poll-failure path. The default
+    /// provider reads `configuration.claudeSettingsURL` per poll (picks up key
+    /// rotation without a restart; the value is never logged).
+    private let apiKeyProvider: @Sendable () async throws -> String
     private let events: QuotaEventChannel?
 
     private var snapshot: QuotaSnapshot?
@@ -214,19 +184,24 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
 
     init(
         configuration: Configuration = Configuration(),
-        authBearer: @escaping @Sendable () async throws -> String,
+        apiKeyProvider: (@Sendable () async throws -> String)? = nil,
         events: QuotaEventChannel? = nil
     ) {
         self.configuration = configuration
-        self.authBearer = authBearer
+        if let apiKeyProvider {
+            self.apiKeyProvider = apiKeyProvider
+        } else {
+            let settingsURL = configuration.claudeSettingsURL
+            self.apiKeyProvider = { try MonitorAPIKeyReader.apiKey(at: settingsURL) }
+        }
         self.events = events
     }
 
     // MARK: - Poll loop
 
     /// Starts the background due-ness loop. Idempotent; runs for the process
-    /// lifetime (billing exists independently of the proxy listener, so
-    /// stopping the server does not stop quota polling).
+    /// lifetime (quota polling exists independently of the proxy listener, so
+    /// stopping the server does not stop it).
     func startPolling() {
         lock.lock()
         defer { lock.unlock() }
@@ -341,28 +316,19 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
 
     private func performPoll() async {
         do {
-            let bearer = try await authBearer()
-            async let balanceBody = get("/api/v1/zcode-plan/billing/balance", bearer: bearer)
-            async let currentBody = get("/api/v1/zcode-plan/billing/current", bearer: bearer)
-            let (balanceData, currentData) = try await (balanceBody, currentBody)
-            guard let balanceEnvelope = BillingEnvelope.parse(balanceData),
-                let currentEnvelope = BillingEnvelope.parse(currentData)
-            else {
+            let key = try await apiKeyProvider()
+            let body = try await get("/usage/quota/limit", apiKey: key)
+            guard let envelope = MonitorEnvelope.parse(body) else {
                 throw QuotaPollError.malformedResponse
             }
-            guard balanceEnvelope.isBusinessSuccess, currentEnvelope.isBusinessSuccess else {
-                throw QuotaPollError.businessRejection(
-                    code: balanceEnvelope.isBusinessSuccess
-                        ? currentEnvelope.code : balanceEnvelope.code,
-                    msg: balanceEnvelope.isBusinessSuccess
-                        ? currentEnvelope.msg : balanceEnvelope.msg)
+            guard envelope.isBusinessSuccess else {
+                throw QuotaPollError.businessRejection(code: envelope.code, msg: envelope.msg)
             }
-            let balance = BillingBalance.parse(balanceEnvelope)
-            let current = BillingCurrent.parse(currentEnvelope)
-            commit(fraction: Self.remainingFraction(balance: balance, current: current))
+            let quota = MonitorQuota.parse(envelope)
+            commit(fraction: Self.remainingFraction(limits: quota.limits))
         } catch {
             // Keep the last-known value; mark stale. Typed reasons only —
-            // a poll failure never carries a credential or balance value.
+            // a poll failure never carries a credential or usage value.
             lock.lock()
             stale = true
             lock.unlock()
@@ -371,25 +337,18 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
         }
     }
 
-    /// One billing GET. Envelope/business checks happen after the parse so a
-    /// business rejection (HTTP 200 + `code 3001` etc.) follows the same
+    /// The monitor GET. Envelope/business checks happen after the parse so a
+    /// business rejection (HTTP 200 + non-zero code) follows the same
     /// failure path as a transport error.
-    private func get(_ path: String, bearer: String) async throws -> Data {
-        guard let base = URL(string: configuration.origin + path) else {
-            throw QuotaPollError.malformedResponse
-        }
-        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
-        components.queryItems = [
-            URLQueryItem(name: "app_version", value: configuration.appVersion)
-        ]
-        guard let url = components.url else {
+    private func get(_ path: String, apiKey: String) async throws -> Data {
+        guard let url = URL(string: configuration.origin + path) else {
             throw QuotaPollError.malformedResponse
         }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = configuration.requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await configuration.session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
@@ -413,9 +372,9 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
             }
             lastLevel = level
         }
-        // fraction nil = parsed fine but no quota rows apply (today's live
-        // truth for this account): keep whatever was known. Not an error, so
-        // staleness only clears on a real observed value.
+        // fraction nil = parsed fine but no weekly window applies: keep
+        // whatever was known. Not an error, so staleness only clears on a
+        // real observed value.
         lock.unlock()
 
         for (from, to) in levelEvents {
@@ -431,51 +390,15 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
 
     // MARK: - Fraction semantics
 
-    /// Remaining fraction of the billing quota, mirroring the app's own
-    /// semantics: plans whose `ends_at` ≤ `server_time` are expired; balances
-    /// of expired plans are dropped; the fraction is
-    /// `available_units`/`total_units` (falling back to `remaining_units`)
-    /// of the surviving balances with a positive total. nil when nothing
-    /// applies — callers treat that as "no data" (fail-open), never 0%.
-    static func remainingFraction(balance: BillingBalance, current: BillingCurrent) -> Double? {
-        let serverTime = balance.serverTimeSeconds ?? current.serverTimeSeconds
-        var plans = balance.plans.isEmpty ? current.plans : balance.plans
-        if let serverTime {
-            plans = plans.map { plan in
-                // Active-by-status but past ends_at: expired (app parity).
-                if plan.status?.lowercased() == "active",
-                    let endsAt = plan.endsAtSeconds, endsAt > 0, endsAt <= serverTime
-                {
-                    var expired = plan
-                    expired.status = "expired"
-                    return expired
-                }
-                return plan
-            }
-        }
-        let livePlans = plans.filter { $0.status?.lowercased() != "expired" }
-        let livePlanIDs = Set(livePlans.compactMap(\.planID))
-        let liveUserPlanIDs = Set(livePlans.compactMap(\.userPlanID))
-
-        var fractions: [Double] = []
-        for entry in balance.balances {
-            // Balance→plan correlation: user_plan_id first, else plan_id; a
-            // balance with no correlation key counts as plan-less.
-            let correlated: Bool
-            if let userPlanID = entry.userPlanID, !userPlanID.isEmpty {
-                correlated = liveUserPlanIDs.contains(userPlanID)
-            } else if let planID = entry.planID, !planID.isEmpty {
-                correlated = livePlanIDs.contains(planID)
-            } else {
-                correlated = true
-            }
-            guard correlated else { continue }
-            guard let total = entry.totalUnits, total > 0 else { continue }
-            let remaining = entry.availableUnits ?? entry.remainingUnits ?? 0
-            fractions.append(min(max(remaining / total, 0), 1))
-        }
-        guard !fractions.isEmpty else { return nil }
-        return fractions.min()  // the tightest entitlement governs
+    /// Remaining fraction of the WEEKLY tokens window (the plan's binding
+    /// quota): `(100 − percentage) / 100` clamped to 0...1. nil when no
+    /// weekly row applies — callers treat that as "no data" (fail-open),
+    /// never 0%.
+    static func remainingFraction(limits: [MonitorLimit]) -> Double? {
+        guard let weekly = limits.first(where: { $0.isWeeklyTokensWindow }),
+            let percentage = weekly.percentage
+        else { return nil }
+        return min(max((100 - percentage) / 100, 0), 1)
     }
 
     // MARK: - History
@@ -538,13 +461,13 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
         var errorDescription: String? {
             switch self {
             case let .httpStatus(status):
-                return "billing endpoint answered HTTP \(status)"
+                return "quota monitor answered HTTP \(status)"
             case let .businessRejection(code, msg):
                 let codeText = code.map { String($0) } ?? "none"
                 let msgText = msg.map { " \($0)" } ?? ""
-                return "billing business rejection (code \(codeText)\(msgText))"
+                return "quota monitor business rejection (code \(codeText)\(msgText))"
             case .malformedResponse:
-                return "billing response did not match the pinned shape"
+                return "quota monitor response did not match the pinned shape"
             }
         }
     }

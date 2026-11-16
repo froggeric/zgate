@@ -152,16 +152,17 @@ back up as soon as it answers probes again.
   but listeners keep their old ports until you **Pause and Resume** the
   proxy (or relaunch ZGate). If a port is busy at bind time, ZGate advances
   to the next free port and the popover shows the actual port.
-- **Quota:** ZGate polls the zcode billing endpoints (every 30 min and after
-  every 25 relayed requests; warning ≤ 25%, critical ≤ 10% — thresholds
-  fixed in this build) and feeds `quota below X%` rule conditions. **No-data
-  fail-open is normal today:** the billing endpoints currently return no
-  balance numbers for this account, so ZGate holds no quota snapshot — the
-  menu bar shows bare `ZΓ`, quota-gated rules are skipped, routing is
-  completely unaffected. The data source is a known open item; if/when the
-  endpoints serve data, the bar and percentage go live with no config
-  change. Last-known values are kept and dimmed when a poll fails while data
-  exists.
+- **Quota:** ZGate polls z.ai's official quota monitor
+  (`api.z.ai/api/monitor/usage/quota/limit` — every 30 min and after every 25
+  relayed requests; warning ≤ 25%, critical ≤ 10% remaining — thresholds
+  fixed in this build) and feeds `quota below X%` rule conditions. The menu
+  bar shows your **weekly** window's remaining % (the binding plan quota);
+  the key it authenticates with is read from your Claude settings file
+  (`~/.claude/settings.json`, `env.ANTHROPIC_AUTH_TOKEN`) at poll time —
+  ZGate stores only the path, never the key, and never logs it. If the
+  settings file is missing or has no token, the bar stays empty (bare `ZΓ`)
+  and quota-gated rules are skipped; routing is unaffected. Last-known
+  values are kept and dimmed when a poll fails while data exists.
 
 ## Verify install
 

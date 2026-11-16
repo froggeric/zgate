@@ -127,18 +127,18 @@ final class ProxyServer {
                 configuration.store = store
                 return SigningClient(configuration: configuration)
             }()
-            // Quota service (Task 8): billing auth is the store's zcode
-            // identity JWT (live-pinned — see QuotaService); no store, no
-            // quota, and the router seam stays fail-open. Counting relayed
-            // requests rides the context, so the 25-request poll trigger is
-            // wired exactly where relay exchanges happen.
-            if quotaService == nil, let store {
-                let service = QuotaService(
-                    authBearer: { try store.zcodeJwtToken() },
-                    events: quotaEvents)
+            // Quota service: polls z.ai's official monitor API with the same
+            // z.ai API key Claude Code uses (read from the Claude settings
+            // file at poll time — no credential-store involvement, no secret
+            // in ZGate's config). Without a readable key the router seam
+            // stays fail-open. Counting relayed requests rides the context,
+            // so the 25-request poll trigger is wired exactly where relay
+            // exchanges happen.
+            if quotaService == nil {
+                let service = QuotaService(events: quotaEvents)
                 quotaService = service
                 service.startPolling()
-                AppLog.proxy.info("[ProxyServer] Quota service polling (relay vendor configured)")
+                AppLog.proxy.info("[ProxyServer] Quota service polling (monitor API, relay vendor configured)")
             }
             relayContext = RelayTarget.Context(
                 signingClient: signingClient,

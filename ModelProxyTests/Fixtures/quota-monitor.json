@@ -1,0 +1,31 @@
+{
+  "code": 0,
+  "msg": "Operation successful",
+  "success": true,
+  "data": {
+    "level": "max",
+    "limits": [
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 3,
+        "number": 5,
+        "percentage": 40,
+        "nextResetTime": 1763000000000
+      },
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 6,
+        "number": 1,
+        "percentage": 25,
+        "nextResetTime": 1763691200000
+      },
+      {
+        "type": "TIME_LIMIT",
+        "unit": 5,
+        "number": 1,
+        "percentage": 1,
+        "nextResetTime": 1765505600000
+      }
+    ]
+  }
+}

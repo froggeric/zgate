@@ -441,7 +441,7 @@ struct MenuBarUITests {
         let server = ProxyServer(tokenStatsStore: TokenStatsStore())
         let live = QuotaStatusModel.live(server)
         #expect(live.canRefresh == false)
-        server.quotaProvider = QuotaService(authBearer: { "" })
+        server.quotaProvider = QuotaService(apiKeyProvider: { "" })
         #expect(live.canRefresh == true)
     }
 }
