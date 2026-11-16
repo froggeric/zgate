@@ -41,6 +41,27 @@ struct QuotaSnapshot: Sendable, Equatable {
     /// Remaining fraction of the billing-period quota, 0...1.
     var fractionRemaining: Double
     var fetchedAt: Date
+    /// Per-window rows for the popover's quota list (Package A). Empty when
+    /// the poll returned no parseable rows; the weekly row's fraction is the
+    /// `fractionRemaining` above.
+    var windows: [QuotaWindow] = []
+}
+
+/// One quota window the monitor reports (weekly tokens = the binding plan
+/// quota, 5-hour tokens, monthly MCP). A UI-facing projection of the wire's
+/// `limits[]` rows — unknown row shapes never reach this type.
+struct QuotaWindow: Sendable, Equatable {
+    enum Kind: Sendable, Equatable {
+        case weeklyTokens
+        case fiveHourTokens
+        case monthlyMCP
+    }
+
+    var kind: Kind
+    /// Remaining fraction of this window, 0...1.
+    var fractionRemaining: Double
+    /// Next reset instant; nil when the wire row omits it.
+    var resetsAt: Date?
 }
 
 /// Quota seam. Task 8 (QuotaService) provides the real implementation

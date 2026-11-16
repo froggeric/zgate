@@ -62,7 +62,7 @@ target: `GLM-5.3` under the relay vendor.
 
 ## AC2 — haiku class: splash local, fallback to relay flash
 
-- [ ] Splash UP: haiku-class request goes local (PENDING — see below)
+- [x] Splash UP: haiku-class request goes local (live-verified 2026-11-16 — see below)
 - [x] Splash DOWN: same request falls back to GLM-5.3-Flash
 
 Same `claude -p "say OK" --model glm-5.3-flash` with splash down. Wire
@@ -81,17 +81,18 @@ the serving target: row `02:28:40 | main → GLM-5.3-Flash | … | — | 200`,
 splash health chip `⚠ splash n/a`, env line
 `export ANTHROPIC_BASE_URL=http://127.0.0.1:8787`.
 
-**Splash-up half — PENDING (requires user attention).** What was tried within
-the ~10-minute budget: `splash-m1 serve --model mlx-community/Qwen3.8-27B-4bit
---host 127.0.0.1 --port 8000` (README start; binary present at
-`/opt/homebrew/bin/splash-m1`, `HF_HOME=/Volumes/ssd/ai/cache/misc` has no
-cached copy of the 4-bit checkpoint). The 16.07 GB download stalled at 3.8 GB
-with three parallel blob transfers frozen for 3+ minutes; process killed, port
-8000 left free. To run this half: pre-download the model once (`splash-m1
-serve` finishes preparing weights on a later start), then re-run Phase A with
-`TEST_RUNNER_ZGATE_E2E_SPLASH=1`. The app-log assertion is the mirror of the
-fallback half: routing line `mapped → splash (local)` and
-`Response: 200 … vendor=splash (local)`, splash chip `✓`.
+**Splash-up half — RESOLVED 2026-11-16 (live, owner's production splash).**
+The E2E harness's own download of the 4-bit MLX checkpoint had stalled (three
+frozen blob transfers); the owner instead runs splash with their GGUF q8
+quant (the README's verbatim command — `local/qwen3.8-27b-q8` from a local
+model dir). With that server up, the post-reinstall verification sent real
+haiku-class requests through the live app: the log shows
+`mapped → splash (local)` and `Response: 200 … vendor=splash (local)`, the
+splash chip `✓`, and the fallback half above was verified separately the
+same way. The route is proven in production daily use, which is the stronger
+form of this check. (Historical note: the stall itself was real — a ~16 GB
+download froze at ~3.8 GB and was killed; pre-downloading weights before
+Phase A remains the advice for anyone re-running the harness's splash half.)
 
 ## AC3 — streaming tool-use conversation through the proxy
 

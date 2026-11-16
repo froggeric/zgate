@@ -107,7 +107,7 @@ struct StatusPopover: View {
                 Image(systemName: "exclamationmark.circle.fill")
                     .foregroundStyle(.red)
                 Text(error)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.leading)
             }
@@ -121,7 +121,7 @@ struct StatusPopover: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                 Text(error)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.leading)
             }
@@ -144,13 +144,13 @@ struct StatusPopover: View {
                 id: \.key
             ) { name, port in
                 Text(verbatim: "\(name):\(port)")
-                    .font(.caption)
+                    .font(.footnote)
                     .fontWeight(.medium)
                     .foregroundStyle(.secondary)
             }
             if proxyServer.boundPorts.isEmpty {
                 Text("No active listeners")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.tertiary)
             }
         }
@@ -183,7 +183,7 @@ struct StatusPopover: View {
                 }
                 .buttonStyle(.bordered)
                 .accessibilityLabel("Refresh quota now")
-                .accessibilityHint("Polls the billing endpoints immediately.")
+                .accessibilityHint("Polls the quota monitor immediately.")
             }
         }
     }
@@ -208,13 +208,13 @@ struct StatusPopover: View {
                     vendors: configStore.config.vendors)
                 {
                     Text(summary)
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .truncationMode(.middle)
                 } else {
                     Text("No rules enabled — unmatched models pass through")
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -239,7 +239,7 @@ struct StatusPopover: View {
                 .imageScale(.small)
             Text(health.label)
         }
-        .font(.caption2)
+        .font(.caption)
         .foregroundStyle(color)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
@@ -259,7 +259,7 @@ struct StatusPopover: View {
         {
             HStack(spacing: 6) {
                 Text(line)
-                    .font(.caption2.monospaced())
+                    .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -273,7 +273,7 @@ struct StatusPopover: View {
                     }
                 } label: {
                     Text(copiedEnvLine ? "Copied" : "Copy")
-                        .font(.caption2)
+                        .font(.footnote)
                 }
                 .buttonStyle(.link)
                 .accessibilityLabel("Copy environment line")
@@ -438,22 +438,22 @@ struct StatusPopover: View {
             if proxyServer.isRunning {
                 HStack(spacing: 5) {
                     Circle().fill(.green).frame(width: 7, height: 7)
-                    Text("Running").font(.caption).fontWeight(.medium)
+                    Text("Running").font(.footnote).fontWeight(.medium)
                 }
             } else if proxyServer.lastError != nil {
                 HStack(spacing: 5) {
                     Circle().fill(.red).frame(width: 7, height: 7)
-                    Text("Error").font(.caption).fontWeight(.medium).foregroundStyle(.red)
+                    Text("Error").font(.footnote).fontWeight(.medium).foregroundStyle(.red)
                 }
             } else if proxyServer.isStopped {
                 HStack(spacing: 5) {
                     Circle().fill(.secondary).frame(width: 7, height: 7)
-                    Text("Paused").font(.caption).fontWeight(.medium).foregroundStyle(.secondary)
+                    Text("Paused").font(.footnote).fontWeight(.medium).foregroundStyle(.secondary)
                 }
             } else {
                 HStack(spacing: 5) {
                     ProgressView().scaleEffect(0.55).frame(width: 7, height: 7)
-                    Text("Starting...").font(.caption).foregroundStyle(.secondary)
+                    Text("Starting...").font(.footnote).foregroundStyle(.secondary)
                 }
             }
         }
@@ -475,7 +475,7 @@ struct StatusPopover: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text("Recent Requests")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text("ms")
@@ -485,13 +485,13 @@ struct StatusPopover: View {
                 Text("code")
                     .frame(width: 28, alignment: .trailing)
             }
-            .font(.caption2)
+            .font(.caption)
             .foregroundStyle(.tertiary)
             .padding(.horizontal, 4)
 
             if trafficLog.entries.isEmpty {
                 Text("No requests yet")
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 8)
@@ -528,17 +528,17 @@ private struct TrafficRowView: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(entry.timeDisplayText)
-                .font(.caption2.monospacedDigit())
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(entry.displayModelLabel)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(entry.isAuxiliaryTraffic ? .secondary : .primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(entry.classTargetDisplayLabel)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -546,17 +546,17 @@ private struct TrafficRowView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Text(entry.msDisplayText)
-                .font(.caption2.monospacedDigit())
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
                 .frame(width: 42, alignment: .trailing)
 
             Text(entry.tokensDisplayText)
-                .font(.caption2.monospacedDigit())
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
                 .frame(width: 34, alignment: .trailing)
 
             Text("\(entry.httpStatus)")
-                .font(.caption2.monospacedDigit())
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(statusColor)
                 .frame(width: 28, alignment: .trailing)
         }

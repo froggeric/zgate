@@ -49,6 +49,33 @@ struct MenuBarUITests {
         #expect(state.menuBarTitle == "ZΓ 63%")
     }
 
+    // MARK: - Per-window rows + countdown (Package A)
+
+    @Test("display state carries the snapshot's per-window rows")
+    func windowsCarriedThroughDisplayState() {
+        let snapshot = QuotaSnapshot(fractionRemaining: 0.42, fetchedAt: Date(), windows: [
+            QuotaWindow(kind: .weeklyTokens, fractionRemaining: 0.42, resetsAt: nil),
+            QuotaWindow(kind: .fiveHourTokens, fractionRemaining: 0.6, resetsAt: nil),
+        ])
+        guard case let .available(_, _, windows) = QuotaDisplayState.make(snapshot: snapshot, stale: false)
+        else {
+            Issue.record("expected available")
+            return
+        }
+        #expect(windows.map(\.kind) == [.weeklyTokens, .fiveHourTokens])
+    }
+
+    @Test("countdown text is compact, floors units, and refuses past moments")
+    func countdownText() {
+        let now = Date(timeIntervalSince1970: 1_763_000_000)
+        #expect(QuotaCountdown.text(until: now.addingTimeInterval(2 * 86400 + 4 * 3600), now: now) == "2d 4h")
+        #expect(QuotaCountdown.text(until: now.addingTimeInterval(3 * 3600 + 5 * 60), now: now) == "3h 5m")
+        #expect(QuotaCountdown.text(until: now.addingTimeInterval(12 * 60), now: now) == "12m")
+        #expect(QuotaCountdown.text(until: now.addingTimeInterval(45), now: now) == "<1m")
+        #expect(QuotaCountdown.text(until: now.addingTimeInterval(-1), now: now) == nil)
+        #expect(QuotaCountdown.text(until: nil, now: now) == nil)
+    }
+
     // MARK: - Level → tint mapping (gold ≤ 25%, red ≤ 10%)
 
     @Test("tint bands mirror the QuotaLevel thresholds, boundaries inclusive")
@@ -94,6 +121,20 @@ struct MenuBarUITests {
             stale: { true })
         model.recompute()
         #expect(model.state == .available(fraction: 0.55, stale: true))
+    }
+
+    @Test("model publishes the snapshot's windows for the row list")
+    @MainActor
+    func quotaModelPublishesWindows() {
+        let windows = [
+            QuotaWindow(kind: .weeklyTokens, fractionRemaining: 0.42, resetsAt: nil),
+            QuotaWindow(kind: .monthlyMCP, fractionRemaining: 0.99, resetsAt: nil),
+        ]
+        let model = QuotaStatusModel(
+            snapshot: { QuotaSnapshot(fractionRemaining: 0.42, fetchedAt: Date(), windows: windows) },
+            stale: { false })
+        model.recompute()
+        #expect(model.windows == windows)
     }
 
     // MARK: - Request log cap + row formatting

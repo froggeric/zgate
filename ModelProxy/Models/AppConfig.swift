@@ -152,10 +152,11 @@ extension AppConfig {
     /// Default matrix — owner ruling 2026-11-16 (corrects spec §2's original
     /// table; the spec carries a dated correction note). Editable in Settings.
     /// Ordered rules, first match wins: `auto` first (CC auto mode), then the
-    /// class rules; the opus peak-hours cost lever ships DISABLED (user opts
-    /// in) but sits before the plain opus rule so enabling it wins during the
-    /// window; a terminal catch-all fallback to relay flash means no request
-    /// is ever dropped for an unmatched model.
+    /// class rules; the opus peak-hours cost lever ships ENABLED — its time
+    /// window (weekdays 07:00–11:00 Paris) gates it automatically, and it
+    /// sits before the plain opus rule so it wins during the window only; a
+    /// terminal catch-all fallback to relay flash means no request is ever
+    /// dropped for an unmatched model.
     ///
     /// Owner cost choices baked in: sonnet (the class Claude Code's main
     /// thread sends) meters at the flash tier; haiku runs on the owner's
@@ -205,10 +206,12 @@ extension AppConfig {
                 sourceModel: "sonnet", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id,
                 matchClass: .sonnet),
             // Cost lever: opus downgrades to flash during Paris weekday peak
-            // (3× metering). Disabled until the user opts in.
+            // (3× metering). Ships ENABLED (ruling 2026-11-16, superseding
+            // the ship-disabled ruling) — the time-window condition keeps it
+            // inert outside peak, so nothing else needs to move.
             ModelMapping(
                 sourceModel: "opus (peak hours)", targetModel: "GLM-5.3-Flash",
-                targetVendorID: relay.id, isEnabled: false,
+                targetVendorID: relay.id,
                 matchClass: .opus, conditions: [peakHours]),
             ModelMapping(
                 sourceModel: "opus", targetModel: "GLM-5.3", targetVendorID: relay.id,

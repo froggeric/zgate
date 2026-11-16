@@ -541,9 +541,10 @@ struct RouterTests {
         #expect(splash["baseURL"] as? String == "http://127.0.0.1:8000")
         #expect(splash["replayPolicy"] as? String == "portableOnly")
 
-        // Rules, ordered: auto, haiku, sonnet, opus-peak (disabled), opus,
-        // fallback — with the owner-ruled targets (2026-11-16 correction of
-        // spec §2): sonnet meters at flash, haiku rides the splash q8 quant.
+        // Rules, ordered: auto, haiku, sonnet, opus-peak (enabled — its time
+        // window gates it automatically), opus, fallback — with the
+        // owner-ruled targets (2026-11-16 correction of spec §2): sonnet
+        // meters at flash, haiku rides the splash q8 quant.
         let mappings = try #require(json["modelMappings"] as? [[String: Any]])
         #expect(mappings.count == 6)
         #expect(mappings[0]["matchClass"] as? String == "auto")
@@ -555,7 +556,9 @@ struct RouterTests {
         #expect(mappings[2]["targetModel"] as? String == "GLM-5.3-Flash")
         #expect(mappings[3]["matchClass"] as? String == "opus")
         #expect(mappings[3]["targetModel"] as? String == "GLM-5.3-Flash")
-        #expect(mappings[3]["isEnabled"] as? Bool == false)  // cost lever ships disabled
+        // Cost lever ships ENABLED (ruling 2026-11-16: auto-managed — the
+        // time-window condition makes it inert outside peak).
+        #expect(mappings[3]["isEnabled"] as? Bool == true)
         let peak = try #require(mappings[3]["conditions"] as? [[String: Any]])
         #expect(peak.count == 1)
         #expect(peak[0]["type"] as? String == "timeWindow")
@@ -581,7 +584,7 @@ struct RouterTests {
         #expect(decoded.modelMappings.map(\.matchClass) == config.modelMappings.map(\.matchClass))
         #expect(decoded.modelMappings[5].catchAll)
         #expect(decoded.modelMappings[3].conditions == config.modelMappings[3].conditions)
-        #expect(!decoded.modelMappings[3].isEnabled)
+        #expect(decoded.modelMappings[3].isEnabled)
     }
 
     @Test func legacyConfigWithoutNewFieldsDecodesUnchanged() throws {
