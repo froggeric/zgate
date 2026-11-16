@@ -509,10 +509,26 @@ enum RelayTarget {
         #endif
     }
 
-    /// `major.minor.patch` of the OS (zbridge's `os.release()` shape).
+    /// `x-os-version`: the Darwin kernel release — genuine zcode sends
+    /// node's `os.release()`, which is `uname(2)`'s `release` ("27.2.0" on
+    /// this machine), NOT the macOS product version.
     static var osVersion: String {
-        let version = ProcessInfo.processInfo.operatingSystemVersion
-        return "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+        guard let release = darwinKernelRelease else {
+            // uname does not fail on Darwin; keep the header's shape anyway.
+            let version = ProcessInfo.processInfo.operatingSystemVersion
+            return "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+        }
+        return release
+    }
+
+    /// `uname(2)` `release` field (fixed 256-byte C array → bytes to NUL).
+    private static var darwinKernelRelease: String? {
+        var systemInfo = utsname()
+        guard uname(&systemInfo) == 0 else { return nil }
+        return withUnsafeBytes(of: systemInfo.release) { raw in
+            let bytes = raw.prefix(while: { $0 != 0 })
+            return bytes.isEmpty ? nil : String(decoding: bytes, as: UTF8.self)
+        }
     }
 
     private static func currentMs() -> Int64 {

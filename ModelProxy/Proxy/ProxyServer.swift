@@ -200,16 +200,41 @@ final class ProxyServer {
                 .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 16)
 
-            do {
-                let channel = try await bootstrap.bind(host: "127.0.0.1", port: clientCfg.port).get()
+            // Port auto-advance (binding plan): if the configured port is
+            // taken, bind the next free port (bounded +1...+20) so the
+            // copyable env line never advertises a dead port. The config
+            // keeps the configured port; `boundPorts` carries the truth the
+            // UI reads. Only EADDRINUSE advances — other bind errors
+            // (permissions, bad port) fail immediately.
+            let maxAdvance = 20
+            var channel: (any Channel)?
+            var bindError: (any Error)?
+            for offset in 0...maxAdvance {
+                do {
+                    channel = try await bootstrap.bind(host: "127.0.0.1", port: clientCfg.port + offset).get()
+                    if offset > 0 {
+                        AppLog.proxy.info("[ProxyServer] Port \(clientCfg.port) (\(clientCfg.clientName)) in use; advanced to \(clientCfg.port + offset)")
+                    }
+                    break
+                } catch let err as NIOCore.IOError where err.errnoCode == EADDRINUSE {
+                    bindError = err
+                    continue
+                } catch {
+                    bindError = error
+                    break
+                }
+            }
+            if let channel {
                 let actualPort = channel.localAddress?.port ?? clientCfg.port
                 AppLog.proxy.info("[ProxyServer] \(clientCfg.clientName) listening on 127.0.0.1:\(actualPort)")
                 slots.append(ListenerSlot(channel: channel, router: router, clientName: clientCfg.clientName))
                 boundPorts[clientCfg.clientName] = actualPort
-            } catch let err as NIOCore.IOError where err.errnoCode == EADDRINUSE {
-                errors.append("Port \(clientCfg.port) (\(clientCfg.clientName)) already in use.")
-            } catch {
-                errors.append("Failed to start \(clientCfg.clientName): \(error.localizedDescription)")
+            } else if let bindError, let ioError = bindError as? NIOCore.IOError,
+                ioError.errnoCode == EADDRINUSE
+            {
+                errors.append("Ports \(clientCfg.port)–\(clientCfg.port + maxAdvance) (\(clientCfg.clientName)) all in use.")
+            } else if let bindError {
+                errors.append("Failed to start \(clientCfg.clientName): \(bindError.localizedDescription)")
             }
         }
 

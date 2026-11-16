@@ -524,6 +524,28 @@ struct RelayTargetTests {
         _ = try? channel.finish()
     }
 
+    // MARK: - Environment identity (AC: x-os-version = Darwin kernel release)
+
+    /// The machine's live `uname(2)` `release` — computed independently of
+    /// `RelayTarget.osVersion` so header assertions cross-check, not mirror.
+    private static var liveUnameRelease: String {
+        var systemInfo = utsname()
+        precondition(uname(&systemInfo) == 0, "uname(2) does not fail on Darwin")
+        return withUnsafeBytes(of: systemInfo.release) { raw in
+            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
+    }
+
+    @Test func osVersionIsDarwinKernelReleaseNotProductVersion() {
+        // Genuine zcode sends node's os.release() — the uname(2) kernel
+        // release ("27.2.0" on this machine), NOT ProcessInfo's macOS
+        // product version ("26.2.0" here). Identity-header fidelity is the
+        // app's premise, so pin value and format.
+        let value = RelayTarget.osVersion
+        #expect(value == Self.liveUnameRelease)
+        #expect(value =~ "^\\d+\\.\\d+\\.\\d+$")
+    }
+
     // MARK: - Model canonicalization (zbridge mapModel parity)
 
     @Test func canonicalModelMirrorsZbridgeMap() {
@@ -586,7 +608,12 @@ struct RelayTargetTests {
         // Dynamic-but-known environment identity.
         #expect(headers["x-client-timezone"] == TimeZone.current.identifier)
         #expect(headers["x-platform"] == "darwin-arm64")
-        #expect((headers["x-os-version"] ?? "") =~ "^\\d+\\.\\d+\\.\\d+$")
+        // x-os-version: the Darwin kernel release (node os.release() =
+        // uname(2)), not the macOS product version — cross-checked against
+        // a live utsname call made here in the test.
+        let osVersionHeader = try #require(headers["x-os-version"])
+        #expect(osVersionHeader == Self.liveUnameRelease)
+        #expect(osVersionHeader =~ "^\\d+\\.\\d+\\.\\d+$")
 
         // Auth: the synthetic session token in both headers.
         let session = try await context.signingClient.ensureSession()

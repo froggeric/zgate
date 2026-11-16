@@ -243,7 +243,19 @@ actor SigningClient {
             guard let location else { throw SigningClientError.noLocation }
             bizJwt = try await loginViaStore()
         }
-        // Cache path: a usable cached session may still carry no location.
+        // Cache path: a usable cached session may still carry no location
+        // (zbridge-era or hand-edited cache). The store's project-key-location
+        // entry fills the gap — without this lookup a location-less cache
+        // would 502 every relay request for the cache's remaining lifetime
+        // even though the store could supply the triple.
+        if location == nil, let store = configuration.store,
+            let stored = try? await store.projectKeyLocation()
+        {
+            location = MintLocation(
+                organizationId: stored.organizationId,
+                projectId: stored.projectId,
+                apiKeyId: stored.apiKeyId)
+        }
         guard let location else { throw SigningClientError.noLocation }
 
         // 2. Mint the project token. A cached session's auth-reject triggers

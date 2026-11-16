@@ -13,8 +13,11 @@ The original project's README is preserved at [`README.upstream.md`](README.upst
 - Local SwiftNIO listeners on `127.0.0.1` only — point Claude Code at ZGate,
   keep everything else as-is. Listeners start at app launch (also under
   launch-at-login), not on first menu-bar interaction.
-- Relay requests are signed (V4 signing quartet per request); ZGate never
-  sends an unsigned request to the relay (it 401s them).
+- Relay requests are signed (V4 signing quartet per request). With no
+  established session a signing failure is a 502 — nothing goes out
+  unsigned; once a session has been established, a rejected signature
+  re-handshakes once and then fails open with a single unsigned attempt
+  (surfaced as a warning) rather than dropping the request.
 - Requests are logged locally for the traffic view; request/response bodies
   are never stored or logged. Credentials stay in the scratch store — token
   values are never displayed or logged.
@@ -61,7 +64,9 @@ machine). The popover and Settings → Advanced show the *actual bound port*
 with a copy button: if the configured port is taken, ZGate advances to the
 next free port and the displayed line always tells the truth. A config
 created before the 8787 default keeps its old ports — edit them in
-Settings → Clients.
+Settings → Clients. Port edits apply to routing immediately, but the
+listeners keep their old ports until you Pause and Resume the proxy (or
+relaunch ZGate).
 
 ### 4. Optional: launch at login
 

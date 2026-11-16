@@ -749,6 +749,39 @@ struct SigningClientTests {
         #expect(mock.count(matching: "/access_tokens") == 0)
     }
 
+    @Test func cachedSessionWithoutLocationFillsItFromStoreWithoutLogin() async throws {
+        // zbridge-era cache shape: usable biz session, null location, none
+        // injected. The store's project-key-location entry fills the gap —
+        // the chain builds (no .noLocation 502 for the cache's remaining
+        // lifetime) with zero z/login calls.
+        let mock = SigningMock()
+        installMock(mock)
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try seedCache(directory: directory, location: nil)
+        let store = try syntheticStore()
+        let client = SigningClient(configuration: makeConfiguration(
+            clock: mock.clock, store: store, location: nil, cacheDirectory: directory))
+        _ = try await client.ensureSession()
+
+        #expect(await client.currentPhase() == .signed)
+        #expect(mock.count(matching: "/api/auth/z/login") == 0)
+        #expect(mock.count(matching: "/access_tokens") == 1)
+        // The mint targeted the store's location triple.
+        let storedLocation = try #require(try store.projectKeyLocation())
+        let mintRequest = try #require(mock.requests(matching: "/access_tokens").first)
+        #expect(mintRequest.url.path.contains("/organization/\(storedLocation.organizationId)/"))
+        #expect(mintRequest.url.path.contains("/api_keys/\(storedLocation.apiKeyId)/"))
+        // The resolved location is persisted back — the cache is repaired.
+        let reloaded = try #require(BizSessionCache(
+            fileURL: directory.appendingPathComponent("biz-session.cache")).load())
+        #expect(reloaded.location == MintLocation(
+            organizationId: storedLocation.organizationId,
+            projectId: storedLocation.projectId,
+            apiKeyId: storedLocation.apiKeyId))
+    }
+
     // MARK: - Cold-start location from the store (real store value shape)
 
     /// A store with no location entry, loaded successfully — plaintext

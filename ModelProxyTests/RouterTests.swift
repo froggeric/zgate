@@ -3,6 +3,7 @@ import Foundation
 import NIOCore
 import NIOFoundationCompat
 import NIOHTTP1
+import NIOPosix
 import Testing
 @testable import ZGate
 
@@ -697,5 +698,36 @@ struct RouterTests {
         #expect(server.isRunning)
         #expect(server.boundPorts["Claude Code"] == port)
         #expect(server.boundPorts.count == 1)
+    }
+
+    @Test func proxyServerAdvancesToNextFreePortWhenConfiguredPortTaken() async throws {
+        // Binding plan: configured port taken → bind the next free port, and
+        // `boundPorts` (what the popover's copyable env line reads) carries
+        // the truth. Two consecutive blockers prove the search walks past a
+        // run of taken ports; a successful advance is no error (no banner).
+        let blockerGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { Task { try? await blockerGroup.shutdownGracefully() } }
+        func occupy(_ port: Int) async throws -> any Channel {
+            try await ServerBootstrap(group: blockerGroup)
+                .bind(host: "127.0.0.1", port: port).get()
+        }
+        let firstBlocker = try await occupy(0)
+        let takenPort = try #require(firstBlocker.localAddress?.port)
+        let secondBlocker = try await occupy(takenPort + 1)
+
+        let config = AppConfig(
+            clients: [ClientConfig(
+                clientName: "Claude Code", port: takenPort,
+                defaultUpstream: "https://api.anthropic.com")])
+        let server = ProxyServer(tokenStatsStore: TokenStatsStore())
+        await server.start(config: config)
+        defer { Task { await server.stop() } }
+
+        #expect(server.isRunning)
+        #expect(server.lastError == nil)
+        #expect(server.boundPorts["Claude Code"] == takenPort + 2)
+
+        _ = try? await firstBlocker.close().get()
+        _ = try? await secondBlocker.close().get()
     }
 }
