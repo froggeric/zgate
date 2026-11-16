@@ -306,6 +306,17 @@ The generic mapped path for non-splash anthropic vendors is untouched.
   preservation: model swapped, thinking/signature gone, all other content identical.
 ### Task 8 — QuotaService + live billing wire capture (2026-11-16, executor-run)
 
+> **RESOLVED 2026-11-16 (post-merge):** the endpoints probed below stayed
+> dead, but the data source was found elsewhere: z.ai's official monitor API
+> `GET api.z.ai/api/monitor/usage/quota/limit` (plain Bearer with the
+> Claude-settings API key — no OAuth header, no identity JWT). Weekly
+> tokens window = `(TOKENS_LIMIT, unit 6, number 1)`; `percentage` = percent
+> used. QuotaService now polls it (commit `fae6c40`). The sibling
+> `model-usage` endpoint is RAW-token counting (exact to the token) and the
+> monitor windows track only DIRECT usage — relay traffic meters in the
+> inaccessible zcode-plan ledger (see `docs/e2e-checklist.md` AC4). The
+> section below is retained as the record of why billing was abandoned.
+
 `ModelProxy/Services/QuotaService.swift`, `ModelProxy/Models/QuotaEvent.swift`,
 fixtures `ModelProxyTests/Fixtures/quota-balance.json` / `quota-current.json` (values
 synthetic), tests `ModelProxyTests/QuotaServiceTests.swift` (12 offline + env-gated live

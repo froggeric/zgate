@@ -176,6 +176,9 @@ back up as soon as it answers probes again.
       claude -p "say OK"` replies `OK` through the signed relay
 - [ ] Request log rows for that round-trip are visible in the popover's
       traffic view (full E2E proof: [`docs/e2e-checklist.md`](docs/e2e-checklist.md))
+- [ ] The menu bar shows `ZΓ <N>%` within a minute of launch (your weekly
+      quota remaining, polled from z.ai's monitor API — needs the API key in
+      your `~/.claude/settings.json`, which Claude Code itself put there)
 - [ ] Quitting from the popover leaves no listeners behind
       (`lsof -nP -iTCP:<port>` is empty)
 
@@ -195,6 +198,11 @@ back up as soon as it answers probes again.
 - **Splash down:** haiku-class requests silently fall back to relay
   `GLM-5.3-Flash` — they still succeed. Start Splash (command above) to go
   local again; no ZGate restart needed.
+- **Quota bar stays empty (bare `ZΓ`):** the monitor poll couldn't
+  authenticate — check that `~/.claude/settings.json` has
+  `env.ANTHROPIC_AUTH_TOKEN` set (Claude Code writes it when configured for
+  the z.ai API). The next poll (within 30 min, or popover → Refresh) picks
+  it up with no restart; routing is never blocked by an empty bar.
 - **Logs:** same Application Support directory as the config
   (`~/Library/Application Support/ModelProxy/`) when file logging is enabled
   (Settings → Debug). Logs never contain request/response bodies or
