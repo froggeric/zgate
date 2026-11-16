@@ -463,3 +463,61 @@ row-column formatting, rules summary (+catch-all/disabled/off-count), splash hea
 command, alert message content, RuleEditState validation matrix + schema round-trip +
 match-mode mapping, condition badges. Gotcha: test fixture vendors must be a STORED
 let — a computed property mints fresh UUIDs per access and validation never matches.
+
+## Task 10 — E2E smoke + metering procedure (2026-11-16, executor-run)
+
+`ModelProxyTests/E2E.smoke.swift` (env-gated `ZGATE_E2E=1`, `TEST_RUNNER_` prefix;
+`ZGATE_E2E_PHASE=A|B`, `ZGATE_E2E_SPLASH=1` for the splash-up half) +
+`scripts/e2e/zgate-up.sh` / `zgate-down.sh` / `click_status_item.swift`. Suite after
+Task 10: **327 tests / 22 suites offline — 319 passed / 0 failed / 8 skipped** (2
+pre-existing live smokes + 6 gated E2E tests).
+
+**Division of labor:** the driver scripts own the GUI-bound steps (build isolated app,
+swap Application Support, launch, CGEvent-click the status item — listeners start only
+when the popover opens, macOS 26.2 ignores System Events clicks, `click_status_item.swift`
+reads the item frame via System Events then posts a real CGEvent). The tests drive the
+real `claude` CLI (fresh `CLAUDE_CONFIG_DIR`, dummy key, `env -i` shape) and assert on
+the app's file log + persisted artifacts. `zgate-up.sh` moves the live
+`~/Library/Application Support/ModelProxy` aside (marker file) and `zgate-down.sh`
+restores it — never deletes.
+
+**All three executable ACs passed live** (evidence verbatim in
+`docs/e2e-checklist.md`): AC1 `claude --model glm-5.3 "say OK"` → `OK` through the
+signed relay (z/login bypassed — the seeded scratch biz session rebuilt the chain);
+AC2-down `--model glm-5.3-flash` with splash killed → routed to the splash rule,
+`Connection refused` (errno 61), same request ID served 200 by the relay in ~11 s
+(10 s of that is the local connect timeout ladder), popover row
+`main → GLM-5.3-Flash … 200`; AC3 a Read-tool round-trip — canary file content
+returned verbatim, two relay turns, second carries `signature=true` (signed thinking
+resend). AC4's metering procedure is scaffolded verbatim, unchecked, requires-user.
+
+**Findings (env, not app bugs):**
+
+- **Removable-volume TCC blocks headless file reads on /Volumes/ssd.** The test
+  host's `open()` on a repo file hangs FOREVER (no prompt appears for an unattended
+  process; two runs died in `open()` on the checklist file). Tests must not read
+  repo files from /Volumes — the driver stages a copy into `$TMPDIR` and passes
+  `ZGATE_E2E_CHECKLIST`. (`dd` from the SAME terminal works — the grant follows the
+  responsible process, so shell-driven steps are unaffected.)
+- **`DebugConfig` decode is not tolerant** despite `ConfigStore`'s `try?`: missing
+  `cleanupAfterDays`/`compressAfterDays` throws inside the synthesized decoder and
+  the `try? ?? DebugConfig()` fallback silently DISABLES file logging. The E2E
+  config generator now writes all five keys. A hand-edited partial debug object in
+  a user config would do the same — candidate hardening for a later task.
+- **Splash startup failed within budget:** `splash-m1 serve --model
+  mlx-community/Qwen3.8-27B-4bit` needs a 16.07 GB download (no cached copy under
+  `HF_HOME=/Volumes/ssd/ai/cache/misc`); the transfer stalled at 3.8 GB for 3+
+  minutes and was killed at the ~10-min cap. AC2's splash-up half is PENDING in
+  the checklist with the exact resume procedure.
+- **CC CLI flag gotcha:** `--allowedTools` is variadic — `--allowedTools Read
+  "prompt"` swallows the prompt as a second tool name and `-p` then errors "Input
+  must be provided…". Use `--allowedTools=Read`.
+
+**App concern surfaced (NOT fixed — outside Task 10 scope):** a relay response
+reached through the LOCAL fallback ladder (`executeLocal` → backup relay) streams
+via `LocalTarget.relayStream`, which never invokes the usage callback — the
+GLM-5.3-Flash fallback answer is missing from `token-stats` (Statistics undercounts
+relay-flash usage; those answers meter at 2/3). The fallback itself is correct on
+the wire; only usage accounting is skipped. Same shape as the deliberate splash
+no-accounting decision, but the serving vendor here is the PAID relay.
+
