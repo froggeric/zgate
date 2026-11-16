@@ -132,6 +132,39 @@ struct TrafficEntry: Identifiable, Sendable {
         }
     }
 
+    // MARK: Task 9 log-row columns (time, class → target, model, ms, tokens, status)
+
+    /// "14:03:07" — local clock time of the request.
+    var timeDisplayText: String {
+        Self.rowTimeFormatter.string(from: timestamp)
+    }
+
+    /// "haiku → Qwen3.8-27B-4bit" — the spec §6 class→target column. The
+    /// class is the gateway-hint class when present, else the model's
+    /// classified class; the target is the routed model (or pass/blocked).
+    var classTargetDisplayLabel: String {
+        let className = requestClass?.rawValue ?? ModelClass.classify(model)?.rawValue ?? "other"
+        return "\(className) → \(routeDisplayLabel)"
+    }
+
+    /// "1200ms" — duration in whole milliseconds; "—" when there was no
+    /// upstream call (blocked).
+    var msDisplayText: String {
+        guard let duration else { return "—" }
+        return "\(Int((duration * 1000).rounded()))ms"
+    }
+
+    /// Compact output-token count ("1.2k"); "—" when unavailable.
+    var tokensDisplayText: String {
+        outputTokens.map { $0.compactTokenString } ?? "—"
+    }
+
+    private static let rowTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
     var durationDisplayText: String {
         guard let duration else { return "-" }
         if duration < 1 {
@@ -166,13 +199,14 @@ struct TrafficEntry: Identifiable, Sendable {
 
 // MARK: - TrafficLog
 
-/// Ring buffer of recent proxy requests. Capped at 50 entries.
+/// Ring buffer of recent proxy requests. Capped at 500 entries (spec §6
+/// live request log).
 /// @MainActor so SwiftUI can observe it directly without cross-actor hops.
 @MainActor
 @Observable
 final class TrafficLog {
 
-    static let maxEntries = 50
+    static let maxEntries = 500
 
     /// Ordered oldest → newest; consumers scroll/display newest last.
     private(set) var entries: [TrafficEntry] = []

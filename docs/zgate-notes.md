@@ -380,3 +380,86 @@ real service — `stale=true hasSnapshot=false` (the correct live outcome today)
 excursion outside the file list: `RelayTarget.Context` gained an optional
 `quota: (any QuotaRelayCounting)?` + one call at `execute()` entry (4 additive lines,
 default nil) — required to wire the "after every 25th relayed request" trigger.
+
+### Task 9 — Menu bar UI (2026-11-16, executor-run)
+
+**Popover** (`StatusPopover.swift`, rebuilt): banner (upstream) → client header w/ BOUND
+ports → quota section (`QuotaBarView` + manual refresh) → rules summary + splash health
+chip → copyable env line → spec-§6 request log → control row (Pause/Resume, settings,
+Quit + DEBUG-only ladybug menu: Seed demo data / Clear / Simulate credential alert).
+Upstream's today-token card dropped from the popover (Statistics tab still has totals);
+Stop/Start relabeled Pause/Resume (same teardown semantics — hint text says so).
+
+**Quota states (the Task 8 review's binding note):** `QuotaDisplayState.make(snapshot:stale:)`
+= `noData` (nil snapshot — deliberate empty card "Quota data unavailable / routing
+unaffected", the common live path while balance 400s) vs `available(fraction, stale)`
+(dimmed bar + "last known" tag). Never 0% for no-data, never "stale" without data.
+Tint bands via `QuotaBarTint.tint(forFraction:)` → QuotaLevel (≤10% red, ≤25% gold,
+else green), boundaries inclusive — token not Color so it's unit-testable.
+
+**Menu-bar title:** `MenuBarExtra(quotaModel.state.menuBarTitle, …)` = "ZΓ 63%" / bare
+"ZΓ" (no data) / stopped icon unchanged. Drives one excursion outside the Task 9 file
+list: `App/ModelProxyApp.swift` (+10 lines — constructs the shared `QuotaStatusModel`,
+binds the title, passes `.environment(quotaModel)` into both scenes). The title is spec
+§6 and has no injection point short of the scene declaration; SettingsView's Quota tab
+reads the same model from the environment.
+
+**QuotaStatusModel** (`QuotaBarView.swift`): @MainActor @Observable bridge over the
+NON-observable QuotaService seams — closures `snapshot`/`stale`/`refreshService`,
+re-read on a 60 s tick (weak-self loop, no deinit hop), popover appear, quota events,
+manual refresh. Concrete service reached by casting `proxyServer.quotaProvider as?
+QuotaService` (ProxyServer wires it to the QuotaService on first relay-configured
+start) — exposes `isStale`/`pollNow` WITHOUT widening the router-facing
+`QuotaSnapshotProviding` protocol or touching ProxyServer. `seedDemo(fraction:)`
+overrides reads until cleared (smoke).
+
+**Request log:** `TrafficLog.maxEntries` 50 → 500 (spec §6; file is Models/TrafficLog.swift
+— "log-row support" latitude). New `TrafficEntry` columns: `timeDisplayText` (HH:mm:ss),
+`classTargetDisplayLabel` ("subagent → Qwen3.8-27B-4bit"; class = gateway hint else
+`ModelClass.classify(model)`), `msDisplayText`, `tokensDisplayText` (compact K/M).
+Row = time | model / class→target | ms | tok | code.
+
+**Rules editor** (`SettingsView.swift`): Rules tab supersedes upstream Routing tab
+(`RoutingTabView.swift` left in tree, unreferenced — superseded, not deleted, since the
+file was outside Task 9's list). `RuleEditState` round-trips ModelMapping: match mode
+(class / exact model / catch-all), conditions list (timeWindow days/from/to/tz,
+quotaBelow percent), primary+backup vendor/model, enable. Save is gated on
+`validationError(vendors:)` (no target, half backup, bad HH:mm, percent∉0–100 → orange
+message + disabled Save); commits via `configStore.saveAndReload` (persists to
+config.json ON SAVE). Reorder (chevron up/down) + enable toggle persist immediately
+(upstream convention). Exact-model rules keep upstream's one-enabled-per-source rule.
+Tabs now: Rules / Targets (Vendors relabeled) / Quota / Advanced / General / Clients /
+Statistics / Debug / About. Quota tab = status + manual refresh + read-only cadence &
+thresholds (fixed in v1 — making them configurable needs QuotaService config plumbing
+outside the file list). Advanced = env line (actual bound port), per-client
+configured→bound ports, signing-context state (re-handshake is AUTOMATIC per the error
+table — button intentionally absent, caption says so), credential status + the re-login
+command inline. About credits model-proxy (MIT) + splash.
+
+**Alerts:** `.expired` on `CredentialEventChannel` → alert "ZCode login required" with
+`ReloginAlertContent.message(for:)` = reason + EXACT re-login command + browser note;
+"Copy Command" button copies the bare command. No token material anywhere (content is
+static + the event's display reason). Fires on popover open too (an event that arrived
+while closed is still surfaced — channel is append-only).
+
+**Env line:** `EnvExportLine.claudeLine(boundPorts:clients:)` = the exact spec string
+with the ACTUAL bound port (fallback configured), popover + Advanced.
+
+**Executor smoke (GUI, this machine):** launch Debug build → System Events `click at`/AXPress
+do NOT open SwiftUI MenuBarExtra window popovers on macOS 26.2 (performClick fires, no
+panel); a REAL CGEvent mouse click (posted from a swift script at the item's AXPosition)
+does. Then AX-walk: ladybug menu → "Seed demo data" → screenshot + flash-vision readback
+verified verbatim: 63% + green bar + "as of 01:32", ports 8080/8081, no-rules empty
+state (live config.json truly has no enabled rules), env line :8080, seeded rows
+(time/model/class→target/ms/tok/code incl. 12800ms·960·200 subagent row), Pause/gear/Quit.
+"Simulate credential alert" → alert readback transcribed the command CHARACTER-FOR-CHARACTER
++ Copy Command/OK. App killed after; no listeners left behind.
+
+**Tests** (`ModelProxyTests/MenuBarUITests.swift`, 22; suite total 319/21 green):
+state selection (no-data vs stale vs clamped), tint band boundaries (0.10/0.25 inclusive),
+percent/menu-bar titles, demo seed/clear, 500-cap eviction + boundary identity,
+row-column formatting, rules summary (+catch-all/disabled/off-count), splash health
+(up/down/unknown/nil), env line formation + bound-port preference, exact re-login
+command, alert message content, RuleEditState validation matrix + schema round-trip +
+match-mode mapping, condition badges. Gotcha: test fixture vendors must be a STORED
+let — a computed property mints fresh UUIDs per access and validation never matches.

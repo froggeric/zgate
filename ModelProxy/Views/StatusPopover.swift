@@ -1,12 +1,20 @@
+import Combine
 import SwiftUI
 
 struct StatusPopover: View {
     @Environment(ConfigStore.self) private var configStore
     @Environment(ProxyServer.self) private var proxyServer
     @Environment(TrafficLog.self) private var trafficLog
+    @Environment(QuotaStatusModel.self) private var quotaModel
     @Environment(\.openSettings) private var openSettings
-    @Environment(TokenStatsStore.self) private var tokenStatsStore
     @State private var showingCorruptAlert: Bool = false
+    @State private var showingReloginAlert: Bool = false
+    @State private var reloginMessage: String = ""
+    @State private var copiedEnvLine: Bool = false
+    /// Slow tick so the splash chip and quota caption age without traffic.
+    @State private var tick: Date = .now
+
+    private let slowTick = Timer.publish(every: 20, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,9 +29,17 @@ struct StatusPopover: View {
 
             Divider()
 
-            tokenSummaryCard
+            quotaSection
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+
+            rulesAndHealthSection
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+
+            envLineSection
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
 
             Divider()
 
@@ -45,11 +61,28 @@ struct StatusPopover: View {
                 showingCorruptAlert = true
                 configStore.clearCorruptFlag()
             }
+            presentLatestCredentialEvent()
+            quotaModel.recompute()
+        }
+        .onReceive(slowTick) { _ in tick = .now }
+        .onChange(of: proxyServer.credentialEvents.events.count) { _, _ in
+            presentLatestCredentialEvent()
+        }
+        .onChange(of: proxyServer.quotaEvents.events.count) { _, _ in
+            quotaModel.recompute()
         }
         .alert("Config Reset", isPresented: $showingCorruptAlert) {
             Button("OK") { }
         } message: {
             Text("config.json was corrupt and has been reset to defaults. Your previous settings were not recoverable.")
+        }
+        .alert(ReloginAlertContent.title, isPresented: $showingReloginAlert) {
+            Button("Copy Command") {
+                copyToClipboard(ReloginAlertContent.command)
+            }
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(reloginMessage)
         }
         .task {
             guard !proxyServer.isRunning, !proxyServer.isStopped else { return }
@@ -132,68 +165,116 @@ struct StatusPopover: View {
             .joined(separator: ", ")
     }
 
-    // MARK: - Token Summary Card
+    // MARK: - Quota
 
-    @ViewBuilder
-    private var tokenSummaryCard: some View {
-        let total = tokenStatsStore.todayTotalTokens
-        let input = tokenStatsStore.stats.totalInputTokens()
-        let output = tokenStatsStore.stats.totalOutputTokens()
-
-        Group {
-            if total == 0 {
-                Text("No tokens today")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 6)
-            } else {
-                HStack(spacing: 0) {
-                    VStack(spacing: 1) {
-                        Text("↓ \(input.compactTokenString)")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                        Text("input")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    .frame(maxWidth: .infinity)
-
-                    Divider().frame(height: 28)
-
-                    VStack(spacing: 1) {
-                        Text("↑ \(output.compactTokenString)")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                        Text("output")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    .frame(maxWidth: .infinity)
-
-                    Divider().frame(height: 28)
-
-                    VStack(spacing: 1) {
-                        Text(total.compactTokenString)
-                            .font(.caption2.monospacedDigit())
-                            .fontWeight(.medium)
-                        Text("total")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    .frame(maxWidth: .infinity)
+    private var quotaSection: some View {
+        HStack(alignment: .top, spacing: 8) {
+            QuotaBarView(state: quotaModel.state, fetchedAt: quotaModel.fetchedAt, showsCaption: true)
+            if quotaModel.canRefresh {
+                Button {
+                    Task { await quotaModel.refreshNow() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption)
                 }
-                .padding(.vertical, 6)
-                .padding(.horizontal, 4)
-                .background(.secondary.opacity(0.07))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Refresh quota now")
+                .accessibilityHint("Polls the billing endpoints immediately.")
             }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(total == 0
-            ? "Today: no tokens"
-            : "Today: \(total.compactTokenString) tokens, \(input.compactTokenString) input, \(output.compactTokenString) output"
-        )
+    }
+
+    // MARK: - Rules summary + splash health
+
+    private var splashHealth: SplashHealth? {
+        SplashHealth.evaluate(
+            vendors: configStore.config.vendors,
+            lastSuccess: { id in
+                (proxyServer.healthProvider as? LocalHealthMonitor)?.lastSuccess(forVendor: id)
+            },
+            now: tick)
+    }
+
+    @ViewBuilder
+    private var rulesAndHealthSection: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                if let summary = RulesSummary.text(
+                    mappings: configStore.config.modelMappings,
+                    vendors: configStore.config.vendors)
+                {
+                    Text(summary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                } else {
+                    Text("No rules enabled — unmatched models pass through")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 8)
+            if let splash = splashHealth {
+                splashChip(splash)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func splashChip(_ health: SplashHealth) -> some View {
+        let (color, symbol): (Color, String) = {
+            switch health {
+            case .up: return (.green, "drop.fill")
+            case .down: return (.red, "drop")
+            case .unknown: return (.secondary, "drop.triangle")
+            }
+        }()
+        return HStack(spacing: 3) {
+            Image(systemName: symbol)
+                .imageScale(.small)
+            Text(health.label)
+        }
+        .font(.caption2)
+        .foregroundStyle(color)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(color.opacity(0.10))
+        .clipShape(Capsule())
+        .help("Splash local target reachability (TCP probe, 20 s cadence)")
+        .accessibilityLabel(health.label)
+    }
+
+    // MARK: - Env line
+
+    @ViewBuilder
+    private var envLineSection: some View {
+        if let line = EnvExportLine.claudeLine(
+            boundPorts: proxyServer.boundPorts,
+            clients: configStore.config.clients)
+        {
+            HStack(spacing: 6) {
+                Text(line)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                Button {
+                    copyToClipboard(line)
+                    copiedEnvLine = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        copiedEnvLine = false
+                    }
+                } label: {
+                    Text(copiedEnvLine ? "Copied" : "Copy")
+                        .font(.caption2)
+                }
+                .buttonStyle(.link)
+                .accessibilityLabel("Copy environment line")
+            }
+        }
     }
 
     // MARK: - Control Row
@@ -207,23 +288,25 @@ struct StatusPopover: View {
             Spacer()
 
             HStack(spacing: 6) {
+                debugMenu
+
                 if proxyServer.isRunning {
                     Button {
                         Task { await proxyServer.stop() }
                     } label: {
-                        Text("Stop")
+                        Text("Pause")
                     }
                     .buttonStyle(.bordered)
-                    .accessibilityLabel("Stop Proxy")
-                    .accessibilityHint("Stops the local proxy server.")
+                    .accessibilityLabel("Pause proxying")
+                    .accessibilityHint("Stops the local proxy listeners; resume restarts them.")
                 } else {
                     Button {
                         Task { await proxyServer.start(config: configStore.config) }
                     } label: {
-                        Text("Start")
+                        Text("Resume")
                     }
                     .buttonStyle(.borderedProminent)
-                    .accessibilityLabel("Start Proxy")
+                    .accessibilityLabel("Resume proxying")
                     .accessibilityHint("Starts the local proxy server on configured ports.")
                 }
 
@@ -252,10 +335,88 @@ struct StatusPopover: View {
                     Text("Quit")
                 }
                 .buttonStyle(.bordered)
-                .accessibilityLabel("Quit ModelProxy")
+                .accessibilityLabel("Quit ZGate")
                 .accessibilityHint("Stops the proxy and closes the application.")
             }
         }
+    }
+
+    // MARK: - Debug (popover smoke)
+
+    /// Debug menu for the executor-run popover smoke: seeds fake quota +
+    /// traffic so the popover renders with data, and can simulate the
+    /// credential alert. DEBUG builds only.
+    #if DEBUG
+    @ViewBuilder
+    private var debugMenu: some View {
+        Menu {
+            Button("Seed demo data") { seedDemoData() }
+            Button("Clear demo data") { clearDemoData() }
+            Divider()
+            Button("Simulate credential alert") {
+                proxyServer.credentialEvents.emit(.expired(reason: "demo (seeded)"))
+            }
+        } label: {
+            Image(systemName: "ladybug")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("Debug menu")
+    }
+    #else
+    @ViewBuilder
+    private var debugMenu: some View { EmptyView() }
+    #endif
+
+    #if DEBUG
+    private func seedDemoData() {
+        quotaModel.seedDemo(fraction: 0.63)
+        let now = Date()
+        let seeds: [(TimeInterval, TrafficEntry)] = [
+            (-6, TrafficEntry(
+                model: "glm-5.3", routeType: .mapped(targetModel: "GLM-5.3"),
+                requestKind: .generation, httpStatus: 200, duration: 4.2, outputTokens: 2140,
+                timestamp: now.addingTimeInterval(-6)).with(requestClass: .main)),
+            (-21, TrafficEntry(
+                model: "glm-5.3-flash", routeType: .mapped(targetModel: "Qwen3.8-27B-4bit"),
+                requestKind: .generation, httpStatus: 200, duration: 12.8, outputTokens: 960,
+                timestamp: now.addingTimeInterval(-21)).with(requestClass: .subagent)),
+            (-34, TrafficEntry(
+                model: "glm-5.3", routeType: .mapped(targetModel: "GLM-5.3"),
+                requestKind: .webSearchBridge(searchCount: 2), httpStatus: 200, duration: 3.1,
+                timestamp: now.addingTimeInterval(-34)).with(requestClass: .main)),
+            (-47, TrafficEntry(
+                model: "glm-5.3[1m]", routeType: .mapped(targetModel: "GLM-5.3-Flash"),
+                requestKind: .countTokens, httpStatus: 200, duration: 0.2,
+                timestamp: now.addingTimeInterval(-47)).with(requestClass: .auxiliary)),
+            (-63, TrafficEntry(
+                model: "claude-haiku-4-5", routeType: .blocked,
+                requestKind: .blocked, httpStatus: 403,
+                timestamp: now.addingTimeInterval(-63)).with(requestClass: .auxiliary)),
+            (-88, TrafficEntry(
+                model: "glm-5.3", routeType: .mapped(targetModel: "GLM-5.3"),
+                requestKind: .generation, httpStatus: 529, duration: 31.6,
+                timestamp: now.addingTimeInterval(-88)).with(requestClass: .workflow)),
+        ]
+        for (_, entry) in seeds {
+            trafficLog.append(entry)
+        }
+    }
+
+    private func clearDemoData() {
+        quotaModel.clearDemo()
+    }
+    #endif
+
+    private func copyToClipboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func presentLatestCredentialEvent() {
+        guard case let .expired(reason)? = proxyServer.credentialEvents.events.last else { return }
+        reloginMessage = ReloginAlertContent.message(for: reason)
+        showingReloginAlert = true
     }
 
     // MARK: - Status Indicator
@@ -276,7 +437,7 @@ struct StatusPopover: View {
             } else if proxyServer.isStopped {
                 HStack(spacing: 5) {
                     Circle().fill(.secondary).frame(width: 7, height: 7)
-                    Text("Stopped").font(.caption).fontWeight(.medium).foregroundStyle(.secondary)
+                    Text("Paused").font(.caption).fontWeight(.medium).foregroundStyle(.secondary)
                 }
             } else {
                 HStack(spacing: 5) {
@@ -292,7 +453,7 @@ struct StatusPopover: View {
     private var statusAccessibilityLabel: String {
         if proxyServer.isRunning { return "Proxy running" }
         if proxyServer.lastError != nil { return "Proxy error" }
-        if proxyServer.isStopped { return "Proxy stopped" }
+        if proxyServer.isStopped { return "Proxy paused" }
         return "Proxy starting"
     }
 
@@ -306,10 +467,12 @@ struct StatusPopover: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("Time")
-                    .frame(width: 30, alignment: .trailing)
-                Text("t/s")
-                    .frame(width: 26, alignment: .trailing)
+                Text("ms")
+                    .frame(width: 42, alignment: .trailing)
+                Text("tok")
+                    .frame(width: 34, alignment: .trailing)
+                Text("code")
+                    .frame(width: 28, alignment: .trailing)
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
@@ -347,47 +510,50 @@ struct StatusPopover: View {
 
 // MARK: - TrafficRowView
 
+/// Spec §6 request-log row: time, class → target, model, ms, tokens, status.
 private struct TrafficRowView: View {
     let entry: TrafficEntry
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 6, height: 6)
+            Text(entry.timeDisplayText)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
 
-            Text(entry.displayModelLabel)
-                .font(.caption2)
-                .foregroundStyle(entry.isAuxiliaryTraffic ? .secondary : .primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(entry.displayModelLabel)
+                    .font(.caption2)
+                    .foregroundStyle(entry.isAuxiliaryTraffic ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(entry.classTargetDisplayLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(entry.routeDisplayLabel)
-                .font(.caption2)
-                .foregroundStyle(entry.isAuxiliaryTraffic ? .tertiary : .secondary)
-                .lineLimit(1)
+            Text(entry.msDisplayText)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .frame(width: 42, alignment: .trailing)
+
+            Text(entry.tokensDisplayText)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .frame(width: 34, alignment: .trailing)
 
             Text("\(entry.httpStatus)")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(statusColor)
                 .frame(width: 28, alignment: .trailing)
-
-            Text(entry.durationDisplayText)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.tertiary)
-                .frame(width: 30, alignment: .trailing)
-
-            Text(entry.tpsDisplayText)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.tertiary)
-                .frame(width: 26, alignment: .trailing)
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 3)
         .opacity(entry.isAuxiliaryTraffic ? 0.82 : 1)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(entry.accessibilitySummary)
+        .accessibilityLabel(accessibilitySummary)
     }
 
     private var statusColor: Color {
@@ -398,23 +564,46 @@ private struct TrafficRowView: View {
         }
     }
 
+    private var accessibilitySummary: String {
+        "\(entry.timeDisplayText), \(entry.displayModelLabel), \(entry.classTargetDisplayLabel), HTTP \(entry.httpStatus), \(entry.msDisplayText), \(entry.tokensDisplayText) tokens"
+    }
+
 }
 
 // Note: running state with bound ports requires runtime start;
 // isRunning and boundPorts are private(set) and cannot be set from a preview.
 #Preview("Starting / Stopped") {
     let store = TokenStatsStore()
-    StatusPopover()
+    let server = ProxyServer(tokenStatsStore: store)
+    let quotaModel = QuotaStatusModel.live(server)
+    quotaModel.seedDemo(fraction: 0.63)
+
+    let log = TrafficLog()
+    log.append(
+        TrafficEntry(
+            model: "glm-5.3", routeType: .mapped(targetModel: "GLM-5.3"),
+            requestKind: .generation, httpStatus: 200, duration: 2.4, outputTokens: 1870)
+            .with(requestClass: .main))
+    log.append(
+        TrafficEntry(
+            model: "glm-5.3-flash", routeType: .mapped(targetModel: "Qwen3.8-27B-4bit"),
+            requestKind: .generation, httpStatus: 200, duration: 12.5, outputTokens: 940)
+            .with(requestClass: .subagent))
+    log.append(
+        TrafficEntry(
+            model: "glm-5.3", routeType: .passthrough, requestKind: .countTokens,
+            httpStatus: 200, duration: 0.3)
+            .with(requestClass: .auxiliary))
+    log.append(
+        TrafficEntry(
+            model: "claude-haiku-4-5", routeType: .blocked, requestKind: .blocked,
+            httpStatus: 403))
+
+    return StatusPopover()
         .environment(ConfigStore())
-        .environment(ProxyServer(tokenStatsStore: store))
-        .environment({
-            let log = TrafficLog()
-            log.append(TrafficEntry(model: "claude-opus-4-6", routeType: .mapped(targetModel: "qwen-plus"), requestKind: .generation, httpStatus: 200, duration: 12.3, outputTokens: 520))
-            log.append(TrafficEntry(model: "claude-sonnet-4-6", routeType: .mapped(targetModel: "MiniMax-M2.7"), requestKind: .webSearchBridge(searchCount: 1), httpStatus: 200, duration: 1.2))
-            log.append(TrafficEntry(model: "claude-opus-4-6", routeType: .passthrough, requestKind: .countTokens, httpStatus: 200, duration: 0.3))
-            log.append(TrafficEntry(model: "gpt-4o", routeType: .blocked, requestKind: .blocked, httpStatus: 403))
-            return log
-        }())
+        .environment(server)
+        .environment(log)
         .environment(store)
         .environment(LoginItemService())
+        .environment(quotaModel)
 }
