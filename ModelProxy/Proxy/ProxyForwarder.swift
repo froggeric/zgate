@@ -551,13 +551,15 @@ enum ProxyForwarder {
         // when the client channel goes away, so a mid-stream client disconnect
         // aborts the upstream body (AsyncHTTPClient cancels the request and
         // tears the connection down). Local (splash) targets stream through
-        // LocalTarget's cut-protected passthrough instead — no usage
-        // extraction or branch capture (local model, no replayable vendor
-        // thinking).
+        // LocalTarget's cut-protected passthrough instead — no branch capture
+        // (local model, no replayable vendor thinking); usage still flows:
+        // `onUsage` is keyed to the target that actually served, so a relay
+        // answer reached via the splash rule's backup ladder meters correctly.
         let relayStreamTask = Task { () -> ReplayableBranchResponse? in
             if streamsViaLocalRelay {
                 await LocalTarget.relayStream(
-                    upstreamResponse: upstreamResponse, to: channel, requestID: requestID)
+                    upstreamResponse: upstreamResponse, to: channel, requestID: requestID,
+                    onUsage: onUsage)
                 return nil
             }
             return await ResponseRelay.relay(

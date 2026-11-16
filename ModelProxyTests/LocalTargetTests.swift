@@ -652,6 +652,7 @@ import Testing
         let portableNormalizer: PortableContentNormalizer
         let requestCoordinator: BranchRequestCoordinator
         let splashVendorID: UUID
+        let backupVendorID: UUID?
         let directory: URL
     }
 
@@ -666,12 +667,14 @@ import Testing
         var mapping = ModelMapping(
             sourceModel: "glm-5.3-flash", targetModel: "Qwen3.8-27B-4bit",
             targetVendorID: splashVendorID, isEnabled: true)
+        var backupVendorID: UUID?
         if let backupPort {
             let backupVendor = Vendor(
                 id: UUID(), name: "Backup Vendor",
                 baseURL: "http://127.0.0.1:\(backupPort)",
                 apiKey: "backup-key-synthetic", readTimeoutSeconds: 10)
             vendors.append(backupVendor)
+            backupVendorID = backupVendor.id
             mapping.backupTargetVendorID = backupVendor.id
             mapping.backupTargetModel = "glm-4.7"
         }
@@ -694,6 +697,7 @@ import Testing
             portableNormalizer: PortableContentNormalizer(),
             requestCoordinator: BranchRequestCoordinator(),
             splashVendorID: splashVendorID,
+            backupVendorID: backupVendorID,
             directory: directory)
     }
 
@@ -966,5 +970,123 @@ import Testing
         #expect(sent["model"] as? String == "Qwen3.8-27B-4bit")
         #expect(sent["tools"] == nil)
         finishChannel(client)
+    }
+
+    // MARK: - App-defect fixes (post-E2E)
+
+    @Test func forwardLocalFallbackServeRecordsUsageInTokenStats() async throws {
+        // Splash 5xx, backup serves with a usage-bearing body: the local
+        // ladder's stream must still meter the answer — attributed to the
+        // serving vendor with its rule model (defect: relay-via-local-fallback
+        // previously bypassed token stats entirely).
+        let splash = MockSplashServer(scripts: [
+            .json(["type": "error", "error": ["type": "api_error", "message": "boom"]], status: 500),
+        ])
+        let backup = MockSplashServer(scripts: [
+            .json(["id": "msg_backup", "usage": ["input_tokens": 111, "output_tokens": 222]]),
+        ])
+        let splashPort = try await splash.start()
+        let backupPort = try await backup.start()
+        defer {
+            Task { await splash.shutdown() }
+            Task { await backup.shutdown() }
+        }
+        let fixture = try makeForwardFixture(splashPort: splashPort, backupPort: backupPort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+        let backupVendorID = try #require(fixture.backupVendorID)
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, channel: client, bodyText: passthroughBody())
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .ok)
+        #expect(sawEnd)
+        #expect(String(data: body, encoding: .utf8)?.contains("msg_backup") == true)
+
+        // The usage callback lands in the store via a MainActor task — wait
+        // for the backup vendor's row.
+        let recorded = await waitUntil(timeout: 5) {
+            fixture.tokenStatsStore.tableRows.contains { row in
+                row.vendorID == backupVendorID && row.record.inputTokens == 111
+            }
+        }
+        #expect(recorded)
+        let row = try #require(
+            fixture.tokenStatsStore.tableRows.first { $0.vendorID == backupVendorID })
+        #expect(row.record.inputTokens == 111)
+        #expect(row.record.outputTokens == 222)
+        // Attributed to the serving target's rule model, not splash's.
+        #expect(row.model == "glm-4.7")
+        // Nothing metered against the (failed) splash vendor.
+        #expect(fixture.tokenStatsStore.tableRows.contains { $0.vendorID == fixture.splashVendorID } == false)
+        finishChannel(client)
+    }
+
+    /// Records usage-callback invocations from @Sendable callbacks.
+    private final class UsageRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _calls: [(input: Int, output: Int)] = []
+        func record(_ input: Int, _ output: Int) {
+            lock.lock(); _calls.append((input, output)); lock.unlock()
+        }
+        var calls: [(input: Int, output: Int)] {
+            lock.lock(); defer { lock.unlock() }
+            return _calls
+        }
+    }
+
+    @Test func relayStreamExtractsSSEUsageAcrossEvents() async throws {
+        // Module-level pin of the SSE accumulation rules: input from
+        // message_start, output from message_delta, one callback at end.
+        let events = [
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":31}}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"output_tokens\":47}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ].joined()
+        var head = HTTPResponseHead(version: .http1_1, status: .ok)
+        head.headers.add(name: "content-type", value: "text/event-stream")
+        var buffer = ByteBufferAllocator().buffer(capacity: events.utf8.count)
+        buffer.writeString(events)
+        var response = HTTPClientResponse(version: .http1_1, status: .ok, headers: head.headers)
+        response.body = .bytes(buffer)
+
+        let recorder = UsageRecorder()
+        let channel = EmbeddedChannel()
+        await LocalTarget.relayStream(
+            upstreamResponse: response, to: channel, requestID: "t-sse-usage"
+        ) { input, output in
+            recorder.record(input, output)
+        }
+        #expect(recorder.calls.count == 1)
+        #expect(recorder.calls.first?.input == 31)
+        #expect(recorder.calls.first?.output == 47)
+        finishChannel(channel)
+    }
+
+    @Test func debugConfigPartialDecodeKeepsSpecifiedKeysAndDefaultsOthers() throws {
+        // Defect: a partial debug object made the synthesized decoder throw,
+        // and AppConfig's try? swallowed it into a fully-defaulted config —
+        // disabling file logging despite isEnabled: true.
+        let partial = try JSONDecoder().decode(
+            DebugConfig.self, from: Data(#"{"isEnabled": true}"#.utf8))
+        #expect(partial.isEnabled == true)
+        #expect(partial.minimumLogLevel == .info)
+        #expect(partial.autoCleanupEnabled == true)
+        #expect(partial.cleanupAfterDays == 7)
+        #expect(partial.compressAfterDays == 3)
+
+        // Through the AppConfig container path with the same partial object.
+        let appJSON = Data(
+            #"{"vendors":[],"clients":[],"debug":{"isEnabled":true}}"#.utf8)
+        let appConfig = try JSONDecoder().decode(AppConfig.self, from: appJSON)
+        #expect(appConfig.debug.isEnabled == true)
+        #expect(appConfig.debug.cleanupAfterDays == 7)
+
+        // Round-trip still encodes every key (full writes stay complete).
+        let reencoded = try JSONEncoder().encode(partial)
+        let roundTripped = try JSONDecoder().decode(DebugConfig.self, from: reencoded)
+        #expect(roundTripped == partial)
     }
 }

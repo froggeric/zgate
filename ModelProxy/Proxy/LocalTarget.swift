@@ -269,11 +269,18 @@ enum LocalTarget {
     /// chunk with no transformation (pure passthrough). If the upstream body
     /// ends mid-response — Splash's process dying, a reset connection — the
     /// client still receives a terminal `error` SSE event before the channel
-    /// closes, never a hang. Byte forwarding is immediate: no buffering.
+    /// closes, never a hang. Byte forwarding is immediate: no buffering for
+    /// the client (a parallel copy is accumulated only while usage is being
+    /// extracted). `onUsage` mirrors ResponseRelay's callback semantics —
+    /// at most once, only when the stream completed and usage parsed — so a
+    /// relay answer served via the splash rule's backup ladder still reaches
+    /// token stats; a cut mid-stream reports no usage (partial SSE usage
+    /// would undercount the metered total).
     static func relayStream(
         upstreamResponse: HTTPClientResponse,
         to channel: any Channel,
-        requestID: String
+        requestID: String,
+        onUsage: ResponseRelay.UsageCallback? = nil
     ) async {
         var responseHead = HTTPResponseHead(
             version: .http1_1,
@@ -295,12 +302,39 @@ enum LocalTarget {
         // completes on flush — ProxyForwarder.sendResponse's pattern).
         channel.write(NIOAny(HTTPServerResponsePart.head(responseHead)), promise: nil)
 
+        // Usage extraction state: SSE accumulates across events (input in
+        // message_start, output in message_delta); JSON bodies parse once at
+        // stream end. ResponseRelay's extractors, same accumulation rules.
+        var accumulatedInput = 0
+        var accumulatedOutput = 0
+        var bodyAccumulator = Data()
+
         do {
             for try await chunk in upstreamResponse.body {
+                if onUsage != nil {
+                    if isSSE {
+                        let (input, output) = ResponseRelay.extractUsageFromSSEChunk(chunk)
+                        accumulatedInput += input
+                        accumulatedOutput += output
+                    } else if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
+                        bodyAccumulator.append(bytes)
+                    }
+                }
                 try await channel.writeAndFlush(
                     NIOAny(HTTPServerResponsePart.body(.byteBuffer(chunk)))).get()
             }
             try await channel.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil))).get()
+            if let onUsage {
+                if isSSE {
+                    if accumulatedInput > 0 || accumulatedOutput > 0 {
+                        onUsage(accumulatedInput, accumulatedOutput)
+                    }
+                } else if !bodyAccumulator.isEmpty,
+                    let (input, output) = ResponseRelay.extractUsageFromJSONBody(bodyAccumulator)
+                {
+                    onUsage(input, output)
+                }
+            }
         } catch {
             // Upstream cut mid-response, or the client channel itself failed.
             // For SSE streams the head (and possibly events) already reached

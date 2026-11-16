@@ -30,6 +30,29 @@ struct DebugConfig: Codable, Hashable {
     }
 }
 
+// Tolerant decode: hand-edited or partially written config files may carry a
+// `debug` object with only some keys. Property defaults do not participate
+// in Swift's synthesized decoder (a missing key throws keyNotFound), which
+// used to make AppConfig's `try?` fall back to a fully-defaulted
+// DebugConfig — silently discarding the keys the file DID carry (notably
+// `isEnabled: true`, disabling file logging). Decode each key if present,
+// with the same defaults as the memberwise init. The extension keeps the
+// memberwise initializer available.
+extension DebugConfig {
+    enum CodingKeys: String, CodingKey {
+        case isEnabled, minimumLogLevel, autoCleanupEnabled, cleanupAfterDays, compressAfterDays
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+        minimumLogLevel = try c.decodeIfPresent(LogLevel.self, forKey: .minimumLogLevel) ?? .info
+        autoCleanupEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoCleanupEnabled) ?? true
+        cleanupAfterDays = try c.decodeIfPresent(Int.self, forKey: .cleanupAfterDays) ?? 7
+        compressAfterDays = try c.decodeIfPresent(Int.self, forKey: .compressAfterDays) ?? 3
+    }
+}
+
 // MARK: - App Config
 
 /// Top-level configuration container.
