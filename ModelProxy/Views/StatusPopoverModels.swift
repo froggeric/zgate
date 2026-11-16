@@ -1,6 +1,44 @@
 import Foundation
+import Observation
 
 // MARK: - Credential re-login alert (Task 9, testable)
+
+/// Presents the re-login alert only for UNSEEN `.expired` events. The
+/// channel is append-only and carries no resolution event, so "seen" is a
+/// high-water mark on the event count — without it, one expiry re-presents
+/// the modal on every popover open for the rest of the session, even after
+/// a successful re-login. The mark lives here, not in view `@State`,
+/// because MenuBarExtra rebuilds the popover per open; `shared` is fine
+/// since there is exactly one popover per process.
+@MainActor
+@Observable
+final class CredentialAlertPresenter {
+
+    static let shared = CredentialAlertPresenter()
+
+    /// Events already surfaced to the user.
+    private(set) var seenCount: Int = 0
+
+    /// Pure decision (testable): the event to present given the channel and
+    /// the high-water mark. nil when everything is already seen.
+    static func pendingAlert(
+        events: [CredentialEvent], seenCount: Int
+    ) -> CredentialEvent? {
+        guard events.count > seenCount else { return nil }
+        return events.last
+    }
+
+    /// Marks the current channel contents seen and returns the event to
+    /// show (a burst that fired while the popover was closed collapses to
+    /// one alert on the next open); nil when nothing is new.
+    func consume(events: [CredentialEvent]) -> CredentialEvent? {
+        guard Self.pendingAlert(events: events, seenCount: seenCount) != nil else {
+            return nil
+        }
+        seenCount = events.count
+        return events.last
+    }
+}
 
 /// Content for the credential-expired alert, driven by
 /// `CredentialEventChannel`'s `.expired` events. The command is the EXACT

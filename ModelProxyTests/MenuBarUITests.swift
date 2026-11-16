@@ -393,4 +393,55 @@ struct MenuBarUITests {
         let quota = RuleCondition(type: .quotaBelow, percent: 50)
         #expect(quota.badgeText == "quota < 50%")
     }
+
+    // MARK: - Fix round 1
+
+    @Test("credential alert presents only UNSEEN events (no re-present after re-login)")
+    @MainActor
+    func credentialAlertPresentsOnlyUnseenEvents() {
+        let first = CredentialEvent.expired(reason: "token expired")
+        let second = CredentialEvent.expired(reason: "session rejected")
+
+        // Pure decision: nil when the high-water mark caught up, the last
+        // event when there is anything new.
+        #expect(CredentialAlertPresenter.pendingAlert(events: [], seenCount: 0) == nil)
+        #expect(CredentialAlertPresenter.pendingAlert(events: [first], seenCount: 0) == first)
+        #expect(CredentialAlertPresenter.pendingAlert(events: [first], seenCount: 1) == nil)
+        #expect(CredentialAlertPresenter.pendingAlert(events: [first, second], seenCount: 1) == second)
+
+        // Lifecycle: present once, then the same channel is silent on every
+        // subsequent popover open (the round-1 bug: one expiry used to
+        // re-present forever, even after a successful re-login).
+        let presenter = CredentialAlertPresenter()
+        #expect(presenter.consume(events: [first]) == first)
+        #expect(presenter.seenCount == 1)
+        #expect(presenter.consume(events: [first]) == nil)  // reopen: silent
+        #expect(presenter.consume(events: [first]) == nil)  // reopen again: silent
+
+        // An event that fired while the popover was closed is unseen and
+        // alerts on the next open — exactly once.
+        #expect(presenter.consume(events: [first, second]) == second)
+        #expect(presenter.seenCount == 2)
+        #expect(presenter.consume(events: [first, second]) == nil)
+    }
+
+    @Test("canRefresh tracks real quota-service availability (button never a silent no-op)")
+    @MainActor
+    func quotaModelCanRefreshGatesOnServiceAvailability() {
+        // Explicit false gate.
+        let gated = QuotaStatusModel(snapshot: { nil }, serviceAvailable: { false })
+        #expect(gated.canRefresh == false)
+
+        // Default (tests, direct construction) stays refreshable.
+        #expect(QuotaStatusModel(snapshot: { nil }).canRefresh == true)
+
+        // The live binding: false before any quota service exists, true
+        // once the provider is a QuotaService (what ProxyServer assigns on
+        // the first relay-configured start).
+        let server = ProxyServer(tokenStatsStore: TokenStatsStore())
+        let live = QuotaStatusModel.live(server)
+        #expect(live.canRefresh == false)
+        server.quotaProvider = QuotaService(authBearer: { "" })
+        #expect(live.canRefresh == true)
+    }
 }

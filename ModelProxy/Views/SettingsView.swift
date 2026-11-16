@@ -161,15 +161,20 @@ struct RuleEditState: Equatable {
     }
 
     /// The mapping to persist. `existing` keeps the id on the edit path.
-    /// Only call after `validationError` returned nil (vendor/model are
-    /// then guaranteed present).
+    /// Only call after `validationError` returned nil; the guard below is
+    /// the loud invariant for future callers, not a recovery path.
     func toMapping(existing: ModelMapping? = nil) -> ModelMapping {
+        guard let primaryVendorID else {
+            preconditionFailure(
+                "RuleEditState.toMapping requires a primary vendor — call only when validationError(vendors:) is nil"
+            )
+        }
         let backup = backupModel.trimmingCharacters(in: .whitespaces)
         return ModelMapping(
             id: existing?.id ?? UUID(),
             sourceModel: sourceLabel,
             targetModel: primaryModel.trimmingCharacters(in: .whitespaces),
-            targetVendorID: primaryVendorID!,
+            targetVendorID: primaryVendorID,
             backupTargetModel: backup.isEmpty ? nil : backup,
             backupTargetVendorID: backup.isEmpty ? nil : backupVendorID,
             isEnabled: isEnabled,

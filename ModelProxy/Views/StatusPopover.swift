@@ -413,8 +413,15 @@ struct StatusPopover: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    /// Presents the alert for UNSEEN credential events only (high-water
+    /// mark in `CredentialAlertPresenter.shared`), so one expiry does not
+    /// re-present the modal on every popover open after a successful
+    /// re-login. An event that fired while the popover was closed is unseen
+    /// and still alerts on the next open.
     private func presentLatestCredentialEvent() {
-        guard case let .expired(reason)? = proxyServer.credentialEvents.events.last else { return }
+        guard case let .expired(reason)? = CredentialAlertPresenter.shared.consume(
+            events: proxyServer.credentialEvents.events)
+        else { return }
         reloginMessage = ReloginAlertContent.message(for: reason)
         showingReloginAlert = true
     }

@@ -87,6 +87,10 @@ final class QuotaStatusModel {
     private let snapshot: () -> QuotaSnapshot?
     private let stale: () -> Bool
     private let refreshService: (() async -> Void)?
+    /// Read at render time so the refresh button tracks service lifecycle
+    /// (the QuotaService is built on the first proxy start with a relay
+    /// vendor configured — before that there is nothing to refresh).
+    private let serviceAvailable: () -> Bool
     private var ticker: Task<Void, Never>?
 
     /// Last observed snapshot time (for the "as of" caption); nil = never.
@@ -97,11 +101,13 @@ final class QuotaStatusModel {
     init(
         snapshot: @escaping () -> QuotaSnapshot?,
         stale: @escaping () -> Bool = { false },
-        refreshService: (() async -> Void)? = nil
+        refreshService: (() async -> Void)? = nil,
+        serviceAvailable: @escaping () -> Bool = { true }
     ) {
         self.snapshot = snapshot
         self.stale = stale
         self.refreshService = refreshService
+        self.serviceAvailable = serviceAvailable
     }
 
     /// Model over the proxy's seams. `ProxyServer.quotaProvider` holds the
@@ -116,7 +122,8 @@ final class QuotaStatusModel {
                 if let service = proxyServer?.quotaProvider as? QuotaService {
                     await service.pollNow()
                 }
-            })
+            },
+            serviceAvailable: { proxyServer.quotaProvider is QuotaService })
     }
 
     /// Starts the background re-read tick. Idempotent; cheap enough to run
@@ -152,9 +159,11 @@ final class QuotaStatusModel {
         recompute()
     }
 
-    /// True when a concrete poll target exists (hides the refresh button's
-    /// spinner path when no relay vendor/quota service is configured).
-    var canRefresh: Bool { refreshService != nil }
+    /// True when a concrete poll target exists right now — the popover
+    /// hides the refresh button entirely until the quota service is built
+    /// (first proxy start with a relay vendor configured), so it can never
+    /// render as a silent no-op.
+    var canRefresh: Bool { serviceAvailable() }
 
     // MARK: Demo seeding (debug)
 
