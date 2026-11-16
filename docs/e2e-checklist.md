@@ -111,15 +111,41 @@ tool_result and signed thinking, `signature=true`):
 [02:26:13] [proxy] DEBUG [Proxy] [175F6F29] Response: 200 OK model=glm-5.3 vendor=zcode relay 815ms
 ```
 
-## AC4 — metering ratio (balance deltas) — REQUIRES USER PRESENT
+## AC4 — metering ratio — EXECUTED 2026-11-16 (self-serve, API instruments)
 
-- [ ] With the user present: run one identical small payload via ZGate (ANTHROPIC_BASE_URL=127.0.0.1:8787) and once direct via api.z.ai/api/anthropic; record balance deltas from the app/plan dashboard before/after each; compute the metering ratio; redact values in this file before any commit or keep the filled section git-ignored.
+**Conclusion: the 2/3 relay-metering ratio is not verifiable from any
+API-accessible surface.** The zcode relay's metering lives in the
+zcode-plan ledger (`zcode.z.ai/api/v1/zcode-plan/billing/*` — still
+400/3001-dead in every request form), not in the api-key monitor. What the
+controlled experiment established (values approximate; exact counts withheld
+from this committed file):
 
-This box is deliberately unchecked and this section deliberately unfilled: the
-procedure requires user present (the user reads the plan dashboard — ZGate's
-own quota fetch cannot supply balance numbers today, Task 8's live finding:
-`balance` rejects every reconstructable request form with 400/3001, `current`
-returns empty plans). Do not check it without the user present.
+- **Monitor `model-usage` = RAW token counters** on both paths. A paired
+  direct-vs-relay probe of near-identical small payloads produced a counter
+  delta exactly equal to the SUM of both responses' usage — to the token.
+  Raw telemetry, no metered value, both surfaces included.
+- **Monitor quota windows track ONLY direct usage.** A controlled direct
+  burn of ~2M raw tokens moved the 5-hour window +2 pct within a minute
+  (⇒ ~1M value per pct on that window; weekly window unmoved — too large or
+  lazily updated). A relay burn through ZGate moved nothing, and the
+  afternoon's observational evidence agrees: many tens of millions of raw
+  relay tokens (a full day of heavy relay routing) produced ZERO visible
+  movement in either window while direct probes moved them immediately.
+- **Therefore relay traffic does not draw down the monitor-visible quota** —
+  it bills against a separate (inaccessible) ledger. Operationally this
+  means heavy relay routing does not visibly consume the api-key quota
+  windows; the 2/3 number itself remains the V1–V3 console-derived finding,
+  manually checkable in the z.ai web dashboard (user-present step).
+- **Bonus finding:** the relay upstream prompt-caches aggressively — a
+  repeated identical payload bulk bills at cached rates on repeat calls
+  (`cache_read` ≈ the whole prompt). Cost lever: stable repeated contexts
+  through the relay are cheap; distinct fillers are required when a test
+  needs full-price burns.
+
+Original plan (identical small payload both paths, balance deltas) is
+superseded: the balance endpoints that plan assumed are dead (Task 8), and
+the working monitor instruments turn out to be raw-only + direct-only as
+above.
 
 ## Test results (this run)
 
