@@ -128,18 +128,21 @@ final class AppConfig: Codable {
 // MARK: - Default config
 
 extension AppConfig {
-    /// Sensible defaults created on first launch. Clients are upstream
-    /// model-proxy's; vendors and routing rules are the ZGate spec §2
-    /// default matrix (see `makeZGateDefaultRouting`).
+    /// Sensible defaults created on first launch. Client names/upstreams are
+    /// upstream model-proxy's; ports are the ZGate plan's (Claude Code 8787 —
+    /// "default port 8787, next free port if taken"; Codex 8789, skipping
+    /// 8788 which zbridge owns on the target machine); vendors and routing
+    /// rules are the ZGate spec §2 default matrix (see
+    /// `makeZGateDefaultRouting`).
     static func makeDefault() -> AppConfig {
         let claudeCodeClient = ClientConfig(
             clientName: "Claude Code",
-            port: 8080,
+            port: 8787,
             defaultUpstream: "https://api.anthropic.com"
         )
         let codexClient = ClientConfig(
             clientName: "Codex",
-            port: 8081,
+            port: 8789,
             defaultUpstream: "https://api.openai.com"
         )
         return makeZGateDefaultRouting(

@@ -580,4 +580,36 @@ installed. Launch-at-login toggle was verified by code inspection + registration
 path (SMAppService), not GUI-flipped during the smoke (a flip would mutate the
 user's login items; the README checklist leaves that box for the user).
 
+### Task 11 fix round 1 (2026-11-16) — launch-start + default port
+
+Review escalated two Importants (branch-blockers); both fixed, suite
+331 tests / 22 suites green (323 passed / 8 skipped — one new test), Release
+build exit 0.
+
+- **Proxy now starts at APP LAUNCH** (`ModelProxyApp.init` spawns the start
+  Task — MenuBarExtra window content is created lazily, so the old
+  scene-level `.task` deferred everything to the first popover open). The
+  popover `.task` stays as the idempotent re-entry (start() guards on
+  isRunning; never auto-resumes after Pause). New RouterTests pin:
+  `proxyServerStartIsIdempotentWhileRunning`. Live smoke: fresh launch →
+  `lsof` shows 8080/8081 bound with ZERO popover interaction; status symbol
+  is the running branch arrow at launch; a popover click leaves exactly the
+  same 2 listeners.
+- **Default ports now 8787 (Claude Code) / 8789 (Codex)** in
+  `AppConfig.makeDefault` (plan Global Constraint; 8788 = zbridge).
+  `defaultConfigHasExpectedShape` re-pinned. Existing config.json files keep
+  their old ports (README says so). The e2e harness installs its own
+  8787/8789 config — unaffected; its popover click now exercises the
+  no-op start path (comments updated in zgate-up.sh + E2E.smoke.swift).
+- **Minors**: GeneralTabView accessibilityHint says ZGate; icon generator
+  committed as `scripts/generate_app_icon.swift` (verified: regenerates the
+  shipped PNGs byte-identical); README port story + checklist updated.
+- **Round-0 correction:** the earlier smoke's "menu-bar title 'ZΓ' text
+  vision-verified" was an over-read — the text glyphs seen at x≈1382 belong
+  to a neighboring app's item; ZGate's AX item (x 1314–1349) renders the SF
+  Symbol (accessibility name "Divide"), and whether macOS 26 also paints the
+  text title beside it is unestablished. The title string itself is set in
+  code and unit-pinned (`menuBarTitle` tests); README checklist now
+  describes the item by its symbol.
+
 

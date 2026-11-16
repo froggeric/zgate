@@ -11,14 +11,28 @@ struct ModelProxyApp: App {
     init() {
         let store = TokenStatsStore()
         _tokenStatsStore = State(initialValue: store)
-        _configStore = State(initialValue: ConfigStore())
+        let configStore = ConfigStore()
+        _configStore = State(initialValue: configStore)
         let server = ProxyServer(tokenStatsStore: store)
         _proxyServer = State(initialValue: server)
         _loginItemService = State(initialValue: LoginItemService())
         // Menu-bar title "ZΓ 63%" (spec §6) reads the same model the popover
         // renders; the slow tick keeps the title fresh while the popover is
         // closed.
-        _quotaModel = State(initialValue: QuotaStatusModel.live(server))
+        let quotaModel = QuotaStatusModel.live(server)
+        _quotaModel = State(initialValue: quotaModel)
+        // Serve from LAUNCH, not from the first popover open: MenuBarExtra
+        // window content is created lazily, so a .task on it defers until a
+        // human clicks — leaving a running-but-not-listening proxy for every
+        // headless ANTHROPIC_BASE_URL consumer and every launch-at-login
+        // session. start() guards on isRunning, so the popover's own start
+        // path (and Resume) is a no-op after this; quotaModel.start() and
+        // configure are idempotent the same way.
+        Task {
+            await server.start(config: configStore.config)
+            quotaModel.start()
+            await AppLogManager.shared.configure(from: configStore.config.debug)
+        }
     }
 
     var body: some Scene {
@@ -31,10 +45,6 @@ struct ModelProxyApp: App {
                 .environment(loginItemService)
                 .environment(AppLogManager.shared)
                 .environment(quotaModel)
-                .task {
-                    quotaModel.start()
-                    await AppLogManager.shared.configure(from: configStore.config.debug)
-                }
         }
         .menuBarExtraStyle(.window)
 

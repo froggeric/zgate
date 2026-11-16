@@ -121,8 +121,9 @@ done
 [ -n "$pid" ] || die "app did not start"
 echo "$pid" > "$ROOT/app.pid"
 
-# Listeners start when the popover first opens (StatusPopover .task); click
-# this process's own status item with a real CGEvent (see the swift file).
+# Listeners start at app launch (ModelProxyApp init start). The click below
+# opens the popover once anyway — exercising the idempotent popover start
+# path (start() no-ops while running) the way a real user session would.
 sleep 2
 swift "$E2E_DIR/click_status_item.swift" "$pid" >/dev/null \
     || die "could not click the status item (Accessibility for the terminal?)"

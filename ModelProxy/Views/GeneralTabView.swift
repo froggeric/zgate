@@ -24,7 +24,7 @@ struct GeneralTabView: View {
                     }
                 }
                 .accessibilityLabel("Launch at Login")
-                .accessibilityHint("When enabled, ModelProxy starts automatically after you log in.")
+                .accessibilityHint("When enabled, ZGate starts automatically after you log in.")
             }
 
             Section("Web Search") {

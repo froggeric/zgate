@@ -7,8 +7,9 @@ import Testing
 /// Division of labor (documented in docs/e2e-checklist.md): the GUI-bound
 /// steps live in `scripts/e2e/zgate-up.sh` / `zgate-down.sh` — they build the
 /// isolated app, swap in the default-rule-table config + seeded signing
-/// cache, launch the app, and click its status item (listeners start when
-/// the popover first opens; macOS 26.2 needs a real CGEvent click). This
+/// cache, launch the app, and click its status item once (listeners start at
+/// app launch; the click exercises the idempotent popover start path —
+/// macOS 26.2 needs a real CGEvent click). This
 /// suite then drives the actual `claude` invocations and asserts on the
 /// app's on-disk request log (`~/Library/Application Support/ModelProxy/
 /// logs/modelproxy-<date>.log` — the E2E app and this test host resolve the

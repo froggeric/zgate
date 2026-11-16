@@ -85,6 +85,10 @@ struct StatusPopover: View {
             Text(reloginMessage)
         }
         .task {
+            // Primary start happens at app launch (ModelProxyApp init). This
+            // is the idempotent re-entry: a no-op while running (start()
+            // guards on isRunning), never a resume after Pause (isStopped),
+            // and a retry only if the launch start bound nothing at all.
             guard !proxyServer.isRunning, !proxyServer.isStopped else { return }
             await proxyServer.start(config: configStore.config)
         }

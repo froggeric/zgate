@@ -677,4 +677,25 @@ struct RouterTests {
         #expect(relayServer.relayContext === context)
         await relayServer.stop()
     }
+
+    @Test func proxyServerStartIsIdempotentWhileRunning() async throws {
+        // The app starts the server at LAUNCH (ModelProxyApp init); the
+        // popover's .task start path and Resume re-enter start() afterwards.
+        // The second start must be a strict no-op: same bound port, no extra
+        // listener, still running (fix round 1, Important 1).
+        let config = AppConfig(
+            clients: [ClientConfig(
+                clientName: "Claude Code", port: 0,
+                defaultUpstream: "https://api.anthropic.com")])
+        let server = ProxyServer(tokenStatsStore: TokenStatsStore())
+        await server.start(config: config)
+        defer { Task { await server.stop() } }
+        let port = try #require(server.boundPorts["Claude Code"])
+        #expect(server.isRunning)
+
+        await server.start(config: config)
+        #expect(server.isRunning)
+        #expect(server.boundPorts["Claude Code"] == port)
+        #expect(server.boundPorts.count == 1)
+    }
 }

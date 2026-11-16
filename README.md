@@ -11,7 +11,8 @@ The original project's README is preserved at [`README.upstream.md`](README.upst
 ## What it does
 
 - Local SwiftNIO listeners on `127.0.0.1` only — point Claude Code at ZGate,
-  keep everything else as-is.
+  keep everything else as-is. Listeners start at app launch (also under
+  launch-at-login), not on first menu-bar interaction.
 - Relay requests are signed (V4 signing quartet per request); ZGate never
   sends an unsigned request to the relay (it 401s them).
 - Requests are logged locally for the traffic view; request/response bodies
@@ -54,11 +55,13 @@ Copy button) — you don't have to remember it.
 export ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
 ```
 
-`<port>` is the **Claude Code listener's configured port** — set it in
-Settings → Clients (8787 in this setup; note 8788 is reserved by zbridge on
-this machine). The popover and Settings → Advanced show the *actual bound
-port* with a copy button: if the configured port is taken, ZGate advances to
-the next free port and the displayed line always tells the truth.
+`<port>` is the Claude Code listener's port — **8787 by default** on fresh
+installs (Codex listens on 8789; 8788 is reserved by zbridge on this
+machine). The popover and Settings → Advanced show the *actual bound port*
+with a copy button: if the configured port is taken, ZGate advances to the
+next free port and the displayed line always tells the truth. A config
+created before the 8787 default keeps its old ports — edit them in
+Settings → Clients.
 
 ### 4. Optional: launch at login
 
@@ -99,8 +102,9 @@ backup serves the request automatically.
 ## Verify install
 
 - [ ] `ZGate.app` runs from `/Applications` (release build above)
-- [ ] **No dock icon** (LSUIElement menu-bar app) and a **`ZΓ` item is present
-      in the menu bar**
+- [ ] **No dock icon** (LSUIElement menu-bar app) and the **ZGate status item
+      is present in the menu bar** (branching-arrows symbol when the proxy is
+      serving; circled ✕ while stopped)
 - [ ] The popover's env line shows `http://127.0.0.1:<port>` and
       `ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude --model glm-5.3 "say OK"`
       answers `OK` through the signed relay (full E2E proof:
