@@ -68,6 +68,9 @@ final class AppConfig: Codable {
     /// User-overridden model pricing ($/1M tokens). Keys are model ID strings.
     var modelPricingOverrides: [String: ModelPrice]
     var webSearch: WebSearchConfig
+    /// Splash supervision settings; absent in pre-splash configs, seeded by
+    /// `makeZGateDefaultRouting` on first launch.
+    var splash: SplashSettings?
 
     // MARK: - Init
 
@@ -77,7 +80,8 @@ final class AppConfig: Codable {
         modelMappings: [ModelMapping] = [],
         debug: DebugConfig = DebugConfig(),
         modelPricingOverrides: [String: ModelPrice] = [:],
-        webSearch: WebSearchConfig = WebSearchConfig()
+        webSearch: WebSearchConfig = WebSearchConfig(),
+        splash: SplashSettings? = nil
     ) {
         self.vendors = vendors
         self.clients = clients
@@ -85,6 +89,7 @@ final class AppConfig: Codable {
         self.debug = debug
         self.modelPricingOverrides = modelPricingOverrides
         self.webSearch = webSearch
+        self.splash = splash
     }
 
     // MARK: - Codable
@@ -96,6 +101,7 @@ final class AppConfig: Codable {
         case debug
         case modelPricingOverrides
         case webSearch
+        case splash
     }
 
     required init(from decoder: Decoder) throws {
@@ -110,6 +116,7 @@ final class AppConfig: Codable {
         debug = (try? container.decode(DebugConfig.self, forKey: .debug)) ?? DebugConfig()
         modelPricingOverrides = (try? container.decode([String: ModelPrice].self, forKey: .modelPricingOverrides)) ?? [:]
         webSearch = (try? container.decode(WebSearchConfig.self, forKey: .webSearch)) ?? WebSearchConfig()
+        splash = try? container.decode(SplashSettings.self, forKey: .splash)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -122,6 +129,9 @@ final class AppConfig: Codable {
             try container.encode(modelPricingOverrides, forKey: .modelPricingOverrides)
         }
         try container.encode(webSearch, forKey: .webSearch)
+        if let splash {
+            try container.encode(splash, forKey: .splash)
+        }
     }
 }
 
@@ -220,6 +230,7 @@ extension AppConfig {
                 sourceModel: "fallback", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id,
                 catchAll: true),
         ]
+        config.splash = SplashSettings.defaultSeeded()
         return config
     }
 }
