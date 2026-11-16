@@ -51,6 +51,17 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
             probe: probeResult)
     }
 
+    /// Bounded real-time wait for the stub's first stdout line to reach the
+    /// log ring. stdout arrival proves the script is executing (trap line is
+    /// the next statement), so signals land post-startup regardless of
+    /// machine load — fixed sleeps flaked under full-suite parallel load.
+    func waitForStubStdout(_ m: SplashManager, timeout: TimeInterval = 10) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !m.log.lines.contains("stub up"), Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
     @Test func plannerCoversOwnershipMatrix() {
         #expect(SplashStartupPlanner.plan(keepRunning: false, portAnswers: true, hasChild: false) == .none)
         #expect(SplashStartupPlanner.plan(keepRunning: true, portAnswers: true, hasChild: false) == .adoptExternal)
@@ -66,9 +77,7 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         try await m.start(profile: SplashProfile(name: "p", model: "m"))
         #expect(m.state == .running(profile: "p", since: m.stateRunningSince!, adopted: false))
         #expect(m.launchCount == 1)
-        // Real settle: the stub's sh needs ~50-200 ms before its first line
-        // reaches the pipe; wait so the stdout-piping criterion is observable.
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await waitForStubStdout(m)
         #expect(m.log.lines.contains("stub up"))
         try await m.stop()
     }
@@ -83,9 +92,9 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
     @Test func stopReapsTermObeyingChild() async throws {
         let m = makeManager { true }
         try await m.start(profile: SplashProfile(name: "p", model: "m"))
-        // Real settle: let the stub's sh come up so TERM lands on a running
-        // shell (not a pre-exec fork) and the reaping path is exercised.
-        try await Task.sleep(nanoseconds: 300_000_000)
+        // Wait for the stub to come up so TERM lands on a running shell
+        // (not a pre-exec fork) and the reaping path is exercised.
+        try await waitForStubStdout(m)
         try await m.stop()
         #expect(m.state == .stopped)
         #expect(m.child == nil)
@@ -98,11 +107,19 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         let m = SplashManager(
             binaryPathProvider: { stub }, clock: clock, probe: { true })
         try await m.start(profile: SplashProfile(name: "p", model: "m"))
-        // Real settle: TERM must land AFTER the stub's `trap '' TERM` line
-        // executes (sh startup measured at ~50-200 ms here), or the child
-        // dies pre-trap and the escalation path is never exercised.
-        try await Task.sleep(nanoseconds: 300_000_000)
+        // TERM must land AFTER the stub's `trap '' TERM` line executes or the
+        // child dies pre-trap and the escalation path is never exercised.
+        // stdout arrival (next statement after the echo) proves it.
+        try await waitForStubStdout(m)
+        let childProcess = m.child
+        let t0 = clock.now()
         try await m.stop()   // virtual grace elapses instantly via ManualClock
+        // Escalation pins: the grace loop must actually elapse stopGrace on
+        // the virtual clock, and the child must have died to SIGKILL as an
+        // uncaught signal — deleting the grace loop or killChild now fails.
+        #expect(clock.now().timeIntervalSince(t0) >= SplashManager.stopGrace)
+        #expect(childProcess?.terminationReason == .uncaughtSignal)
+        #expect(childProcess?.terminationStatus == Int32(SIGKILL))
         #expect(m.state == .stopped)
         #expect(m.child == nil)
     }
@@ -126,14 +143,54 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         let settings = SplashSettings(keepRunning: true, profiles: [SplashProfile(name: "p", model: "m")])
         await m.configure(settings: settings)
         box.store(true)
-        // child exits ~instantly (after ~50-200 ms of sh startup per cycle);
-        // backoff sleeps are virtual; probe true on retry. 1 s fits several
-        // full relaunch cycles so launchCount >= 2 has margin.
-        try await Task.sleep(nanoseconds: 1_000_000_000)
+        // child exits after ~50-200 ms of sh startup per cycle (more under
+        // parallel-suite load); backoff sleeps are virtual; probe true on
+        // retry. 2 s fits several full relaunch cycles so launchCount >= 2
+        // has margin.
+        try await Task.sleep(nanoseconds: 2_000_000_000)
         #expect(m.launchCount >= 2)
         if case .running = m.state {} else if case .starting = m.state {} else {
             Issue.record("expected running/starting after relaunch, got \(m.state)")
         }
+        await m.terminateFromApp()
+    }
+
+    @Test func consecutivePreReadinessDeathsAccumulateBackoff() async throws {
+        // Regression pin (review round 1): the exit-time stability reset must
+        // only consult the EXITED lifecycle's stability. With a stale
+        // stableSince from a previous ≥5-min-stable run, every pre-readiness
+        // death reset attempts to 0 → attempt 1 → ~1 s relaunch loop forever,
+        // 60 s cap unreachable (each cycle can mmap a 28 GB model).
+        let clock = ManualClock()
+        let stableURL = try writeSplashStub()   // stay-alive: accrues stability
+        let poisonURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("splash-quickexit-\(UUID().uuidString).sh")
+        try #"""
+        #!/bin/sh
+        echo "dying"
+        """#.write(to: poisonURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: poisonURL.path)
+        let probeBox = LockedBox(value: false)
+        let poison = LockedBox(value: false)
+        let m = SplashManager(
+            binaryPathProvider: { poison.load() ? poisonURL : stableURL },
+            clock: clock, probe: { probeBox.load() })
+        let settings = SplashSettings(keepRunning: true, profiles: [SplashProfile(name: "p", model: "m")])
+        await m.configure(settings: settings)   // startOwned (probe silent) → stable stub
+        probeBox.store(true)                    // readiness resolves → becameRunning
+        try await Task.sleep(nanoseconds: 300_000_000)   // let launch #1 settle
+        #expect(m.crashAttempts == 0)
+        try await clock.sleep(seconds: SplashBackoff.stableReset)   // virtual +5 min
+        // Now the "binary breaks": probe never answers, launches die pre-readiness.
+        probeBox.store(false)
+        poison.store(true)
+        m.child?.terminate()                    // crash the stable lifecycle (own stub)
+        try await Task.sleep(nanoseconds: 3_000_000_000)   // several poison cycles
+        #expect(m.launchCount >= 3)
+        // The fix: beginStart clears stableSince, so pre-readiness deaths
+        // accumulate (1, 2, 3, …). The stale-stableSince bug held this at 1.
+        #expect(m.crashAttempts >= 3)
         await m.terminateFromApp()
     }
 

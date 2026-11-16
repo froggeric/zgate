@@ -78,6 +78,9 @@ final class SplashManager {
     private(set) var log = LogRingBuffer()
     private(set) var launchCount = 0
     private(set) var child: Process?
+    /// Consecutive-failure counter feeding SplashBackoff. Visible for the
+    /// accumulation pinning test (and future UI).
+    private(set) var crashAttempts = 0
 
     static let readinessTimeout: TimeInterval = 120
     static let readinessPollInterval: TimeInterval = 0.5
@@ -98,7 +101,8 @@ final class SplashManager {
     }
 
     private var settings: SplashSettings?
-    private var crashAttempts = 0
+    /// Running-start of the CURRENT lifecycle; nil until it reaches readiness.
+    /// beginStart clears it so an exit never consults a previous lifecycle.
     private var stableSince: Date?
     private var suppressingRelaunch = false
     /// Monotonic lifecycle token; readiness loops compare it before acting so
@@ -230,6 +234,11 @@ final class SplashManager {
         suppressingRelaunch = false
         adoptedTask?.cancel(); adoptedTask = nil
         adoptedMisses = 0
+        // Fresh lifecycle: stability has not accrued yet. Without this, a
+        // pre-readiness death would consult the PREVIOUS lifecycle's
+        // stableSince and reset crashAttempts on every exit, defeating
+        // backoff escalation (attempt stuck at 1 forever).
+        stableSince = nil
         generation += 1
         let g = generation
         state = .starting(profile: profile.name)
@@ -316,7 +325,11 @@ final class SplashManager {
             if state != .stopped { state = .stopped }
             return
         }
-        // Stability reset (spec §3.1): 5 min continuous running clears attempts.
+        // Stability reset (spec §3.1): only THIS lifecycle's stability counts.
+        // stableSince is nil unless this launch reached readiness (beginStart
+        // clears it), so consecutive pre-readiness deaths keep accumulating
+        // attempts up to the cap, and a crash after a genuinely stable run
+        // (readiness + >= stableReset of running) restarts at attempt 1.
         if let stable = stableSince,
            clock.now().timeIntervalSince(stable) >= SplashBackoff.stableReset {
             crashAttempts = 0
