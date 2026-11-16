@@ -214,10 +214,12 @@ struct E2ESmokeTests {
         #expect(splash?.baseURL == "http://127.0.0.1:8000")
 
         // Resolution through the REAL router code (no health seam → splash
-        // counts as healthy; the disabled opus rule never matches):
-        // glm-5.3 → sonnet → relay GLM-5.3 (AC1's path), glm-5.3-flash →
-        // haiku → splash with relay-Flash backup (AC2's rule), an unknown
-        // model → the terminal catch-all (relay GLM-5.3-Flash).
+        // counts as healthy; the disabled opus rule never matches), against
+        // the owner-ruled matrix (2026-11-16 correction of spec §2):
+        // glm-5.3 → sonnet → relay GLM-5.3-Flash (flash-tier metering, AC1's
+        // path), glm-5.3-flash → haiku → splash (q8 quant) with relay-Flash
+        // backup (AC2's rule), an unknown model → the terminal catch-all
+        // (relay GLM-5.3-Flash).
         let client = try #require(config.clients.first { $0.clientName == "Claude Code" })
         let snapshot = RoutingSnapshot(from: config, for: client)
 
@@ -226,12 +228,12 @@ struct E2ESmokeTests {
             Issue.record("glm-5.3 did not route"); return
         }
         #expect(sonnetTarget.vendorName == "zcode relay")
-        #expect(sonnetTarget.targetModel == "GLM-5.3")
+        #expect(sonnetTarget.targetModel == "GLM-5.3-Flash")
 
         let flashTargets = snapshot.targets(for: "glm-5.3-flash") ?? []
         #expect(flashTargets.count == 2)
         #expect(flashTargets.first?.vendorName.hasPrefix("splash") == true)
-        #expect(flashTargets.first?.targetModel == "Qwen3.8-27B-4bit")
+        #expect(flashTargets.first?.targetModel == "local/qwen3.8-27b-q8")
         #expect(flashTargets.last?.targetModel == "GLM-5.3-Flash")
 
         // "fable" would classify as opus — pick a name no class rule matches.

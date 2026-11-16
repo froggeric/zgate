@@ -3,28 +3,55 @@
 Native macOS menu-bar proxy for Claude Code: routes Anthropic-protocol traffic
 to the **signed zcode relay** (GLM models) with **local-model fallback** and
 **quota-aware routing rules**. Menu-bar app — no dock icon, no window unless
-you open Settings.
+you open Settings. Everything a fresh install needs is in this README.
 
 ZGate is a fork of [model-proxy](https://github.com/n0rvyn/model-proxy) (MIT).
 The original project's README is preserved at [`README.upstream.md`](README.upstream.md).
 
-## What it does
+## What ZGate is
 
-- Local SwiftNIO listeners on `127.0.0.1` only — point Claude Code at ZGate,
-  keep everything else as-is. Listeners start at app launch (also under
-  launch-at-login), not on first menu-bar interaction.
-- Relay requests are signed (V4 signing quartet per request). With no
-  established session a signing failure is a 502 — nothing goes out
-  unsigned; once a session has been established, a rejected signature
-  re-handshakes once and then fails open with a single unsigned attempt
-  (surfaced as a warning) rather than dropping the request.
-- Requests are logged locally for the traffic view; request/response bodies
-  are never stored or logged. Credentials stay in the scratch store — token
-  values are never displayed or logged.
-- Menu-bar item shows live quota (`ZΓ 63%`), traffic log, rules editor and
-  settings.
+ZGate listens on `127.0.0.1` and speaks the Anthropic protocol to Claude Code.
+Every request is matched against an ordered rule table (editable in Settings)
+and forwarded to its target: the **signed zcode relay** (z.ai GLM models, V4
+request signing — nothing ever goes out unsigned to the relay) or a **local
+model server** (Splash). Requests are logged for the popover's traffic view;
+request/response bodies and credential values are never stored or logged.
 
-## Setup
+### The default routing matrix
+
+Applies to fresh installs (first launch with no config — see
+[Configuration](#configuration)). First match wins; order and every field are
+editable in Settings → Rules.
+
+| Match | Primary target | Backup | Notes |
+|---|---|---|---|
+| `auto` (no/unset model) | zcode relay `GLM-5.3` | — | Claude Code auto mode |
+| `haiku` class (incl. `glm-5.3-flash`) | splash (local) `local/qwen3.8-27b-q8` | relay `GLM-5.3-Flash` | cheap/local first |
+| `sonnet` class (incl. `glm-5.3`, `glm-5.3[1m]`) | zcode relay `GLM-5.3-Flash` | — | **meters at the flash tier — see below** |
+| `opus` class, weekdays 07:00–11:00 Europe/Paris | zcode relay `GLM-5.3-Flash` | — | cost lever — **disabled** by default (3× peak metering) |
+| `opus` class | zcode relay `GLM-5.3` | — | |
+| fallback (catch-all) | zcode relay `GLM-5.3-Flash` | — | no request is ever dropped |
+
+**Cost note, so nobody is surprised:** sonnet-class traffic — which is what
+Claude Code's main thread sends — is routed to `GLM-5.3-Flash` on purpose
+(owner's explicit cost choice, 2026-11-16). Your main-thread conversations
+meter at the cheaper flash tier, not the full-price tier. If you want
+main-thread traffic on full `GLM-5.3` instead, edit the sonnet rule's target
+model in Settings → Rules — no relaunch needed.
+
+Splash = the local Anthropic-protocol server on `127.0.0.1:8000` (see
+[Splash setup](#splash-setup-haiku-route-optional)). Splash down? The haiku
+rule's relay backup serves the request automatically.
+
+## Requirements
+
+- macOS (Apple Silicon), admin access to copy ZGate.app into `/Applications`.
+- **ZCode.app installed at `/Applications`** — ZGate's login flow borrows its
+  CLI binary: `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`.
+- **node** (any recent version; it only runs the login command above).
+- **Splash** (`splash-m1`) — optional, only for the local haiku route.
+
+## First-run setup
 
 ### 1. Build & install (release)
 
@@ -32,106 +59,152 @@ The original project's README is preserved at [`README.upstream.md`](README.upst
 xcodebuild -project ZGate.xcodeproj -scheme ZGate -configuration Release \
   -destination 'platform=macOS' -derivedDataPath build build
 cp -R build/Build/Products/Release/ZGate.app /Applications/
-open /Applications/ZGate.app
 ```
 
 (Ad-hoc signed — fine for a personal machine. First build resolves SPM
 packages: swift-nio, async-http-client.)
 
-### 2. Log in once (scratch home)
+### 2. Log in once (the scratch home)
 
 ZGate reads credentials from the zcode scratch home. Log in once from a
-terminal (opens a browser):
+terminal — a browser OAuth page opens; complete it and come back:
 
 ```bash
 ZCODE_DATA_BASE_DIR=$HOME/.zcode-scratch-v3 ZCODE_CREDENTIAL_SECRET_FILE=$HOME/.zcode-scratch-v3/secret.txt node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai
 ```
 
-ZGate also persists a 180-day business session, so a browser re-login is
-needed at most about once per 180 days, or on revocation. When re-login is
-required, ZGate surfaces an alert containing the exact command above (with a
-Copy button) — you don't have to remember it.
+This is needed about **once per 180 days** (or on revocation): ZGate
+persists a 180-day business session after the first successful relay
+request. When re-login is required, ZGate surfaces an alert containing the
+exact command above (with a Copy button) — you don't have to remember it.
 
-### 3. Point Claude Code at ZGate
+### 3. Launch ZGate
+
+`open /Applications/ZGate.app` — the **ZΓ** status item appears in the menu
+bar (no dock icon). Listeners start at launch. Optional: Settings → General
+→ **Launch at Login** (SMAppService registers/unregisters the login item).
+
+### 4. Point Claude Code at ZGate
+
+Copy the env line from the popover (it shows the *actual bound port*):
 
 ```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 ```
 
-`<port>` is the Claude Code listener's port — **8787 by default** on fresh
-installs (Codex listens on 8789; 8788 is reserved by zbridge on this
-machine). The popover and Settings → Advanced show the *actual bound port*
-with a copy button: if the configured port is taken, ZGate advances to the
-next free port and the displayed line always tells the truth. A config
-created before the 8787 default keeps its old ports — edit them in
-Settings → Clients. Port edits apply to routing immediately, but the
-listeners keep their old ports until you Pause and Resume the proxy (or
-relaunch ZGate).
+8787 is the default Claude Code port on fresh installs (Codex listens on
+8789; 8788 is reserved by zbridge on this machine). If the configured port
+is taken, ZGate advances to the next free port — the popover line always
+tells the truth.
 
-### 4. Optional: launch at login
+### 5. First request — two things to expect
 
-Settings → General → **Launch at Login** (SMAppService; the toggle registers
-and unregisters ZGate as a login item).
+- **A few seconds of latency on the very first relay request**: ZGate builds
+  its V4 signing session (handshake + key derivation) once, on demand. Later
+  requests are fast.
+- **If your scratch login (step 2) is older than ~1 hour AND ZGate has never
+  cached a business session yet**, that first request will fail with a
+  credential alert: the 1-hour OAuth token from `login zai` has expired, so
+  ZGate can't bootstrap the 180-day session. Re-run the login command from
+  the alert (Copy button, browser opens) — from then on the cached session
+  carries you for ~180 days and the 1-hour token no longer matters.
 
-## Default rules
+## Splash setup (haiku route, optional)
 
-First match wins; order and every field are editable in Settings → Rules.
+Skip this if you don't run the local haiku route — the haiku rule's relay
+backup keeps those requests working either way. To serve the model the
+default haiku rule targets, run the owner's splash-m1 command:
 
-| Match | Primary target | Backup | Notes |
-|---|---|---|---|
-| `auto` (no/unset model) | zcode relay `GLM-5.3` | — | Claude Code auto mode |
-| `haiku` class (incl. `glm-5.3-flash`) | splash (local) `Qwen3.8-27B-4bit` | relay `GLM-5.3-Flash` | cheap/local first |
-| `sonnet` class (incl. `glm-5.3`, `glm-5.3[1m]`) | zcode relay `GLM-5.3` | — | |
-| `opus` class, weekdays 07:00–11:00 Europe/Paris | zcode relay `GLM-5.3-Flash` | — | cost lever — **disabled** by default (3× peak metering) |
-| `opus` class | zcode relay `GLM-5.3` | — | |
-| fallback (catch-all) | zcode relay `GLM-5.3-Flash` | — | no request is ever dropped |
+```bash
+splash-m1 serve \
+  --model local/qwen3.8-27b-q8 \
+  --model-dir /Volumes/ssd/ai/llm-models/froggeric/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q8_0.gguf \
+  --draft-model "/Volumes/ssd/ai/cache/misc/hub/models--incoai--Qwen3.8-27B-DFlash2/snapshots/015e795645c74b1a0eeef3b570031fb62e769bc5" \
+  --persistent-cache --cache-dir /Volumes/ssd/ai/cache/splash --max-cache-disk 20G \
+  --mmproj /Volumes/ssd/ai/llm-models/froggeric/Qwen3.8-27B-GGUF/mmproj-F16.gguf
+```
 
-Splash = the local Anthropic-protocol server on `127.0.0.1:8000` (default
-model `mlx-community/Qwen3.8-27B-4bit`). Splash down? The haiku rule's relay
-backup serves the request automatically.
+**Start Splash before haiku-class requests if you want them local.** ZGate
+TCP-probes `127.0.0.1:8000`; while Splash is down the health check rules the
+haiku rule out and requests skip to the relay `GLM-5.3-Flash` fallback —
+they still succeed, just not locally. Nothing to restart: ZGate picks Splash
+back up as soon as it answers probes again.
 
-## Quota
+## Configuration
 
-- ZGate polls the zcode billing endpoints every 30 minutes and after every
-  25 relayed requests; thresholds: warning ≤ 25% remaining, critical ≤ 10%.
-  The same values feed `quota below X%` rule conditions (Settings → Rules).
-  Thresholds are fixed in this build.
-- **Current state: fail-open.** Today the billing endpoints return no balance
-  numbers for this account (`balance` rejects the reconstructable request
-  form; `current` returns empty plans), so ZGate holds no quota snapshot:
-  the menu bar shows bare `ZΓ`, quota-gated rules are skipped, and routing is
-  completely unaffected. If/when the endpoints serve data, the bar and
-  percentage go live with no config change. Last-known values are kept and
-  dimmed when a poll fails while data exists.
+- **Config file:** `~/Library/Application Support/ModelProxy/config.json`
+  (directory name kept from upstream model-proxy). Token stats and quota
+  history live alongside it. Hand-editing works, but the Settings editor is
+  the supported path.
+- **Defaults apply on first launch only.** The default matrix above is
+  written when ZGate starts with no config.json. An existing install keeps
+  its saved config forever — upgrading ZGate never rewrites your rules.
+- **Reset to defaults:** quit ZGate (popover → Quit), delete
+  `~/Library/Application Support/ModelProxy/config.json`, relaunch. This
+  discards rule edits (not your login — credentials live in the scratch
+  store).
+- **Settings editor:** Settings → Rules gives full CRUD on the rule table —
+  add, delete, reorder (order = priority, first match wins), enable/disable,
+  and edit every field (match class/model, conditions like time windows and
+  quota thresholds, target vendor/model, backups). Changes apply to routing
+  immediately.
+- **Ports:** edit in Settings → Clients. Edits apply to routing immediately,
+  but listeners keep their old ports until you **Pause and Resume** the
+  proxy (or relaunch ZGate). If a port is busy at bind time, ZGate advances
+  to the next free port and the popover shows the actual port.
+- **Quota:** ZGate polls the zcode billing endpoints (every 30 min and after
+  every 25 relayed requests; warning ≤ 25%, critical ≤ 10% — thresholds
+  fixed in this build) and feeds `quota below X%` rule conditions. **No-data
+  fail-open is normal today:** the billing endpoints currently return no
+  balance numbers for this account, so ZGate holds no quota snapshot — the
+  menu bar shows bare `ZΓ`, quota-gated rules are skipped, routing is
+  completely unaffected. The data source is a known open item; if/when the
+  endpoints serve data, the bar and percentage go live with no config
+  change. Last-known values are kept and dimmed when a poll fails while data
+  exists.
 
 ## Verify install
 
-- [ ] `ZGate.app` runs from `/Applications` (release build above)
-- [ ] **No dock icon** (LSUIElement menu-bar app) and the **ZGate status item
-      is present in the menu bar** (branching-arrows symbol when the proxy is
-      serving; circled ✕ while stopped)
-- [ ] The popover's env line shows `http://127.0.0.1:<port>` and
-      `ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude --model glm-5.3 "say OK"`
-      answers `OK` through the signed relay (full E2E proof:
-      [`docs/e2e-checklist.md`](docs/e2e-checklist.md))
-- [ ] Settings → General: **Launch at Login** toggle works — ZGate appears
-      in/disappears from System Settings → General → Login Items
+- [ ] `ZGate.app` runs from `/Applications`, **no dock icon**, and the **ZΓ
+      status item is in the menu bar** (branching-arrows symbol while the
+      proxy serves; circled ✕ while stopped)
+- [ ] The popover's env line shows `http://127.0.0.1:<port>` and the Copy
+      button puts `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` on the
+      clipboard
+- [ ] One round-trip answers: `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
+      claude -p "say OK"` replies `OK` through the signed relay
+- [ ] Request log rows for that round-trip are visible in the popover's
+      traffic view (full E2E proof: [`docs/e2e-checklist.md`](docs/e2e-checklist.md))
 - [ ] Quitting from the popover leaves no listeners behind
       (`lsof -nP -iTCP:<port>` is empty)
 
-## Data & config
+## Troubleshooting
 
-- Config: `~/Library/Application Support/ModelProxy/config.json` (directory
-  name kept from upstream), token stats + quota history alongside.
-- Logs: same directory when file logging is enabled (Settings → Debug);
-  never contains bodies or credentials.
+- **Credential-expired alert** (relogin required): the alert contains the
+  exact `login zai` command with a Copy button — copy it, run it in a
+  terminal, complete the browser OAuth, then Retry in the alert. Expect this
+  at most ~once per 180 days.
+- **Relay 502 on the first request:** either the signing session is still
+  building (give it a few seconds and retry), or the scratch login is stale
+  (older than ~1h with no cached business session yet) — the credential
+  alert with the login command appears; see above.
+- **Port 8787 already in use:** ZGate auto-advances to the next free port —
+  check the popover's env line for the actual port and export that. Port
+  edits in Settings need Pause/Resume (or relaunch) to rebind.
+- **Splash down:** haiku-class requests silently fall back to relay
+  `GLM-5.3-Flash` — they still succeed. Start Splash (command above) to go
+  local again; no ZGate restart needed.
+- **Logs:** same Application Support directory as the config
+  (`~/Library/Application Support/ModelProxy/`) when file logging is enabled
+  (Settings → Debug). Logs never contain request/response bodies or
+  credential values.
 
 ## About / attribution
 
 - **model-proxy** by norvyn — MIT; this fork's `LICENSE` is upstream's.
   Original README: [`README.upstream.md`](README.upstream.md).
-- **Splash** local target — `splash-m1` Anthropic-protocol server on
-  `127.0.0.1:8000`.
+- **Splash** (`splash-m1`) — the local Anthropic-protocol inference server
+  used as the haiku target on `127.0.0.1:8000`.
 - End-to-end proof against the live signed relay:
   [`docs/e2e-checklist.md`](docs/e2e-checklist.md).
 - Working notes for the fork: [`docs/zgate-notes.md`](docs/zgate-notes.md).

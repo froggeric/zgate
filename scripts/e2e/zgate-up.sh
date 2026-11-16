@@ -45,8 +45,9 @@ fi
 mkdir -p "$APP_SUPPORT"
 touch "$MARKER"
 
-# Default rule table (spec §2): the exact AppConfig.makeZGateDefaultRouting
-# matrix with the Claude Code client on the E2E port and file logging at
+# Default rule table: the exact AppConfig.makeZGateDefaultRouting matrix
+# (owner ruling 2026-11-16, correcting spec §2: sonnet → relay flash, haiku →
+# splash q8) with the Claude Code client on the E2E port and file logging at
 # debug so the request log the assertions read is on disk.
 python3 - "$APP_SUPPORT/config.json" "$PORT" "$CODEX_PORT" <<'PY'
 import json, sys, uuid
@@ -81,10 +82,10 @@ config = {
     "modelMappings": [
         {"id": str(uuid.uuid4()), "sourceModel": "auto", "targetModel": "GLM-5.3",
          "targetVendorID": relay, "matchClass": "auto", "isEnabled": True},
-        {"id": str(uuid.uuid4()), "sourceModel": "haiku", "targetModel": "Qwen3.8-27B-4bit",
+        {"id": str(uuid.uuid4()), "sourceModel": "haiku", "targetModel": "local/qwen3.8-27b-q8",
          "targetVendorID": splash, "backupTargetModel": "GLM-5.3-Flash",
          "backupTargetVendorID": relay, "matchClass": "haiku", "isEnabled": True},
-        {"id": str(uuid.uuid4()), "sourceModel": "sonnet", "targetModel": "GLM-5.3",
+        {"id": str(uuid.uuid4()), "sourceModel": "sonnet", "targetModel": "GLM-5.3-Flash",
          "targetVendorID": relay, "matchClass": "sonnet", "isEnabled": True},
         {"id": str(uuid.uuid4()), "sourceModel": "opus (peak hours)", "targetModel": "GLM-5.3-Flash",
          "targetVendorID": relay, "matchClass": "opus", "isEnabled": False,

@@ -613,3 +613,32 @@ build exit 0.
   describes the item by its symbol.
 
 
+
+### Owner default-routing ruling (2026-11-16) — matrix changed, existing installs unaffected
+
+The owner's final configuration ruling corrects the spec §2 default matrix
+(dated correction appended to the spec; old text kept, marked superseded):
+
+- `sonnet → relay GLM-5.3-Flash` — CC main-thread traffic meters at the
+  flash tier (explicit cost choice)
+- `haiku → splash local/qwen3.8-27b-q8` — the splash-m1 GGUF Q8 serve model
+  (NOT the old `Qwen3.8-27B-4bit` mlx id)
+- opus/auto/opus-peak(disabled)/catch-all unchanged
+
+Semantics to remember (now documented in-code next to
+`makeZGateDefaultRouting` and in the README): defaults are written only by
+`ConfigStore.loadOrCreateDefault` on FIRST LAUNCH with no config.json.
+Existing installs keep their saved matrix; the README's Configuration
+section documents the reset (quit, delete
+`~/Library/Application Support/ModelProxy/config.json`, relaunch).
+
+Consistency residuals — initially flagged as out of scope, then fixed in the
+same change on controller instruction (touch list extended):
+
+1. `scripts/e2e/zgate-up.sh` now seeds the NEW matrix (haiku target
+   `local/qwen3.8-27b-q8`, sonnet target `GLM-5.3-Flash`), keeping the
+   harness in agreement with `E2E.smoke.liveConfigIsTheDefaultRuleTable`,
+   which pins the new matrix.
+2. `LocalTarget.defaultModel` is now `local/qwen3.8-27b-q8` (its two test
+   consumers reference the constant, so no assertion churn), and the
+   Settings → About splash help text names the new rule target.

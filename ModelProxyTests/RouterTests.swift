@@ -91,13 +91,14 @@ struct RouterTests {
         if let mappings {
             table = mappings
         } else {
-            // Same order as `AppConfig.makeZGateDefaultRouting`.
+            // Same order as `AppConfig.makeZGateDefaultRouting` (owner
+            // ruling 2026-11-16: sonnet → relay flash, haiku → splash q8).
             table = [
                 ModelMapping(sourceModel: "auto", targetModel: "GLM-5.3", targetVendorID: relay.id, matchClass: .auto),
                 ModelMapping(
-                    sourceModel: "haiku", targetModel: "Qwen3.8-27B-4bit", targetVendorID: splash.id,
+                    sourceModel: "haiku", targetModel: "local/qwen3.8-27b-q8", targetVendorID: splash.id,
                     backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: relay.id, matchClass: .haiku),
-                ModelMapping(sourceModel: "sonnet", targetModel: "GLM-5.3", targetVendorID: relay.id, matchClass: .sonnet),
+                ModelMapping(sourceModel: "sonnet", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id, matchClass: .sonnet),
                 ModelMapping(
                     sourceModel: "opus (peak hours)", targetModel: "GLM-5.3-Flash",
                     targetVendorID: relay.id, isEnabled: false, matchClass: .opus,
@@ -158,17 +159,18 @@ struct RouterTests {
     @Test func classRulesRouteCCModels() {
         let fixture = makeFixture()
 
-        // glm-5.3 lands on the sonnet rule (CC aliasing), not the fallback.
+        // glm-5.3 lands on the sonnet rule (CC aliasing), not the fallback —
+        // which meters at the flash tier per the owner's 2026-11-16 ruling.
         let sonnetTarget = routedTarget(resolve(fixture, model: "glm-5.3"))
         #expect(sonnetTarget?.vendorKind == .relay)
-        #expect(sonnetTarget?.targetModel == "GLM-5.3")
+        #expect(sonnetTarget?.targetModel == "GLM-5.3-Flash")
 
         // glm-5.3-flash lands on the haiku rule → splash.
         let haikuTarget = routedTarget(resolve(fixture, model: "glm-5.3-flash"))
         #expect(haikuTarget?.vendorName == "splash (local)")
-        #expect(haikuTarget?.targetModel == "Qwen3.8-27B-4bit")
+        #expect(haikuTarget?.targetModel == "local/qwen3.8-27b-q8")
 
-        #expect(routedTarget(resolve(fixture, model: "claude-3-5-haiku-20241022"))?.targetModel == "Qwen3.8-27B-4bit")
+        #expect(routedTarget(resolve(fixture, model: "claude-3-5-haiku-20241022"))?.targetModel == "local/qwen3.8-27b-q8")
         #expect(routedTarget(resolve(fixture, model: "claude-opus-4-6"))?.targetModel == "GLM-5.3")
 
         // auto rule (before class rules in the ordered table).
@@ -355,7 +357,7 @@ struct RouterTests {
 
         let sonnet = try await router.resolve(bodyBytes: body("glm-5.3"), originalAPIKey: "k")
         if case .routed(let target) = sonnet.result {
-            #expect(target.targetModel == "GLM-5.3")
+            #expect(target.targetModel == "GLM-5.3-Flash")
         } else {
             Issue.record("expected routed sonnet target")
         }
@@ -539,14 +541,20 @@ struct RouterTests {
         #expect(splash["baseURL"] as? String == "http://127.0.0.1:8000")
         #expect(splash["replayPolicy"] as? String == "portableOnly")
 
-        // Rules, ordered: auto, haiku, sonnet, opus-peak (disabled), opus, fallback.
+        // Rules, ordered: auto, haiku, sonnet, opus-peak (disabled), opus,
+        // fallback — with the owner-ruled targets (2026-11-16 correction of
+        // spec §2): sonnet meters at flash, haiku rides the splash q8 quant.
         let mappings = try #require(json["modelMappings"] as? [[String: Any]])
         #expect(mappings.count == 6)
         #expect(mappings[0]["matchClass"] as? String == "auto")
+        #expect(mappings[0]["targetModel"] as? String == "GLM-5.3")
         #expect(mappings[1]["matchClass"] as? String == "haiku")
+        #expect(mappings[1]["targetModel"] as? String == "local/qwen3.8-27b-q8")
         #expect(mappings[1]["backupTargetModel"] as? String == "GLM-5.3-Flash")
         #expect(mappings[2]["matchClass"] as? String == "sonnet")
+        #expect(mappings[2]["targetModel"] as? String == "GLM-5.3-Flash")
         #expect(mappings[3]["matchClass"] as? String == "opus")
+        #expect(mappings[3]["targetModel"] as? String == "GLM-5.3-Flash")
         #expect(mappings[3]["isEnabled"] as? Bool == false)  // cost lever ships disabled
         let peak = try #require(mappings[3]["conditions"] as? [[String: Any]])
         #expect(peak.count == 1)
@@ -556,6 +564,7 @@ struct RouterTests {
         #expect(peak[0]["to"] as? String == "11:00")
         #expect(peak[0]["tz"] as? String == "Europe/Paris")
         #expect(mappings[4]["matchClass"] as? String == "opus")
+        #expect(mappings[4]["targetModel"] as? String == "GLM-5.3")
         #expect(mappings[4]["isEnabled"] as? Bool == true)
         #expect(mappings[5]["catchAll"] as? Bool == true)
         #expect(mappings[5]["targetModel"] as? String == "GLM-5.3-Flash")

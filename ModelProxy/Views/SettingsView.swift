@@ -900,7 +900,7 @@ struct AboutTabView: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Splash local target")
-                    Text("Anthropic-protocol server on 127.0.0.1:8000 (default model mlx-community/Qwen3.8-27B-4bit) — haiku-class traffic stays local, with relay failover.")
+                    Text("Anthropic-protocol server on 127.0.0.1:8000 (default rule target local/qwen3.8-27b-q8) — haiku-class traffic stays local, with relay failover.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

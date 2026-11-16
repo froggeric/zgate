@@ -13,7 +13,7 @@ import OSLog
 /// client's request goes out with its own headers minus credentials —
 /// Splash is local trust, there is no key to present and none is added —
 /// and a body whose only mutation is the top-level `model` splice to the
-/// rule target's model (e.g. `mlx-community/Qwen3.8-27B-4bit`), performed
+/// rule target's model (e.g. `local/qwen3.8-27b-q8`), performed
 /// with the same byte-preserving primitive the relay path uses. No OpenAI
 /// translation happens anywhere.
 ///
@@ -32,8 +32,9 @@ enum LocalTarget {
 
     // Splash identity (the user's local inference engine).
     static let defaultBaseURL = "http://127.0.0.1:8000"
-    /// Splash's default model — the value a rule's `targetModel` names.
-    static let defaultModel = "mlx-community/Qwen3.8-27B-4bit"
+    /// Splash's default model — the value a rule's `targetModel` names
+    /// (the splash-m1 GGUF Q8 serve model, owner ruling 2026-11-16).
+    static let defaultModel = "local/qwen3.8-27b-q8"
 
     private static let loopbackHosts: Set<String> = ["127.0.0.1", "localhost", "::1", "0.0.0.0"]
 

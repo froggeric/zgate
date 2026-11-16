@@ -132,8 +132,8 @@ extension AppConfig {
     /// upstream model-proxy's; ports are the ZGate plan's (Claude Code 8787 —
     /// "default port 8787, next free port if taken"; Codex 8789, skipping
     /// 8788 which zbridge owns on the target machine); vendors and routing
-    /// rules are the ZGate spec §2 default matrix (see
-    /// `makeZGateDefaultRouting`).
+    /// rules are the default matrix of the owner's 2026-11-16 ruling (which
+    /// corrects spec §2 — see `makeZGateDefaultRouting`).
     static func makeDefault() -> AppConfig {
         let claudeCodeClient = ClientConfig(
             clientName: "Claude Code",
@@ -149,12 +149,25 @@ extension AppConfig {
             AppConfig(clients: [claudeCodeClient, codexClient]))
     }
 
-    /// Spec §2 default matrix, editable in Settings. Ordered rules, first
-    /// match wins: `auto` first (CC auto mode), then the class rules; the
-    /// opus peak-hours cost lever ships DISABLED (user opts in) but sits
-    /// before the plain opus rule so enabling it wins during the window; a
-    /// terminal catch-all fallback to relay flash means no request is ever
-    /// dropped for an unmatched model.
+    /// Default matrix — owner ruling 2026-11-16 (corrects spec §2's original
+    /// table; the spec carries a dated correction note). Editable in Settings.
+    /// Ordered rules, first match wins: `auto` first (CC auto mode), then the
+    /// class rules; the opus peak-hours cost lever ships DISABLED (user opts
+    /// in) but sits before the plain opus rule so enabling it wins during the
+    /// window; a terminal catch-all fallback to relay flash means no request
+    /// is ever dropped for an unmatched model.
+    ///
+    /// Owner cost choices baked in: sonnet (the class Claude Code's main
+    /// thread sends) meters at the flash tier; haiku runs on the owner's
+    /// splash GGUF Q8 quant `local/qwen3.8-27b-q8` (the splash-m1 serve
+    /// model — not an mlx-community id).
+    ///
+    /// These defaults apply ONLY on first launch with no config.json
+    /// (`ConfigStore.loadOrCreateDefault` writes them exactly once).
+    /// Existing installs keep their saved config unchanged; to adopt this
+    /// matrix, quit ZGate, delete
+    /// `~/Library/Application Support/ModelProxy/config.json`, relaunch
+    /// (README "Configuration" documents the same reset).
     ///
     /// No secrets: the relay vendor's key is empty (`.relay` auth comes from
     /// the signing chain), splash is a local server.
@@ -183,11 +196,13 @@ extension AppConfig {
                 sourceModel: "auto", targetModel: "GLM-5.3", targetVendorID: relay.id,
                 matchClass: .auto),
             ModelMapping(
-                sourceModel: "haiku", targetModel: "Qwen3.8-27B-4bit", targetVendorID: splash.id,
+                sourceModel: "haiku", targetModel: "local/qwen3.8-27b-q8", targetVendorID: splash.id,
                 backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: relay.id,
                 matchClass: .haiku),
+            // Sonnet (CC main-thread traffic) meters at the flash tier — the
+            // owner's explicit cost choice (ruling 2026-11-16).
             ModelMapping(
-                sourceModel: "sonnet", targetModel: "GLM-5.3", targetVendorID: relay.id,
+                sourceModel: "sonnet", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id,
                 matchClass: .sonnet),
             // Cost lever: opus downgrades to flash during Paris weekday peak
             // (3× metering). Disabled until the user opts in.
