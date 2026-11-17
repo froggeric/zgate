@@ -24,7 +24,8 @@
 #
 # Exit codes: 0 ok/dry-run; 1 usage/validation; 2 port 8787 held by a
 # non-ZGate process (or ambiguous app identity); 3 app survived SIGTERM;
-# 4 port never freed; 5 relaunch failed (rolled back).
+# 4 port never freed; 5 relaunch failed (rolled back); 6 backup mv failed;
+# 7 ditto into place failed (restore attempted).
 #
 # Logs field names and exit codes only — never secrets or file contents.
 set -u
@@ -37,10 +38,16 @@ HEALTH_URL="http://127.0.0.1:${PORT}/api/hello"
 BUNDLE_ID="local.zgate.mac"
 LOG_FILE="/tmp/zgate-release-swap.log"
 
+LogFileOk=1
 log() {
     local line="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
     print -r -- "$line"
-    print -r -- "$line" >> "$LOG_FILE" 2>/dev/null
+    if (( LogFileOk )); then
+        if ! print -r -- "$line" >> "$LOG_FILE" 2>/dev/null; then
+            LogFileOk=0
+            print -r -- "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: cannot write log file $LOG_FILE — continuing stdout-only"
+        fi
+    fi
 }
 
 die() {  # die <exit-code> <message>
@@ -145,9 +152,9 @@ if (( Dry_run )); then
     log "DRY-RUN plan:"
     log "  C: would SIGTERM verified pid: ${TargetPid:-<none — app not running>}"
     log "     then wait <=15 s for exit (abort exit 3 if alive; no SIGKILL)"
-    log "  D: would wait <=30 s for port $PORT to be free (abort exit 4 if bound)"
-    log "  E: would mv $PROD_APP -> $BackupPath (rollback copy, never rm -rf)"
-    log "     then ditto $Staged -> $PROD_APP"
+    log "  D: would wait <=30 s for port $PORT to have no LISTEN socket (abort exit 4 if one remains)"
+    log "  E: would mv $PROD_APP -> $BackupPath (rollback copy, never rm -rf; abort exit 6 if mv fails)"
+    log "     then ditto $Staged -> $PROD_APP (abort exit 7 + restore if ditto fails)"
     log "  F: would open $PROD_APP and wait <=60 s for port $PORT LISTEN;"
     log "     on timeout would ROLLBACK: mv new app aside, restore $BackupPath, open it, exit 5"
     log "  G: would GET $HEALTH_URL (no auth) <=30 s for any HTTP status, then log SUCCESS with new CFBundleVersion"
@@ -164,6 +171,14 @@ if (( Dry_run )); then
 fi
 
 # ------------------------------------------------------- step C: stop the app
+# A reaped exit is "ps fails"; an UNREAPED zombie still answers ps, so a
+# Z-state process also counts as exited (launchd reaps promptly; belt+braces).
+proc_gone() {
+    local stat
+    stat=$(ps -p "$1" -o stat= 2>/dev/null) || return 0
+    [[ "$stat" == Z* ]]
+}
+
 BackupPath=""
 if [[ -n "$TargetPid" ]]; then
     log "STEP C: SIGTERM -> pid $TargetPid"
@@ -172,10 +187,10 @@ if [[ -n "$TargetPid" ]]; then
     log "STEP C: kill exit=$Rc"
     Cutoff=$(( SECONDS + 15 ))
     while (( SECONDS < Cutoff )); do
-        ps -p "$TargetPid" -o pid= >/dev/null 2>&1 || break
+        proc_gone "$TargetPid" && break
         sleep 1
     done
-    if ps -p "$TargetPid" -o pid= >/dev/null 2>&1; then
+    if ! proc_gone "$TargetPid"; then
         die 3 "pid $TargetPid still alive 15 s after SIGTERM — NOT escalating to SIGKILL; prod bundle untouched"
     fi
     log "STEP C: pid $TargetPid exited"
@@ -184,35 +199,38 @@ else
 fi
 
 # -------------------------------------------------- step D: wait for the port
-log "STEP D: waiting <=30 s for port $PORT to be free"
+# LISTEN-filtered: without -sTCP:LISTEN, lsof matches local OR remote port in
+# any state, so a lingering client socket to the dead proxy (e.g. the driving
+# session's idle keep-alive in CLOSE_WAIT) would fake "port still bound".
+log "STEP D: waiting <=30 s for port $PORT to have no LISTEN socket"
 Cutoff=$(( SECONDS + 30 ))
 while (( SECONDS < Cutoff )); do
-    Holders=$(lsof -tiTCP:$PORT -P -n 2>/dev/null || true)
+    Holders=$(lsof -tiTCP:$PORT -sTCP:LISTEN -P -n 2>/dev/null || true)
     [[ -z "$Holders" ]] && break
     sleep 1
 done
-Holders=$(lsof -tiTCP:$PORT -P -n 2>/dev/null || true)
+Holders=$(lsof -tiTCP:$PORT -sTCP:LISTEN -P -n 2>/dev/null || true)
 if [[ -n "$Holders" ]]; then
-    die 4 "port $PORT still bound (pids: ${(f)Holders}) after 30 s — prod bundle untouched"
+    die 4 "port $PORT still LISTENing (pids: ${(f)Holders}) after 30 s — prod bundle untouched"
 fi
-log "STEP D: port $PORT free"
+log "STEP D: port $PORT free (no listener)"
 
 # --------------------------------------------------- step E: backup + swap in
 BackupPath="$PROD_APP.preSwap-$(date +%Y%m%d-%H%M%S)"
 log "STEP E: mv $PROD_APP -> $BackupPath"
 if ! mv "$PROD_APP" "$BackupPath"; then
-    die 1 "backup mv failed — prod bundle untouched, aborting before any replace"
+    die 6 "backup mv failed — prod bundle untouched, aborting before any replace"
 fi
 log "STEP E: ditto $Staged -> $PROD_APP"
 if ! ditto "$Staged" "$PROD_APP"; then
     log "STEP E: ditto FAILED — restoring backup"
     mv "$BackupPath" "$PROD_APP" && log "STEP E: backup restored" || log "STEP E: RESTORE FAILED — $BackupPath left as the rollback copy"
-    die 1 "staged bundle could not be copied into place"
+    die 7 "staged bundle could not be copied into place (restore attempted above)"
 fi
 log "STEP E: swap complete (rollback copy: $BackupPath)"
 
 # ---------------------------------------------- step F: relaunch or rollback
-log "STEP F: open $PROD_APP (first launch runs config migrations)"
+log "STEP F: open $PROD_APP (first launch runs + persists config migrations)"
 open "$PROD_APP" 2>/dev/null
 Rc=$?
 log "STEP F: open exit=$Rc"
@@ -233,6 +251,8 @@ if (( ! Listened )); then
     mv "$BackupPath" "$PROD_APP" || log "STEP F: could not restore backup — $BackupPath holds the old app"
     log "STEP F: reopening the restored app"
     open "$PROD_APP" 2>/dev/null
+    Rc=$?
+    log "STEP F: rollback open exit=$Rc"
     die 5 "new app did not serve on $PORT within 60 s — rolled back to the previous bundle"
 fi
 log "STEP F: port $PORT is listening again"
