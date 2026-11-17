@@ -117,7 +117,10 @@ final class ConfigStore {
         // sonnet row AND the old haiku row — so it runs exactly once per
         // config: after the pass (or once the user edits either row) the gate
         // goes cold and later launches never fight those edits (re-enabling
-        // a twin survives).
+        // a twin survives). Shape-gated, not version-marked: reverting BOTH
+        // rows to the exact pre-v2 shape re-arms the gate and the pass runs
+        // once more — the inherent limit of value-gating without a schema
+        // version marker; acceptable.
         let relayID = config.vendors.first { $0.vendorKind == .relay }?.id
         if let relayID,
            config.modelMappings.contains(where: {

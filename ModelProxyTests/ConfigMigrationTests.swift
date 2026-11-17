@@ -83,6 +83,21 @@ extension AppConfig {
             before.modelMappings[i].backupTargetModel = "GLM-5.3-Flash"
             before.modelMappings[i].backupTargetVendorID = relayID
         }
+        // The live wave-1 install left its opus twin ENABLED — re-add it
+        // before plain opus so the twin-disable loop has real work (strip +
+        // migration 4's disabled insert alone would leave nothing to pin).
+        if let plainOpus = before.modelMappings.firstIndex(where: {
+            $0.matchClass == .opus && ($0.conditions ?? []).isEmpty
+        }) {
+            before.modelMappings.insert(
+                ModelMapping(
+                    sourceModel: "opus (peak hours)", targetModel: "GLM-5.3-Flash",
+                    targetVendorID: relayID, isEnabled: true, matchClass: .opus,
+                    conditions: [RuleCondition(
+                        type: .timeWindow, days: .weekdays,
+                        from: "07:00", to: "11:00", tz: "Europe/Paris")]),
+                at: plainOpus)
+        }
         let after = ConfigStore.applyMigrations(before)
         let sonnet = after.modelMappings.first { $0.matchClass == .sonnet }!
         #expect(sonnet.targetModel == "GLM-5.3")
