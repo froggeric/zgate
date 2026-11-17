@@ -49,6 +49,25 @@ import Testing
         #expect(manager.state == .stopped)   // save alone doesn't start anything
     }
 
+    /// Review finding 2 (2026-11-18 wave): an invalid (mid-typing) port must
+    /// never reach the config — saveAndApply is a no-op until the port is
+    /// valid, whatever caller invoked it.
+    @Test func saveAndApplyIgnoresInvalidPort() async throws {
+        let manager = SplashManager(
+            binaryPathProvider: { URL(fileURLWithPath: "/nonexistent") },
+            clock: ManualSplashClock(), probe: { _ in false })
+        var persisted: [SplashSettings] = []
+        let model = SplashTabModel(
+            manager: manager, settings: SplashSettings.defaultSeeded(),
+            persist: { persisted.append($0) })
+        model.port = 81   // mid-typing "81": parseable Int, invalid port
+        try await model.saveAndApply()
+        #expect(persisted.isEmpty)   // nothing written, nothing applied
+        model.port = 8123
+        try await model.saveAndApply()
+        #expect(persisted.count == 1 && persisted[0].port == 8123)
+    }
+
     @Test func extraArgsSplitOnWhitespace() {
         #expect(SplashProfile.parseExtraArgs(
             "--persistent-cache   --max-cache-disk 20G")
