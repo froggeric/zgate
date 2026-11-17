@@ -201,40 +201,72 @@ struct E2ESmokeTests {
         let data = try Data(contentsOf: AppPaths.appSupport.appendingPathComponent("config.json"))
         let config = try JSONDecoder().decode(AppConfig.self, from: data)
 
-        // The spec §2 matrix, by class, exactly once each.
+        // Pre-migration guard: the wave-1 live shape pinned sonnet → relay
+        // GLM-5.3-Flash. If that row is still there the new app has not
+        // launched against this config yet — name the cause instead of
+        // failing a cascade of shape expectations below.
+        if config.modelMappings.contains(where: {
+            $0.matchClass == .sonnet && $0.targetModel == "GLM-5.3-Flash"
+        }) {
+            Issue.record(
+                "live config not yet migrated — launch the new app once to run migration 5 (sonnet row still targets GLM-5.3-Flash)")
+            return
+        }
+
+        // The v2.1 matrix (owner ruling 2026-11-17), by class, in the LIVE
+        // config's rule order — the live config keeps its wave-1 order
+        // (auto, haiku, sonnet, opus, opus); migrations bring the rest:
+        // migration 3 seeds the splash section, migration 4 inserts the auto
+        // peak twin (DISABLED) at the top, migration 5 retargets sonnet →
+        // GLM-5.3 / haiku → relay GLM-5.3-Flash (backups dropped) and
+        // disables every conditioned rule — so BOTH twins ship as the
+        // dormant cost lever, and exactly they are the disabled rows.
         let classRules = config.modelMappings.filter { $0.matchClass != nil }
-        #expect(classRules.map(\.matchClass) == [.auto, .haiku, .sonnet, .opus, .opus])
+        #expect(classRules.map(\.matchClass) == [.auto, .auto, .haiku, .sonnet, .opus, .opus])
         #expect(config.modelMappings.last?.catchAll == true)
+        #expect(config.splash != nil)
         let disabled = config.modelMappings.filter { !$0.isEnabled }
-        #expect(disabled.count == 1 && disabled[0].matchClass == .opus)
+        #expect(disabled.map(\.sourceModel).sorted() == ["auto (peak hours)", "opus (peak hours)"])
 
         let relay = config.vendors.first { $0.vendorKind == .relay }
         let splash = config.vendors.first { $0.name.hasPrefix("splash") }
         #expect(relay?.baseURL == "https://zcode.z.ai/api/v1/ultra-zai/anthropic")
         #expect(splash?.baseURL == "http://127.0.0.1:8000")
 
-        // Resolution through the REAL router code (no health seam → splash
-        // counts as healthy; the disabled opus rule never matches), against
-        // the owner-ruled matrix (2026-11-16 correction of spec §2):
-        // glm-5.3 → sonnet → relay GLM-5.3-Flash (flash-tier metering, AC1's
-        // path), glm-5.3-flash → haiku → splash (q8 quant) with relay-Flash
-        // backup (AC2's rule), an unknown model → the terminal catch-all
+        // Resolution through the REAL router code (no condition seams needed
+        // — disabled twins never match; first eligible enabled rule wins),
+        // against the v2.1 all-relay matrix: ALL deliberate work rides
+        // opus-class GLM-5.3 on the relay — the bare glm-5.3 prefix now
+        // classifies .opus (AC1's path) and a sonnet-class name hits the
+        // sonnet row → the same GLM-5.3; haiku-class work (glm-5.3-flash,
+        // the fast background tier) → relay GLM-5.3-Flash as a SINGLE
+        // target (no splash primary, no backup — local qwen is off every
+        // default route); an unknown model → the terminal catch-all
         // (relay GLM-5.3-Flash).
         let client = try #require(config.clients.first { $0.clientName == "Claude Code" })
         let snapshot = RoutingSnapshot(from: config, for: client)
 
-        let sonnet = snapshot.resolve(model: "glm-5.3", originalAPIKey: "")
-        guard case .routed(let sonnetTarget) = sonnet.result else {
+        // v2.1: bare glm-5.3 prefix → .opus → relay GLM-5.3.
+        let opus = snapshot.resolve(model: "glm-5.3", originalAPIKey: "")
+        guard case .routed(let opusTarget) = opus.result else {
             Issue.record("glm-5.3 did not route"); return
         }
-        #expect(sonnetTarget.vendorName == "zcode relay")
-        #expect(sonnetTarget.targetModel == "GLM-5.3-Flash")
+        #expect(opusTarget.vendorName == "zcode relay")
+        #expect(opusTarget.targetModel == "GLM-5.3")
 
+        // Sonnet-class work rides the same opus-class relay model.
+        let sonnet = snapshot.resolve(model: "claude-sonnet-4-5", originalAPIKey: "")
+        guard case .routed(let sonnetTarget) = sonnet.result else {
+            Issue.record("sonnet-class model did not route"); return
+        }
+        #expect(sonnetTarget.vendorName == "zcode relay")
+        #expect(sonnetTarget.targetModel == "GLM-5.3")
+
+        // glm-5.3-flash → haiku → the fast relay tier, one target only.
         let flashTargets = snapshot.targets(for: "glm-5.3-flash") ?? []
-        #expect(flashTargets.count == 2)
-        #expect(flashTargets.first?.vendorName.hasPrefix("splash") == true)
-        #expect(flashTargets.first?.targetModel == "local/qwen3.8-27b-q8")
-        #expect(flashTargets.last?.targetModel == "GLM-5.3-Flash")
+        #expect(flashTargets.count == 1)
+        #expect(flashTargets.first?.vendorName == "zcode relay")
+        #expect(flashTargets.first?.targetModel == "GLM-5.3-Flash")
 
         // "fable" would classify as opus — pick a name no class rule matches.
         let unknown = snapshot.resolve(model: "unknown-model-x", originalAPIKey: "")
