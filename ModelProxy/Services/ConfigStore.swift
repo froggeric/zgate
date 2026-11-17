@@ -65,6 +65,8 @@ final class ConfigStore {
                 }
             }
 
+            config = applyMigrations(config)
+
             return (config, false)
         } catch {
             // Corrupt config: reset to defaults. StatusPopover shows one-time alert via didResetFromCorrupt flag.
@@ -73,6 +75,40 @@ final class ConfigStore {
             try? JSONEncoder.pretty.encode(defaults).write(to: fileURL)
             return (defaults, true)
         }
+    }
+
+    // MARK: - Migrations (idempotent, testable)
+
+    /// Package C (spec §6 riders): seed the splash section when absent, and
+    /// insert the auto-class peak twin into pre-wave configs. Existing rules,
+    /// ids and order are otherwise preserved; running twice changes nothing.
+    static func applyMigrations(_ config: AppConfig) -> AppConfig {
+        var config = config
+        // Migration 3: seed splash section only when absent.
+        if config.splash == nil {
+            config.splash = SplashSettings.defaultSeeded()
+        }
+        // Migration 4: auto-class peak twin (only when no auto rule already
+        // carries a timeWindow condition).
+        let hasAutoTwin = config.modelMappings.contains {
+            $0.matchClass == .auto && !($0.conditions ?? []).isEmpty
+        }
+        if !hasAutoTwin {
+            let relay = config.vendors.first { $0.vendorKind == .relay }
+            if let relayID = relay?.id,
+               let plainIndex = config.modelMappings.firstIndex(where: {
+                   $0.matchClass == .auto && ($0.conditions ?? []).isEmpty
+               }) {
+                let twin = ModelMapping(
+                    sourceModel: "auto (peak hours)", targetModel: "GLM-5.3-Flash",
+                    targetVendorID: relayID, matchClass: .auto,
+                    conditions: [RuleCondition(
+                        type: .timeWindow, days: .weekdays,
+                        from: "07:00", to: "11:00", tz: "Europe/Paris")])
+                config.modelMappings.insert(twin, at: plainIndex)
+            }
+        }
+        return config
     }
 
     // MARK: - Save

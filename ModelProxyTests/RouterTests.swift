@@ -541,50 +541,60 @@ struct RouterTests {
         #expect(splash["baseURL"] as? String == "http://127.0.0.1:8000")
         #expect(splash["replayPolicy"] as? String == "portableOnly")
 
-        // Rules, ordered: auto, haiku, sonnet, opus-peak (enabled — its time
-        // window gates it automatically), opus, fallback — with the
-        // owner-ruled targets (2026-11-16 correction of spec §2): sonnet
-        // meters at flash, haiku rides the splash q8 quant.
+        // Rules, ordered: auto-peak twin (enabled — its time window gates it
+        // automatically), auto, haiku, sonnet, opus-peak (enabled), opus,
+        // fallback — with the owner-ruled targets (2026-11-16 correction of
+        // spec §2): sonnet meters at flash, haiku rides the splash q8 quant.
         let mappings = try #require(json["modelMappings"] as? [[String: Any]])
-        #expect(mappings.count == 6)
+        #expect(mappings.count == 7)
         #expect(mappings[0]["matchClass"] as? String == "auto")
-        #expect(mappings[0]["targetModel"] as? String == "GLM-5.3")
-        #expect(mappings[1]["matchClass"] as? String == "haiku")
-        #expect(mappings[1]["targetModel"] as? String == "local/qwen3.8-27b-q8")
-        #expect(mappings[1]["backupTargetModel"] as? String == "GLM-5.3-Flash")
-        #expect(mappings[2]["matchClass"] as? String == "sonnet")
-        #expect(mappings[2]["targetModel"] as? String == "GLM-5.3-Flash")
-        #expect(mappings[3]["matchClass"] as? String == "opus")
+        #expect(mappings[0]["targetModel"] as? String == "GLM-5.3-Flash")
+        let autoPeak = try #require(mappings[0]["conditions"] as? [[String: Any]])
+        #expect(autoPeak.count == 1)
+        #expect(autoPeak[0]["type"] as? String == "timeWindow")
+        #expect(autoPeak[0]["days"] as? String == "weekdays")
+        #expect(autoPeak[0]["from"] as? String == "07:00")
+        #expect(autoPeak[0]["to"] as? String == "11:00")
+        #expect(autoPeak[0]["tz"] as? String == "Europe/Paris")
+        #expect(mappings[1]["matchClass"] as? String == "auto")
+        #expect(mappings[1]["targetModel"] as? String == "GLM-5.3")
+        #expect(mappings[2]["matchClass"] as? String == "haiku")
+        #expect(mappings[2]["targetModel"] as? String == "local/qwen3.8-27b-q8")
+        #expect(mappings[2]["backupTargetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[3]["matchClass"] as? String == "sonnet")
         #expect(mappings[3]["targetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[4]["matchClass"] as? String == "opus")
+        #expect(mappings[4]["targetModel"] as? String == "GLM-5.3-Flash")
         // Cost lever ships ENABLED (ruling 2026-11-16: auto-managed — the
         // time-window condition makes it inert outside peak).
-        #expect(mappings[3]["isEnabled"] as? Bool == true)
-        let peak = try #require(mappings[3]["conditions"] as? [[String: Any]])
+        #expect(mappings[4]["isEnabled"] as? Bool == true)
+        let peak = try #require(mappings[4]["conditions"] as? [[String: Any]])
         #expect(peak.count == 1)
         #expect(peak[0]["type"] as? String == "timeWindow")
         #expect(peak[0]["days"] as? String == "weekdays")
         #expect(peak[0]["from"] as? String == "07:00")
         #expect(peak[0]["to"] as? String == "11:00")
         #expect(peak[0]["tz"] as? String == "Europe/Paris")
-        #expect(mappings[4]["matchClass"] as? String == "opus")
-        #expect(mappings[4]["targetModel"] as? String == "GLM-5.3")
-        #expect(mappings[4]["isEnabled"] as? Bool == true)
-        #expect(mappings[5]["catchAll"] as? Bool == true)
-        #expect(mappings[5]["targetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[5]["matchClass"] as? String == "opus")
+        #expect(mappings[5]["targetModel"] as? String == "GLM-5.3")
+        #expect(mappings[5]["isEnabled"] as? Bool == true)
+        #expect(mappings[6]["catchAll"] as? Bool == true)
+        #expect(mappings[6]["targetModel"] as? String == "GLM-5.3-Flash")
 
         // Targets point at the vendors by id.
         let relayID = try #require(relay["id"] as? String)
         let splashID = try #require(splash["id"] as? String)
         #expect(mappings[0]["targetVendorID"] as? String == relayID)
-        #expect(mappings[1]["targetVendorID"] as? String == splashID)
-        #expect(mappings[5]["targetVendorID"] as? String == relayID)
+        #expect(mappings[1]["targetVendorID"] as? String == relayID)
+        #expect(mappings[2]["targetVendorID"] as? String == splashID)
+        #expect(mappings[6]["targetVendorID"] as? String == relayID)
 
         // Round-trip keeps the rule semantics.
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
         #expect(decoded.modelMappings.map(\.matchClass) == config.modelMappings.map(\.matchClass))
-        #expect(decoded.modelMappings[5].catchAll)
-        #expect(decoded.modelMappings[3].conditions == config.modelMappings[3].conditions)
-        #expect(decoded.modelMappings[3].isEnabled)
+        #expect(decoded.modelMappings[6].catchAll)
+        #expect(decoded.modelMappings[4].conditions == config.modelMappings[4].conditions)
+        #expect(decoded.modelMappings[4].isEnabled)
     }
 
     @Test func legacyConfigWithoutNewFieldsDecodesUnchanged() throws {
@@ -741,5 +751,31 @@ struct RouterTests {
 
         _ = try? await firstBlocker.close().get()
         _ = try? await secondBlocker.close().get()
+    }
+
+    // MARK: - Auto peak twin (Package C rider)
+
+    @Test func autoTwinRedirectsInsidePeakAndInertOutside() throws {
+        // One default-matrix instance: mappings and vendors must come from
+        // the same call or the vendor-id join in ClassRuleTable finds nothing.
+        let defaultConfig = AppConfig.makeZGateDefaultRouting(AppConfig())
+        let table = ClassRuleTable(
+            from: defaultConfig.modelMappings,
+            vendors: defaultConfig.vendors,
+            clientID: UUID())
+        func target(model: String, date: Date) -> String? {
+            table.firstMatch(
+                model: model,
+                context: ConditionContext(now: date, health: nil, quota: nil)
+            )?.targets.first?.targetModel
+        }
+        var paris = Calendar(identifier: .gregorian)
+        paris.timeZone = TimeZone(identifier: "Europe/Paris")!
+        // Monday 2026-11-16 09:00 Paris — inside the 07:00–11:00 window.
+        let monday = paris.date(from: DateComponents(year: 2026, month: 11, day: 16, hour: 9))!
+        // Same day 14:00 — outside.
+        let afternoon = paris.date(from: DateComponents(year: 2026, month: 11, day: 16, hour: 14))!
+        #expect(target(model: "", date: monday) == "GLM-5.3-Flash")
+        #expect(target(model: "", date: afternoon) == "GLM-5.3")
     }
 }

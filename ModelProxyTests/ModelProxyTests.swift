@@ -439,7 +439,7 @@ struct ModelProxyTests {
         #expect(config.clients[0].defaultUpstream == "https://api.anthropic.com")
         #expect(config.clients[1].clientName == "Codex")
         #expect(config.clients[1].port == 8789)
-        #expect(config.modelMappings.count == 6)
+        #expect(config.modelMappings.count == 7)
     }
 
     @Test func routingSnapshotCarriesVendorStripFlagToPrimaryAndFallbackTargets() {

@@ -161,12 +161,12 @@ extension AppConfig {
 
     /// Default matrix — owner ruling 2026-11-16 (corrects spec §2's original
     /// table; the spec carries a dated correction note). Editable in Settings.
-    /// Ordered rules, first match wins: `auto` first (CC auto mode), then the
-    /// class rules; the opus peak-hours cost lever ships ENABLED — its time
-    /// window (weekdays 07:00–11:00 Paris) gates it automatically, and it
-    /// sits before the plain opus rule so it wins during the window only; a
-    /// terminal catch-all fallback to relay flash means no request is ever
-    /// dropped for an unmatched model.
+    /// Ordered rules, first match wins: the auto peak twin, then `auto`
+    /// (CC auto mode), then the class rules; the peak-hours cost levers ship
+    /// ENABLED — their time window (weekdays 07:00–11:00 Paris) gates them
+    /// automatically, and each sits before its plain rule so it wins during
+    /// the window only; a terminal catch-all fallback to relay flash means no
+    /// request is ever dropped for an unmatched model.
     ///
     /// Owner cost choices baked in: sonnet (the class Claude Code's main
     /// thread sends) meters at the flash tier; haiku runs on the owner's
@@ -203,6 +203,11 @@ extension AppConfig {
         let peakHours = RuleCondition(
             type: .timeWindow, days: .weekdays, from: "07:00", to: "11:00", tz: "Europe/Paris")
         config.modelMappings = [
+            // Auto-class peak twin (Package C rider): the one class that had
+            // no peak guard. Same window as the opus twin — inert outside it.
+            ModelMapping(
+                sourceModel: "auto (peak hours)", targetModel: "GLM-5.3-Flash",
+                targetVendorID: relay.id, matchClass: .auto, conditions: [peakHours]),
             ModelMapping(
                 sourceModel: "auto", targetModel: "GLM-5.3", targetVendorID: relay.id,
                 matchClass: .auto),
