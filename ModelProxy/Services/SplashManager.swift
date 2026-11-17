@@ -200,7 +200,10 @@ final class SplashManager {
     func stop() async {
         suppressingRelaunch = true
         await stopChildIfAny()
-        state = .stopped
+        // Only declare .stopped when no replacement child appeared while we
+        // were parked stopping (rapid toggle off→on races through the grace
+        // window; the newer start owns the state — and the child — now).
+        if child == nil { state = .stopped }
         adoptedTask?.cancel(); adoptedTask = nil
     }
 
@@ -393,9 +396,17 @@ final class SplashManager {
             // escalation even under the instant virtual clock.
             try? await Task.sleep(nanoseconds: Self.realStopFloorNanos)
         }
-        if p.isRunning { killChild() }
+        if p.isRunning {
+            // Escalation hits OUR captured process only: the tracked child
+            // may since have been replaced by a newer start that raced
+            // through the grace window — never SIGKILL the replacement.
+            if child === p { kill(p.processIdentifier, SIGKILL) }
+        }
         _ = try? p.waitUntilExit()
-        child = nil
+        // Identity-guarded epilogue: erasing a replacement child here would
+        // orphan it (UI .stopped + canStop false while it still serves on
+        // :8000) and defeat quit-time cleanup, which consults `child`.
+        if child === p { child = nil }
     }
 
     private func killChild() {

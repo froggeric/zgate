@@ -360,7 +360,13 @@ struct SplashLogTail: View {
                 .padding(.vertical, 4)
             }
             .frame(minHeight: 140, maxHeight: 260)
-            .onChange(of: lines.count) { _, _ in
+            .onAppear {
+                if let last = lines.indices.last { proxy.scrollTo(last, anchor: .bottom) }
+            }
+            // Key on the newest line, not the count: the ring holds the
+            // count constant at capacity, where a count-keyed follow would
+            // permanently stop tracking new output.
+            .onChange(of: lines.last) { _, _ in
                 if let last = lines.indices.last { proxy.scrollTo(last, anchor: .bottom) }
             }
             .contextMenu {

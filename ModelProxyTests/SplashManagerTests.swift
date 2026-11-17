@@ -26,6 +26,44 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
     return url
 }
 
+/// Clock whose FIRST sleep parks on a gate the test opens — makes a
+/// stop-vs-replacement-start interleave deterministic (the stop is held
+/// inside its grace window while the replacement start runs to completion;
+/// no wake-order race between two parked grace loops).
+@MainActor final class GatedSplashClock: SplashClock, @unchecked Sendable {
+    let lock = NSLock()
+    private var current = Date(timeIntervalSince1970: 1_700_000_000)
+    private var gate: CheckedContinuation<Void, Never>?
+    private var gateOpened = false
+    private var sleeps = 0
+    /// True once the gated first sleep is parked.
+    var gateParked: Bool { lock.withLock { gate != nil } }
+    nonisolated init() {}   // default-arg expressions are checked nonisolated
+    func now() -> Date { lock.withLock { current } }
+    func sleep(seconds: TimeInterval) async throws {
+        let gated = lock.withLock { () -> Bool in
+            sleeps += 1
+            if sleeps == 1 && !gateOpened { return true }
+            current = current.addingTimeInterval(seconds)
+            return false
+        }
+        if gated {
+            await withCheckedContinuation { c in lock.withLock { gate = c } }
+            lock.withLock { current = current.addingTimeInterval(seconds) }
+        }
+    }
+    /// Release the parked first sleep (idempotent).
+    func openGate() {
+        let waiter: CheckedContinuation<Void, Never>? = lock.withLock {
+            gateOpened = true
+            let w = gate
+            gate = nil
+            return w
+        }
+        waiter?.resume()
+    }
+}
+
 @Suite(.serialized) @MainActor struct SplashManagerTests {
 
     /// Virtual clock: sleep() advances time instantly — the readiness loop
@@ -120,6 +158,45 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         #expect(clock.now().timeIntervalSince(t0) >= SplashManager.stopGrace)
         #expect(childProcess?.terminationReason == .uncaughtSignal)
         #expect(childProcess?.terminationStatus == Int32(SIGKILL))
+        #expect(m.state == .stopped)
+        #expect(m.child == nil)
+    }
+
+    @Test func stopRacingReplacementStartKeepsReplacementChild() async throws {
+        // I2 regression (fix round 1): a stop parked in its grace window
+        // while a replacement start spawns a new child must not erase (or
+        // signal) that child in its epilogue — the old unconditional
+        // `child = nil` orphaned the replacement (UI .stopped + canStop
+        // false while it still served on :8000; quit-time cleanup then saw
+        // child == nil and let it survive the app). The gated clock parks
+        // the stop's FIRST grace poll until the test opens the gate, so the
+        // replacement start provably completes inside the grace window.
+        let clock = GatedSplashClock()
+        let ignoreTerm = LockedBox(value: true)
+        let m = SplashManager(
+            binaryPathProvider: { try! writeSplashStub(ignoreTerm: ignoreTerm.load()) },
+            clock: clock, probe: { true })
+        try await m.start(profile: SplashProfile(name: "a", model: "m"))
+        try await waitForStubStdout(m)   // A executing; TERM trap armed
+        ignoreTerm.store(false)          // the replacement child obeys TERM
+        let stopTask = Task { await m.stop() }
+        // Wait for the stop to park inside its grace window (first clock sleep).
+        let parkedBy = Date().addingTimeInterval(5)
+        while !clock.gateParked, Date() < parkedBy {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        #expect(clock.gateParked)
+        // Replacement start INSIDE the grace window: its own stopChildIfAny
+        // escalates to SIGKILL on A, then B spawns and reaches running.
+        try await m.start(profile: SplashProfile(name: "b", model: "m"))
+        clock.openGate()
+        await stopTask.value
+        // The stop's epilogue must not erase the replacement child: B stays
+        // tracked, running and stoppable.
+        #expect(m.child != nil)
+        #expect(m.canStop)
+        #expect(m.state == .running(profile: "b", since: m.stateRunningSince!, adopted: false))
+        try await m.stop()   // cleanup: replacement obeys TERM, reaps cleanly
         #expect(m.state == .stopped)
         #expect(m.child == nil)
     }
