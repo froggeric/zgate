@@ -11,7 +11,11 @@ struct SplashModelInfo: Equatable, Sendable, Identifiable {
 /// Discovery client for the profile editor's live dropdown. Failure of any
 /// kind (server down, malformed payload) yields `[]` — free text still works.
 struct SplashModelsClient: Sendable {
-    static let endpoint = URL(string: "http://127.0.0.1:8000/v1/models")!
+    /// Legacy default kept for reference; the live endpoint derives from
+    /// SplashSettings.port (default 8123 since 2026-11-18 — was 8000).
+    static func endpoint(port: Int) -> URL {
+        URL(string: "http://127.0.0.1:\(port)/v1/models")!
+    }
 
     let fetch: @Sendable (URL) async throws -> Data
 
@@ -21,7 +25,8 @@ struct SplashModelsClient: Sendable {
         self.fetch = fetch
     }
 
-    func models(baseURL: URL = SplashModelsClient.endpoint) async -> [SplashModelInfo] {
+    func models(baseURL: URL? = nil) async -> [SplashModelInfo] {
+        let baseURL = baseURL ?? Self.endpoint(port: 8123)
         guard let data = try? await fetch(baseURL) else { return [] }
         struct Wire: Decodable {
             struct Entry: Decodable {

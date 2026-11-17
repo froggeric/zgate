@@ -555,16 +555,17 @@ struct RouterTests {
         #expect(relay["vendorKind"] as? String == "relay")
         #expect(relay["apiKey"] as? String == "")
         let splash = try #require(vendors.first { ($0["name"] as? String) == "splash (local)" })
-        #expect(splash["baseURL"] as? String == "http://127.0.0.1:8000")
+        #expect(splash["baseURL"] as? String == "http://127.0.0.1:8123")  // 2026-11-18: off 8000 (webserver conflicts)
         #expect(splash["replayPolicy"] as? String == "portableOnly")
 
-        // Rules, ordered (v2.1, ruling 2026-11-17): auto-peak twin (DISABLED),
-        // auto, sonnet, haiku, opus-peak (DISABLED), opus, fallback — all
-        // deliberate work opus-class on the relay (sonnet → GLM-5.3, haiku →
-        // GLM-5.3-Flash), twins kept as a dormant cost lever, local qwen off
-        // every default route.
+        // Rules, ordered (v2.1 + qwen levers 2026-11-18): auto-peak twin
+        // (DISABLED), auto, sonnet, haiku, haiku-qwen (DISABLED),
+        // sonnet-qwen (DISABLED), opus-peak (DISABLED), opus, fallback —
+        // all deliberate work opus-class on the relay (sonnet → GLM-5.3,
+        // haiku → GLM-5.3-Flash), twins + qwen rows dormant levers, local
+        // qwen off every ACTIVE default route.
         let mappings = try #require(json["modelMappings"] as? [[String: Any]])
-        #expect(mappings.count == 7)
+        #expect(mappings.count == 9)
         #expect(mappings[0]["matchClass"] as? String == "auto")
         #expect(mappings[0]["targetModel"] as? String == "GLM-5.3-Flash")
         #expect(mappings[0]["isEnabled"] as? Bool == false)
@@ -582,22 +583,32 @@ struct RouterTests {
         #expect(mappings[3]["matchClass"] as? String == "haiku")
         #expect(mappings[3]["targetModel"] as? String == "GLM-5.3-Flash")
         #expect(mappings[3]["backupTargetModel"] == nil)  // v2.1: no backups
-        #expect(mappings[4]["matchClass"] as? String == "opus")
-        #expect(mappings[4]["targetModel"] as? String == "GLM-5.3-Flash")
+        // Qwen levers (2026-11-18): DISABLED rows to local splash qwen with
+        // relay-Flash failover — single-toggle local routing per tier.
+        #expect(mappings[4]["matchClass"] as? String == "haiku")
+        #expect(mappings[4]["targetModel"] as? String == "local/qwen3.8-27b-q8")
+        #expect(mappings[4]["isEnabled"] as? Bool == false)
+        #expect(mappings[4]["backupTargetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[5]["matchClass"] as? String == "sonnet")
+        #expect(mappings[5]["targetModel"] as? String == "local/qwen3.8-27b-q8")
+        #expect(mappings[5]["isEnabled"] as? Bool == false)
+        #expect(mappings[5]["backupTargetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[6]["matchClass"] as? String == "opus")
+        #expect(mappings[6]["targetModel"] as? String == "GLM-5.3-Flash")
         // Cost lever ships DISABLED (ruling 2026-11-17: dormant — one toggle
         // to re-arm if peak metering ever returns).
-        #expect(mappings[4]["isEnabled"] as? Bool == false)
-        let peak = try #require(mappings[4]["conditions"] as? [[String: Any]])
+        #expect(mappings[6]["isEnabled"] as? Bool == false)
+        let peak = try #require(mappings[6]["conditions"] as? [[String: Any]])
         #expect(peak.count == 1)
         #expect(peak[0]["type"] as? String == "timeWindow")
         #expect(peak[0]["days"] as? String == "weekdays")
         #expect(peak[0]["from"] as? String == "07:00")
         #expect(peak[0]["to"] as? String == "11:00")
         #expect(peak[0]["tz"] as? String == "Europe/Paris")
-        #expect(mappings[5]["matchClass"] as? String == "opus")
-        #expect(mappings[5]["targetModel"] as? String == "GLM-5.3")
-        #expect(mappings[5]["isEnabled"] as? Bool == true)
-        #expect(mappings[6]["catchAll"] as? Bool == true)
+        #expect(mappings[7]["matchClass"] as? String == "opus")
+        #expect(mappings[7]["targetModel"] as? String == "GLM-5.3")
+        #expect(mappings[7]["isEnabled"] as? Bool == true)
+        #expect(mappings[8]["catchAll"] as? Bool == true)
         #expect(mappings[6]["targetModel"] as? String == "GLM-5.3-Flash")
 
         // Targets point at the vendors by id — every rule rides the relay
@@ -609,12 +620,17 @@ struct RouterTests {
         #expect(mappings[2]["targetVendorID"] as? String == relayID)
         #expect(mappings[3]["targetVendorID"] as? String == relayID)
         #expect(mappings[6]["targetVendorID"] as? String == relayID)
-        #expect(!mappings.contains { ($0["targetVendorID"] as? String) == splashID })
+        #expect(mappings[7]["targetVendorID"] as? String == relayID)
+        // 2026-11-18: the qwen levers (mappings[4..6]) DO target splash —
+        // but only while DISABLED; no ENABLED default rule routes local.
+        #expect(!mappings.contains {
+            ($0["targetVendorID"] as? String) == splashID && ($0["isEnabled"] as? Bool ?? true)
+        })
 
         // Round-trip keeps the rule semantics.
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
         #expect(decoded.modelMappings.map(\.matchClass) == config.modelMappings.map(\.matchClass))
-        #expect(decoded.modelMappings[6].catchAll)
+        #expect(decoded.modelMappings[8].catchAll)
         #expect(decoded.modelMappings[4].conditions == config.modelMappings[4].conditions)
         #expect(decoded.modelMappings[4].isEnabled == false)
     }
@@ -786,9 +802,11 @@ struct RouterTests {
         var paris = Calendar(identifier: .gregorian)
         paris.timeZone = TimeZone(identifier: "Europe/Paris")!
         let monday9 = paris.date(from: DateComponents(year: 2026, month: 11, day: 16, hour: 9))!
-        #expect(cfg.modelMappings.count == 7)
+        #expect(cfg.modelMappings.count == 9)
         let twins = cfg.modelMappings.filter { !($0.conditions ?? []).isEmpty }
         #expect(twins.count == 2 && twins.allSatisfy { $0.isEnabled == false })
+        let qwenLevers = cfg.modelMappings.filter { $0.targetModel == "local/qwen3.8-27b-q8" }
+        #expect(qwenLevers.count == 2 && qwenLevers.allSatisfy { !$0.isEnabled })
         #expect(target("glm-5.3[1m]", monday9) == "GLM-5.3")        // twins disabled → big model always
         #expect(target("glm-5.3-flash[1m]", monday9) == "GLM-5.3-Flash")
         #expect(target("qwen3.8-27b", monday9) == "GLM-5.3-Flash")  // catchAll: qwen off default routes

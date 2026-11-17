@@ -35,7 +35,7 @@ import Testing
         // real manager with inert seams (probe false, no binary needed while stopped)
         let manager = SplashManager(
             binaryPathProvider: { URL(fileURLWithPath: "/nonexistent") },
-            clock: ManualSplashClock(), probe: { false })
+            clock: ManualSplashClock(), probe: { _ in false })
         var persisted: [SplashSettings] = []
         let model = SplashTabModel(
             manager: manager, settings: SplashSettings.defaultSeeded(),
@@ -71,7 +71,7 @@ import Testing
         SplashTabModel(
             manager: SplashManager(
                 binaryPathProvider: { URL(fileURLWithPath: "/nonexistent") },
-                clock: ManualSplashClock(), probe: { false }),
+                clock: ManualSplashClock(), probe: { _ in false }),
             settings: settings, persist: { _ in })
     }
 

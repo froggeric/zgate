@@ -6,6 +6,22 @@ under Unreleased, newest first.
 
 ## [Unreleased]
 
+### 2026-11-18 — post-2.6(3) fixes: splash port, qwen levers, signing, UI polish
+
+- Splash port is configurable (Settings → Splash; changing it restarts the
+  server) and moved off 8000 — the new default is **8123**, which stops
+  colliding with common local webservers. Existing configs migrate once;
+  hand-edited ports survive. Managed servers bind it via `--port`.
+- Two DISABLED qwen routing rules ship in the default matrix (haiku and
+  sonnet → splash `local/qwen3.8-27b-q8`, relay-Flash failover): enabling
+  one in Settings → Rules takes that tier local in a single toggle.
+- Listener port numbers no longer render with thousands separators
+  ("8,787") on the Advanced tab.
+- The popover's Recent Requests section renders ~8 rows tall (was
+  collapsing to one).
+- Release builds are signed with a Developer ID Application certificate
+  (hardened runtime on) and `scripts/notarize.sh` submits + staples them.
+
 ### 2026-11-17 — clean tier routing (v2.1)
 
 - Routing matrix v2.1: all deliberate work (opus- and sonnet-class) maps to

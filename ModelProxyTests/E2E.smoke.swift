@@ -214,25 +214,29 @@ struct E2ESmokeTests {
             return
         }
 
-        // The v2.1 matrix (owner ruling 2026-11-17), by class, in the LIVE
+        // The v2.1 matrix + qwen levers (2026-11-18), by class, in the LIVE
         // config's rule order — the live config keeps its wave-1 order
         // (auto, haiku, sonnet, opus, opus); migrations bring the rest:
         // migration 3 seeds the splash section, migration 4 inserts the auto
         // peak twin (DISABLED) at the top, migration 5 retargets sonnet →
         // GLM-5.3 / haiku → relay GLM-5.3-Flash (backups dropped) and
         // disables every conditioned rule — so BOTH twins ship as the
-        // dormant cost lever, and exactly they are the disabled rows.
+        // dormant cost lever. Migrations 6+7 (2026-11-18) retarget the
+        // splash vendor to :8123 and insert the two DISABLED qwen rows at
+        // each tier's plain row. Disabled = both twins + both qwen levers.
         let classRules = config.modelMappings.filter { $0.matchClass != nil }
-        #expect(classRules.map(\.matchClass) == [.auto, .auto, .haiku, .sonnet, .opus, .opus])
+        #expect(classRules.map(\.matchClass) == [.auto, .auto, .haiku, .haiku, .sonnet, .sonnet, .opus, .opus])
         #expect(config.modelMappings.last?.catchAll == true)
         #expect(config.splash != nil)
+        #expect(config.splash?.port == 8123)
         let disabled = config.modelMappings.filter { !$0.isEnabled }
-        #expect(disabled.map(\.sourceModel).sorted() == ["auto (peak hours)", "opus (peak hours)"])
+        #expect(disabled.map(\.sourceModel).sorted() == [
+            "auto (peak hours)", "haiku (local qwen)", "opus (peak hours)", "sonnet (local qwen)"])
 
         let relay = config.vendors.first { $0.vendorKind == .relay }
         let splash = config.vendors.first { $0.name.hasPrefix("splash") }
         #expect(relay?.baseURL == "https://zcode.z.ai/api/v1/ultra-zai/anthropic")
-        #expect(splash?.baseURL == "http://127.0.0.1:8000")
+        #expect(splash?.baseURL == "http://127.0.0.1:8123")
 
         // Resolution through the REAL router code (no condition seams needed
         // — disabled twins never match; first eligible enabled rule wins),

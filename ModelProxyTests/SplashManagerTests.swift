@@ -81,7 +81,7 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
 
     func makeManager(
         clock: ManualClock = ManualClock(),
-        probeResult: @Sendable @escaping () async -> Bool
+        probeResult: @Sendable @escaping (Int) async -> Bool
     ) -> SplashManager {
         SplashManager(
             binaryPathProvider: { try! writeSplashStub() },   // fresh stub per launch
@@ -111,7 +111,7 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
     }
 
     @Test func startReachesRunningAndPipesStdout() async throws {
-        let m = makeManager { true }
+        let m = makeManager { _ in true }
         try await m.start(profile: SplashProfile(name: "p", model: "m"))
         #expect(m.state == .running(profile: "p", since: m.stateRunningSince!, adopted: false))
         #expect(m.launchCount == 1)
@@ -121,14 +121,14 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
     }
 
     @Test func readinessTimeoutFailsToCrashed() async throws {
-        let m = makeManager { false }
+        let m = makeManager { _ in false }
         try await m.start(profile: SplashProfile(name: "p", model: "m"))
         if case .crashed = m.state {} else { Issue.record("expected crashed, got \(m.state)") }
         #expect(m.child == nil)
     }
 
     @Test func stopReapsTermObeyingChild() async throws {
-        let m = makeManager { true }
+        let m = makeManager { _ in true }
         try await m.start(profile: SplashProfile(name: "p", model: "m"))
         // Wait for the stub to come up so TERM lands on a running shell
         // (not a pre-exec fork) and the reaping path is exercised.
@@ -143,7 +143,7 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         // one stub shared: binaryPathProvider must return the TERM-ignorer
         let stub = try writeSplashStub(ignoreTerm: true)
         let m = SplashManager(
-            binaryPathProvider: { stub }, clock: clock, probe: { true })
+            binaryPathProvider: { stub }, clock: clock, probe: { _ in true })
         try await m.start(profile: SplashProfile(name: "p", model: "m"))
         // TERM must land AFTER the stub's `trap '' TERM` line executes or the
         // child dies pre-trap and the escalation path is never exercised.
@@ -175,7 +175,7 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         let ignoreTerm = LockedBox(value: true)
         let m = SplashManager(
             binaryPathProvider: { try! writeSplashStub(ignoreTerm: ignoreTerm.load()) },
-            clock: clock, probe: { true })
+            clock: clock, probe: { _ in true })
         try await m.start(profile: SplashProfile(name: "a", model: "m"))
         try await waitForStubStdout(m)   // A executing; TERM trap armed
         ignoreTerm.store(false)          // the replacement child obeys TERM
@@ -216,7 +216,7 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         // would make configure adopt the port instead of ever launching, so
         // no child could exit and launchCount could never reach 2.
         let box = LockedBox(value: false)
-        let m = SplashManager(binaryPathProvider: { stubURL }, clock: clock, probe: { box.load() })
+        let m = SplashManager(binaryPathProvider: { stubURL }, clock: clock, probe: { _ in box.load() })
         let settings = SplashSettings(keepRunning: true, profiles: [SplashProfile(name: "p", model: "m")])
         await m.configure(settings: settings)
         box.store(true)
@@ -252,7 +252,7 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         let poison = LockedBox(value: false)
         let m = SplashManager(
             binaryPathProvider: { poison.load() ? poisonURL : stableURL },
-            clock: clock, probe: { probeBox.load() })
+            clock: clock, probe: { _ in probeBox.load() })
         let settings = SplashSettings(keepRunning: true, profiles: [SplashProfile(name: "p", model: "m")])
         await m.configure(settings: settings)   // startOwned (probe silent) → stable stub
         probeBox.store(true)                    // readiness resolves → becameRunning
@@ -272,7 +272,7 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
     }
 
     @Test func adoptExternalWhenPortAnswers() async throws {
-        let m = makeManager { true }
+        let m = makeManager { _ in true }
         let settings = SplashSettings(keepRunning: true, profiles: [SplashProfile(name: "p", model: "m")])
         await m.configure(settings: settings)
         #expect(m.state == .running(profile: "p", since: m.stateRunningSince!, adopted: true))
@@ -283,7 +283,7 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
     @Test func adoptedDeathTakesOverWithOwnedStart() async throws {
         // probe answers for the first sweep(s), then stops answering
         let box = LockedBox(value: true)
-        let m = makeManager { box.load() }
+        let m = makeManager { _ in box.load() }
         let settings = SplashSettings(keepRunning: true, profiles: [SplashProfile(name: "p", model: "m")])
         await m.configure(settings: settings)
         #expect(m.state == .running(profile: "p", since: m.stateRunningSince!, adopted: true))
@@ -310,7 +310,7 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
 
         // (a) adopted window: probe answers at configure, dies after OFF.
         let box = LockedBox(value: true)
-        let adopted = makeManager { box.load() }
+        let adopted = makeManager { _ in box.load() }
         await adopted.configure(settings: on)
         if case .running(_, _, true) = adopted.state {} else {
             Issue.record("expected adopted running, got \(adopted.state)")
@@ -332,7 +332,7 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         let clock = GatedSplashClock()
         let stubURL = try writeSplashStub()   // stay-alive, TERM-obeying
         let parked = SplashManager(
-            binaryPathProvider: { stubURL }, clock: clock, probe: { true })
+            binaryPathProvider: { stubURL }, clock: clock, probe: { _ in true })
         parked.applySettings(on)
         try await parked.start(profile: SplashProfile(name: "p", model: "m"))
         #expect(parked.launchCount == 1)

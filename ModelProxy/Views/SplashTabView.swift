@@ -16,6 +16,8 @@ final class SplashTabModel {
     var activeProfileID: UUID?
     var keepRunning: Bool
     var binaryPathOverride: String?
+    var port: Int
+    static let portRange = 1024...65535
     private let persist: @MainActor (SplashSettings) -> Void
 
     init(
@@ -28,14 +30,19 @@ final class SplashTabModel {
         self.activeProfileID = s.activeProfileID
         self.keepRunning = s.keepRunning
         self.binaryPathOverride = s.binaryPathOverride
+        self.port = s.port
         self.persist = persist
     }
 
     func settings() -> SplashSettings {
         SplashSettings(
             keepRunning: keepRunning, activeProfileID: activeProfileID,
-            profiles: profiles, binaryPathOverride: binaryPathOverride)
+            profiles: profiles, binaryPathOverride: binaryPathOverride, port: port)
     }
+
+    /// Ports outside the valid range don't apply — the view disables
+    /// submission and keeps serving the last valid configuration.
+    var portIsValid: Bool { Self.portRange.contains(port) }
 
     /// Persist; when we're supposed to run, restart onto the active profile
     /// (spec §4: switching = restart; stopped → just record). The manager's
@@ -47,6 +54,8 @@ final class SplashTabModel {
         let s = settings()
         persist(s)
         manager.applySettings(s)
+        // Restart covers port changes too: --port is baked into the
+        // running server's argv, so a new port must rebind.
         if keepRunning, let p = s.activeProfile {
             await manager.restart(profile: p)
         }
@@ -178,7 +187,7 @@ struct SplashTabView: View {
                     configStore.save()
                 }
             }
-            discovered = await SplashModelsClient().models()
+            discovered = await SplashModelsClient().models(baseURL: SplashModelsClient.endpoint(port: model?.settings().port ?? 8123))
             refreshInstallLine()
         }
         .sheet(item: $editingProfile) { profile in
@@ -234,6 +243,26 @@ struct SplashTabView: View {
                             if !on && manager.canStop { await manager.stop() }
                         }
                     }))
+                HStack {
+                    Text("Port")
+                    Spacer()
+                    TextField(
+                        "Port", text: Binding(
+                            get: { String(m.port) },
+                            set: { text in
+                                guard let p = Int(text.trimmingCharacters(in: .whitespaces)) else { return }
+                                m.port = p
+                                Task { await m.saveAndApply() }
+                            }))
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 90)
+                        .foregroundStyle(m.portIsValid ? AnyShapeStyle(.primary) : AnyShapeStyle(.red))
+                }
+                if !m.portIsValid {
+                    Text("Port must be 1024–65535; changes apply (and restart the server) once valid.")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
             }
         }
     }

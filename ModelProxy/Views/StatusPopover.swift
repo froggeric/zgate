@@ -482,7 +482,7 @@ struct StatusPopover: View {
                             }
                         }
                     }
-                    .frame(maxHeight: 240)
+                    .frame(height: 220)
                     .onChange(of: trafficLog.entries.last?.id) { _, _ in
                         if let last = trafficLog.entries.last {
                             withAnimation(.easeOut(duration: 0.2)) {

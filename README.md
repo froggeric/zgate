@@ -31,6 +31,7 @@ editable in Settings → Rules.
 | `sonnet` class | zcode relay `GLM-5.3` | — | v2.1: same serving as opus |
 | `opus` class, weekdays 07:00–11:00 Europe/Paris | zcode relay `GLM-5.3-Flash` | — | peak twin — **disabled** by default (3× peak metering; dormant cost lever) |
 | `opus` class | zcode relay `GLM-5.3` | — | |
+| `haiku`/`sonnet` (local qwen levers) | splash `local/qwen3.8-27b-q8` | relay `GLM-5.3-Flash` | **disabled** by default — one toggle in Settings → Rules takes that tier local (health-gated) |
 | fallback (catch-all, incl. unknown/local qwen ids) | zcode relay `GLM-5.3-Flash` | — | no request is ever dropped |
 
 **v2.1 routing (2026-11-17):** all deliberate work — the opus and sonnet
@@ -39,9 +40,11 @@ goes to `GLM-5.3-Flash`. The local qwen model is off all default routes
 (quality ruling, 2026-11-17). The peak twins (auto and opus) ship disabled
 by default — a dormant cost lever if relay peak metering is ever confirmed.
 
-Splash — the local Anthropic-protocol server on `127.0.0.1:8000` — is
-optional and managed from Settings → Splash (see
-[Splash](#splash-local-server-optional)); no default rule targets it.
+Splash — the local Anthropic-protocol server on `127.0.0.1` (port
+configurable, default **8123** — moved off 8000 in 2026-11-18 to stop
+colliding with local webservers) — is optional and managed from Settings →
+Splash (see [Splash](#splash-local-server-optional)); no ENABLED default
+rule targets it.
 
 ### Claude Code tier aliases
 
@@ -199,7 +202,7 @@ and `glm-5.3` bills **3× during Paris weekday peak** (07:00–11:00).
 Relayed traffic draws the windows down with a **lazy sync lag**: the weekly
 window updates in small steps that can lag hours behind, so a flat
 menu-bar % right after heavy relay routing is a lag plateau, not exemption.
-Splash (`127.0.0.1:8000`, local) never touches z.ai. There is no second
+Splash (local, `127.0.0.1:<port>` — default 8123) never touches z.ai. There is no second
 ledger to watch either: the z.ai web dashboard and the ZCode app show the
 same quota windows the menu bar polls.
 
@@ -247,7 +250,7 @@ same quota windows the menu bar polls.
   edits in Settings need Pause/Resume (or relaunch) to rebind.
 - **Splash down:** nothing in the default matrix routes to splash, so
   default routing is unaffected. Custom rules targeting splash are held
-  back while its `127.0.0.1:8000` probe fails and resume automatically when
+  back while its probe (`127.0.0.1:<splash port>`) fails and resume automatically when
   it answers again — start it from Settings → Splash; no ZGate restart
   needed.
 - **Quota bar stays empty (bare `ZΓ`):** the monitor poll couldn't
@@ -265,7 +268,7 @@ same quota windows the menu bar polls.
 - **model-proxy** by norvyn — MIT; this fork's `LICENSE` is upstream's.
   Original README: [`README.upstream.md`](README.upstream.md).
 - **Splash** (`splash-m1`) — the local Anthropic-protocol inference server
-  on `127.0.0.1:8000`, managed from Settings → Splash.
+  on `127.0.0.1` (default port 8123), managed from Settings → Splash.
 - End-to-end proof against the live signed relay:
   [`docs/e2e-checklist.md`](docs/e2e-checklist.md).
 - Working notes for the fork: [`docs/zgate-notes.md`](docs/zgate-notes.md).

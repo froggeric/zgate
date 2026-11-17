@@ -785,14 +785,16 @@ struct AdvancedTabView: View {
                     Spacer()
                     if let bound = proxyServer.boundPorts[client.clientName] {
                         if bound != client.port {
-                            Text("configured \(client.port) → bound \(bound)")
+                            // verbatim: LocalizedStringKey Int interpolation
+                            // would group digits ("8,787").
+                            Text(verbatim: "configured \(client.port) → bound \(bound)")
                                 .foregroundStyle(.orange)
                         } else {
-                            Text("127.0.0.1:\(bound)")
+                            Text(verbatim: "127.0.0.1:\(bound)")
                                 .foregroundStyle(.secondary)
                         }
                     } else {
-                        Text("configured \(client.port) — not listening")
+                        Text(verbatim: "configured \(client.port) — not listening")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -903,7 +905,7 @@ struct AboutTabView: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Splash local target")
-                    Text("Anthropic-protocol server on 127.0.0.1:8000 (default rule target local/qwen3.8-27b-q8) — haiku-class traffic stays local, with relay failover.")
+                    Text("Anthropic-protocol local server (splash). Port is configured on the Splash tab (default 8123); the disabled qwen rules under Rules route here once enabled.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

@@ -196,7 +196,7 @@ extension AppConfig {
             vendorKind: .relay)
         let splash = Vendor(
             name: "splash (local)",
-            baseURL: "http://127.0.0.1:8000",
+            baseURL: "http://127.0.0.1:8123",
             apiKey: "",
             replayPolicy: .portableOnly)
         config.vendors = [relay, splash]
@@ -224,6 +224,21 @@ extension AppConfig {
             ModelMapping(
                 sourceModel: "haiku", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id,
                 matchClass: .haiku),
+            // Qwen levers (2026-11-18): DISABLED rows routing a tier to the
+            // local splash qwen model with relay-Flash failover — enable in
+            // Settings → Rules to take that tier local (health-gated: splash
+            // down = the backup serves). Existing installs get the same rows
+            // from migration 7.
+            ModelMapping(
+                sourceModel: "haiku (local qwen)", targetModel: "local/qwen3.8-27b-q8",
+                targetVendorID: splash.id,
+                backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: relay.id,
+                isEnabled: false, matchClass: .haiku),
+            ModelMapping(
+                sourceModel: "sonnet (local qwen)", targetModel: "local/qwen3.8-27b-q8",
+                targetVendorID: splash.id,
+                backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: relay.id,
+                isEnabled: false, matchClass: .sonnet),
             ModelMapping(
                 sourceModel: "opus (peak hours)", targetModel: "GLM-5.3-Flash",
                 targetVendorID: relay.id, isEnabled: false,

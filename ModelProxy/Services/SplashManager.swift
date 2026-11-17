@@ -23,10 +23,11 @@ struct SystemSplashClock: SplashClock {
     }
 }
 
-/// One TCP/HTTP answer from 127.0.0.1:8000 = "splash is serving".
+/// One TCP/HTTP answer from 127.0.0.1:<port> = "splash is serving". Port
+/// comes from SplashSettings (default 8123; was 8000 before 2026-11-18).
 enum SplashPortProbe {
-    static func answers() async -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:8000/v1/models") else { return false }
+    static func answers(on port: Int) async -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/v1/models") else { return false }
         var req = URLRequest(url: url)
         req.timeoutInterval = 1.5
         return (try? await URLSession.shared.data(for: req)) != nil
@@ -116,14 +117,14 @@ final class SplashManager {
 
     private let binaryPathProvider: @Sendable () throws -> URL
     private let clock: any SplashClock
-    private let probe: @Sendable () async -> Bool
+    private let probe: @Sendable (Int) async -> Bool
 
     init(
         binaryPathProvider: @escaping @Sendable () throws -> URL = {
             URL(fileURLWithPath: SplashManager.resolvedBinaryPath())
         },
         clock: any SplashClock = SystemSplashClock(),
-        probe: @escaping @Sendable () async -> Bool = { await SplashPortProbe.answers() }
+        probe: @escaping @Sendable (Int) async -> Bool = { await SplashPortProbe.answers(on: $0) }
     ) {
         self.binaryPathProvider = binaryPathProvider
         self.clock = clock
@@ -170,7 +171,7 @@ final class SplashManager {
         guard let settings, settings.keepRunning else { return }
         let plan = SplashStartupPlanner.plan(
             keepRunning: settings.keepRunning,
-            portAnswers: await probe(),
+            portAnswers: await probe(settings.port),
             hasChild: child != nil)
         switch plan {
         case .startOwned:
@@ -245,7 +246,7 @@ final class SplashManager {
     /// awaiting readiness so the sweep returns while still `.starting`.
     func runAdoptedSweepNow() async {
         guard adoptedTask != nil else { return }
-        guard await probe() else {
+        guard await probe(settings?.port ?? 8123) else {
             adoptedMisses += 1
             if adoptedMisses >= 2,
                case .running(_, _, true) = state,
@@ -278,7 +279,11 @@ final class SplashManager {
         do {
             let p = Process()
             p.executableURL = try effectiveBinaryPath()
-            p.arguments = profile.launchArguments()
+            var args = profile.launchArguments()
+            if !args.contains("--port") {
+                args += ["--port", String(settings?.port ?? 8123)]
+            }
+            p.arguments = args
             let out = Pipe(), err = Pipe()
             p.standardOutput = out; p.standardError = err
             Self.wire(pipe: out, into: self)
@@ -309,7 +314,7 @@ final class SplashManager {
             let deadline = self.clock.now().addingTimeInterval(Self.readinessTimeout)
             while self.clock.now() < deadline {
                 if Task.isCancelled { return }
-                if await self.probe() {
+                if await self.probe(self.settings?.port ?? 8123) {
                     guard self.generation == g,
                           case .starting(profile.name) = self.state else { return }
                     self.becameRunning(profile: profile, adopted: false)
@@ -387,7 +392,7 @@ final class SplashManager {
             while !Task.isCancelled {
                 guard let self else { return }
                 try? await self.clock.sleep(seconds: Self.adoptedProbeInterval)
-                guard await self.probe() else {
+                guard await self.probe(self.settings?.port ?? 8123) else {
                     misses += 1
                     if misses >= 2 {
                         guard case .running(_, _, true) = self.state,

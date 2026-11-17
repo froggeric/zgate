@@ -31,7 +31,7 @@ import OSLog
 enum LocalTarget {
 
     // Splash identity (the user's local inference engine).
-    static let defaultBaseURL = "http://127.0.0.1:8000"
+    static let defaultBaseURL = "http://127.0.0.1:8123"
     /// Splash's default model — the value a rule's `targetModel` names
     /// (the splash-m1 GGUF Q8 serve model, owner ruling 2026-11-16).
     static let defaultModel = "local/qwen3.8-27b-q8"

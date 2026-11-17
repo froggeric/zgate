@@ -139,22 +139,28 @@ final class ConfigStore {
         // once more — the inherent limit of value-gating without a schema
         // version marker; acceptable.
         let relayID = config.vendors.first { $0.vendorKind == .relay }?.id
+        // `isEnabled` in every predicate below (tightened 2026-11-18): the
+        // pre-v2 live shape was ENABLED rows, and migration 7 now inserts
+        // DISABLED haiku/sonnet qwen rows that must never satisfy this gate
+        // or its retarget actions.
         if let relayID,
            config.modelMappings.contains(where: {
                $0.matchClass == .sonnet && $0.targetModel == "GLM-5.3-Flash"
-                   && $0.targetVendorID == relayID
+                   && $0.targetVendorID == relayID && $0.isEnabled
            }),
            config.modelMappings.contains(where: {
                $0.matchClass == .haiku && $0.targetModel == "local/qwen3.8-27b-q8"
+                   && $0.isEnabled
            }) {
             if let i = config.modelMappings.firstIndex(where: {
                 $0.matchClass == .sonnet && $0.targetModel == "GLM-5.3-Flash"
-                    && $0.targetVendorID == relayID
+                    && $0.targetVendorID == relayID && $0.isEnabled
             }) {
                 config.modelMappings[i].targetModel = "GLM-5.3"
             }
             if let i = config.modelMappings.firstIndex(where: {
                 $0.matchClass == .haiku && $0.targetModel == "local/qwen3.8-27b-q8"
+                    && $0.isEnabled
             }) {
                 config.modelMappings[i].targetModel = "GLM-5.3-Flash"
                 config.modelMappings[i].targetVendorID = relayID
@@ -163,6 +169,41 @@ final class ConfigStore {
             }
             for i in config.modelMappings.indices where !(config.modelMappings[i].conditions ?? []).isEmpty {
                 config.modelMappings[i].isEnabled = false
+            }
+        }
+        // Migration 6 (2026-11-18): splash off port 8000 — it collided with
+        // local webservers. Retarget the splash vendor's baseURL to 8123
+        // ONLY where it still equals the old default; hand-edited ports
+        // survive. (The settings' `port` field itself needs no migration:
+        // tolerant decode defaults it.)
+        for i in config.vendors.indices
+        where config.vendors[i].vendorKind != .relay
+            && config.vendors[i].baseURL == "http://127.0.0.1:8000" {
+            config.vendors[i].baseURL = "http://127.0.0.1:8123"
+        }
+        // Migration 7 (2026-11-18): qwen routing lever — two DISABLED rows
+        // (haiku + sonnet → splash, local/qwen3.8-27b-q8, relay GLM-5.3-Flash
+        // backup) so flipping local routing on later is a single toggle in
+        // Settings → Rules. Inserted once per class: absent = insert;
+        // present (disabled OR user-enabled) = gate cold.
+        let splashID = config.vendors.first { $0.vendorKind != .relay }?.id
+        if let splashID, let relayID {
+            for cls in [ModelClass.haiku, ModelClass.sonnet] {
+                let targetsSplash = config.modelMappings.contains {
+                    $0.matchClass == cls && $0.targetVendorID == splashID
+                }
+                if !targetsSplash, let idx = config.modelMappings.firstIndex(where: {
+                    $0.matchClass == cls && ($0.conditions ?? []).isEmpty
+                }) {
+                    let qwen = ModelMapping(
+                        sourceModel: "\(cls.rawValue) (local qwen)",
+                        targetModel: "local/qwen3.8-27b-q8",
+                        targetVendorID: splashID,
+                        backupTargetModel: "GLM-5.3-Flash",
+                        backupTargetVendorID: relayID,
+                        isEnabled: false, matchClass: cls)
+                    config.modelMappings.insert(qwen, at: idx)
+                }
             }
         }
         return config

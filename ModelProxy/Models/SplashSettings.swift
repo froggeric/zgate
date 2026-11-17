@@ -55,15 +55,36 @@ struct SplashSettings: Codable, Equatable, Sendable {
     var activeProfileID: UUID?
     var profiles: [SplashProfile]
     var binaryPathOverride: String?
+    /// Local port the splash server binds (`--port`) and ZGate probes.
+    /// Default moved off 8000 (2026-11-18): it collided with local
+    /// webservers. Old configs without the key decode to the default.
+    var port: Int
 
     init(
         keepRunning: Bool = true, activeProfileID: UUID? = nil,
-        profiles: [SplashProfile] = [], binaryPathOverride: String? = nil
+        profiles: [SplashProfile] = [], binaryPathOverride: String? = nil,
+        port: Int = 8123
     ) {
         self.keepRunning = keepRunning
         self.activeProfileID = activeProfileID
         self.profiles = profiles
         self.binaryPathOverride = binaryPathOverride
+        self.port = port
+    }
+
+    // Tolerant decode (SplashProfile's pattern): keys absent from
+    // pre-port configs fall back to defaults instead of failing the
+    // whole config decode (which would reset everything to defaults).
+    enum CodingKeys: String, CodingKey {
+        case keepRunning, activeProfileID, profiles, binaryPathOverride, port
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        keepRunning = (try? c.decode(Bool.self, forKey: .keepRunning)) ?? true
+        activeProfileID = try? c.decode(UUID.self, forKey: .activeProfileID)
+        profiles = (try? c.decode([SplashProfile].self, forKey: .profiles)) ?? []
+        binaryPathOverride = try? c.decode(String.self, forKey: .binaryPathOverride)
+        port = (try? c.decode(Int.self, forKey: .port)) ?? 8123
     }
 
     /// The profile `activeProfileID` names; a dangling id (hand-edited
