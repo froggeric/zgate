@@ -219,6 +219,30 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         }
         await m.terminateFromApp()
     }
+
+    // MARK: Test-context suppression guard (Task 7, pure predicate)
+
+    @Test func shouldSuperviseAllowsPlainEnvironment() {
+        #expect(SplashManager.shouldSupervise(environment: [:]))
+    }
+
+    @Test func shouldSuperviseBlocksHostedXCTestRun() {
+        // Any value counts: the runner sets a configuration-file path.
+        #expect(!SplashManager.shouldSupervise(environment: [
+            "XCTestConfigurationFilePath": "/var/folders/xx/test.xctestconfiguration"]))
+        #expect(!SplashManager.shouldSupervise(environment: ["XCTestConfigurationFilePath": ""]))
+    }
+
+    @Test func shouldSuperviseBlocksExplicitOptOut() {
+        #expect(!SplashManager.shouldSupervise(
+            environment: ["ZGATE_DISABLE_SPLASH_SUPERVISION": "1"]))
+    }
+
+    @Test func shouldSuperviseIgnoresOtherValuesAndKeys() {
+        #expect(SplashManager.shouldSupervise(
+            environment: ["ZGATE_DISABLE_SPLASH_SUPERVISION": "0"]))
+        #expect(SplashManager.shouldSupervise(environment: ["SOME_OTHER_KEY": "value"]))
+    }
 }
 
 /// Tiny atomic box for probe closures shared across sendable closures.

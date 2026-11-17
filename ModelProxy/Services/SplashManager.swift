@@ -153,6 +153,16 @@ final class SplashManager {
         return fallbackBinDir.appendingPathComponent("bin/splash-m1").path
     }
 
+    /// Test-context suppression (owner ruling 2026-11-16: this machine cannot
+    /// run two splash instances). A hosted XCTest run launches a second ZGate
+    /// and XCUITest marks its app-under-test with the disable key; either way
+    /// the copy in question must never supervise/stop the user's real splash.
+    /// Pure so `ModelProxyApp` can guard its startup call with it.
+    nonisolated static func shouldSupervise(environment: [String: String]) -> Bool {
+        environment["XCTestConfigurationFilePath"] == nil
+            && environment["ZGATE_DISABLE_SPLASH_SUPERVISION"] != "1"
+    }
+
     // MARK: Configure (startup planning)
 
     func configure(settings: SplashSettings?) async {
