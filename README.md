@@ -164,6 +164,34 @@ back up as soon as it answers probes again.
   and quota-gated rules are skipped; routing is unaffected. Last-known
   values are kept and dimmed when a poll fails while data exists.
 
+## Quota & billing behavior
+
+The menu bar's `ZΓ <N>%` and the popover's quota windows are the **only
+user-visible billing surface** — the API quota windows (weekly + 5-hour)
+polled from z.ai's monitor API. Those windows meter **direct API calls
+only**: calls authenticated by the key in your `~/.claude/settings.json`.
+Direct usage bills at full price (cache reads bill at full uncached input
+price), and `glm-5.3` bills **3× during Paris weekday peak** (07:00–11:00).
+
+Everything ZGate itself carries is relayed traffic and **does not consume
+those windows** — neither the zcode relay (GLM models) nor splash
+(`127.0.0.1:8000`, local; splash never touches z.ai at all). Hours of heavy
+relay routing leave the menu-bar % unmoved; only direct API calls draw it
+down. There is no second ledger to watch either: the z.ai web dashboard and
+the ZCode app show the same quota windows, and relayed usage appears on no
+user-visible surface — only z.ai's raw model-usage counters record it.
+
+- **The 5-hour window slides:** its reset time is the oldest in-window
+  usage + 5 h, not a fixed tumbling boundary. The weekly window syncs
+  lazily in 1-pct steps; monitor hourly buckets are UTC+8 with a 15–45 min
+  ingestion lag.
+- **Counter semantics differ by source, by design:** ZGate's token stats
+  count streams whose usage parsed successfully, while z.ai's monitor
+  counters include all server attempts (background and failed ones too) —
+  expect the totals to disagree. Full tables live in the usage audit
+  (external, machine-local:
+  `/Volumes/ssd/github/zcode/docs/usage-audit-2026-11-17.md`).
+
 ## Verify install
 
 - [ ] `ZGate.app` runs from `/Applications`, **no dock icon**, and the **ZΓ

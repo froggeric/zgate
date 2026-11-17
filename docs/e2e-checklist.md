@@ -148,6 +148,47 @@ superseded: the balance endpoints that plan assumed are dead (Task 8), and
 the working monitor instruments turn out to be raw-only + direct-only as
 above.
 
+## AC4 addendum (2026-11-17)
+
+Follow-up audit closing what the section above left open (full tables in
+the usage audit — external, machine-local:
+`/Volumes/ssd/github/zcode/docs/usage-audit-2026-11-17.md`; exact counts
+again withheld from this committed file; probe report:
+`zcode/docs/zcode-plan-billing-probe-2026-11-17.md`):
+
+- **No second ledger exists.** The z.ai web dashboard and the ZCode app
+  were user-checked: both surface only the same quota windows the monitor
+  API returns. The zcode-plan billing routes
+  (`zcode.z.ai/api/v1/zcode-plan/billing/current|balance`) exist — a
+  404-discriminator probe distinguishes them from the router's plain 404 —
+  but return 401/empty under every CLI credential, and empty under a
+  logged-in browser session too. Relay usage is therefore unmetered against
+  any user-visible quota; only the raw model-usage counters record it.
+- **Relay-unmetered confirmed at scale:** a 23.5M-raw-token relay burst
+  (381 calls) landing entirely inside the sliding 5-hour window left it at
+  1%, and the weekly window stayed flat through hours of heavy relay
+  traffic. (Sharpens the AC4 wording above: not "a separate inaccessible
+  ledger" — no user-visible ledger at all.)
+- **The earlier "~27M direct flash" gap is decomposed:** mostly Claude Code
+  harness background fast-model calls (topic/title/summary — whole-context
+  sized, relayed through ZGate, so no transcript rows), plus
+  ingestion-timing artifacts and the known deliberate probe burns. Zero MCP
+  vision calls occurred.
+- **Counter semantics — why three sources disagree:**
+
+  | source | what it counts |
+  |---|---|
+  | monitor `model-usage` | all server attempts, incl. background + failed |
+  | ZGate token stats | streams that reached usage-parse |
+  | transcripts | successful messages only (CC re-writes each message once per content block; dedupe by `message.id` is mandatory) |
+
+- **Window mechanics:** the 5-hour window is sliding, not tumbling — reset
+  time = oldest in-window usage + 5 h. Monitor hourly buckets are UTC+8
+  with 15–45 min ingestion lag; the weekly window syncs lazily in 1-pct
+  steps.
+- **Minted plan-token TTL measured ≈ 52 min** (fixed server-anchored
+  expiry) — not the ≈3 h the zbridge notes assumed.
+
 ## Test results (this run)
 
 Phase A (splash down): 4 passed, 2 skipped (`ac2a` needs splash up;
