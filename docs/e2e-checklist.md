@@ -14,13 +14,16 @@ artifacts.
 scripts/e2e/build.sh                 # isolated app copy (bundle local.zgate.mac.e2e)
 scripts/e2e/zgate-up.sh              # default rule table, port 8787, signing cache seeded
 cp docs/e2e-checklist.md "${TMPDIR%/}/zgate-e2e/e2e-checklist.md"   # see note below
-# splash (AC2 up-half): splash-m1 serve --model mlx-community/Qwen3.8-27B-4bit
+# splash provisioning (AC2 up-half) RETIRED with ac2a under v2.1 — nothing
+# in the harness touches splash; the AC2 section below keeps the pre-v2.1
+# evidence for history.
 TEST_RUNNER_ZGATE_E2E=1 TEST_RUNNER_ZGATE_E2E_PHASE=A \
   TEST_RUNNER_ZGATE_E2E_CHECKLIST="${TMPDIR%/}/zgate-e2e/e2e-checklist.md" \
-  [TEST_RUNNER_ZGATE_E2E_SPLASH=1] \
   xcodebuild -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' \
   test -only-testing:ZGateTests/E2ESmokeTests
-# kill splash, then the fallback half:
+# then the Phase B half (v2.1: no E2E test touches splash — ZGATE_E2E_SPLASH
+# and the splash provisioning above were retired with ac2a; left visible for
+# pre-v2.1 history):
 TEST_RUNNER_ZGATE_E2E=1 TEST_RUNNER_ZGATE_E2E_PHASE=B \
   TEST_RUNNER_ZGATE_E2E_CHECKLIST="${TMPDIR%/}/zgate-e2e/e2e-checklist.md" \
   xcodebuild … -only-testing:ZGateTests/E2ESmokeTests   # (as above)
@@ -60,7 +63,12 @@ relay 401s valid tokens unsigned (Task 5's live finding), so the 200 proves
 the signed ladder served the request. Token stats recorded the serving
 target: `GLM-5.3` under the relay vendor.
 
-## AC2 — haiku class: splash local, fallback to relay flash
+## AC2 — haiku class: relay flash tier (v2.1); was splash local + fallback
+
+**v2.1 (2026-11-17):** no default route touches splash — glm-5.3-flash maps
+directly to relay `GLM-5.3-Flash` (pinned by the live-config test and by
+`ac2b` in PHASE=B). Everything below this banner is the pre-v2.1 record of
+the splash-up/down behavior, kept as history; do not provision splash for it.
 
 - [x] Splash UP: haiku-class request goes local (live-verified 2026-11-16 — see below)
 - [x] Splash DOWN: same request falls back to GLM-5.3-Flash
@@ -191,6 +199,8 @@ again withheld from this committed file; probe report:
 
 ## Test results (this run)
 
+(Pre-v2.1 run — under v2.1, `ac2a` no longer exists and `ac2b` is
+splash-independent; expect one fewer gated test.)
 Phase A (splash down): 4 passed, 2 skipped (`ac2a` needs splash up;
 `ac2b` is Phase B). Phase B: `ac2b` passed. Offline suite (no env):
 319 passed / 0 failed / 8 skipped (2 pre-existing live smokes + these 6

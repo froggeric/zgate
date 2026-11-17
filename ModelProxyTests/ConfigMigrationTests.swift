@@ -183,11 +183,14 @@ extension AppConfig {
         // The store serves exactly what it persisted.
         #expect(store.config.modelMappings.map(\.id) == reread.modelMappings.map(\.id))
 
-        // Write-once: relaunching over the migrated file rewrites nothing
-        // (migrations idempotent → encoded before/after match → no save).
+        // Write-once: relaunching over the migrated file rewrites nothing —
+        // byte-identical AND untouched mtime (an unconditional resave would
+        // keep the bytes but bump the file; .atomic writes rename-replace).
         let bytes = try Data(contentsOf: url)
+        let mtimeBefore = try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
         _ = ConfigStore(configFileURL: url)
         #expect(try Data(contentsOf: url) == bytes)
+        #expect(try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date == mtimeBefore)
     }
 
     @Test func storeFreshInstallWritesDefaultsOnce() throws {
@@ -196,8 +199,11 @@ extension AppConfig {
         #expect(store.didResetFromCorrupt == false)
         let bytes = try Data(contentsOf: url)  // defaults were written
         #expect(try JSONDecoder().decode(AppConfig.self, from: bytes).modelMappings.last?.catchAll == true)
-        _ = ConfigStore(configFileURL: url)  // second launch: no rewrite
+        // Second launch rewrites nothing (byte-identical, untouched mtime).
+        let mtimeBefore = try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
+        _ = ConfigStore(configFileURL: url)
         #expect(try Data(contentsOf: url) == bytes)
+        #expect(try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date == mtimeBefore)
     }
 
     @Test func storeCorruptConfigResetsAndFlags() throws {

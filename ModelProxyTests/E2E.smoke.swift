@@ -328,22 +328,28 @@ struct E2ESmokeTests {
             ["-p", "say OK", "--model", "glm-5.3-flash"], workDir: try freshWorkDir("ac2b"))
         #expect(output.trimmingCharacters(in: .whitespacesAndNewlines) == "OK")
 
-        let appended = try await waitForNewLogLines(after: baseline, timeout: 20) { $0 }
-
-        // The haiku class rule mapped the request to the relay (not splash)
-        // and the relay served it 200. The rewritten target model
-        // (GLM-5.3-Flash) is pinned by the config test's targets(for:)
-        // assertion — the file log does not print it.
-        let flashRequests = appended.filter {
-            $0.contains("POST /v1/messages") && $0.contains("model=glm-5.3-flash")
+        // Two-stage (ac1's pattern): wait for the routed line first, then
+        // wait for its Response — a single snapshot can miss the Response
+        // line when the log flushes it after the first non-empty poll.
+        let flashRequests = try await waitForNewLogLines(after: baseline, timeout: 20) { appended in
+            appended.filter {
+                $0.contains("POST /v1/messages") && $0.contains("model=glm-5.3-flash")
+                    && $0.contains("mapped → zcode relay")
+            }
         }
         #expect(!flashRequests.isEmpty)
-        #expect(flashRequests.contains { $0.contains("mapped → zcode relay") })
 
+        // The request mapped to the relay (not splash) and the relay served
+        // it 200. The route log prints the vendor only — haiku rule vs
+        // catch-all is indistinguishable here, and under v2.1 both targets
+        // are GLM-5.3-Flash anyway; the config test's targets(for:)
+        // assertion pins the haiku rule's single target.
         let ids = flashRequests.compactMap { Self.requestID(of: $0) }
-        let served = appended.filter { line in
-            line.contains("Response: 200") && line.contains("vendor=zcode relay")
-                && ids.contains { line.contains("[\($0)]") }
+        let served = try await waitForNewLogLines(after: baseline, timeout: 20) { appended in
+            appended.filter { line in
+                line.contains("Response: 200") && line.contains("vendor=zcode relay")
+                    && ids.contains { line.contains("[\($0)]") }
+            }
         }
         #expect(!served.isEmpty)
     }
