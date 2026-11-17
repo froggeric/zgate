@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import ZGate
 
@@ -231,25 +232,26 @@ struct MenuBarUITests {
         #expect(summary == nil)
     }
 
-    // MARK: - Splash health chip
+    // MARK: - Splash lifecycle chip (Package C)
 
-    @Test("splash health: up inside the window, down when aged, unknown never probed, nil without splash")
-    func splashHealth() {
-        let splash = Vendor(name: "splash (local)", baseURL: "http://127.0.0.1:8000", apiKey: "")
-        let relay = Vendor(name: "zcode relay", baseURL: "https://zcode.z.ai", apiKey: "")
-        let now = Date(timeIntervalSince1970: 1_000_000)
-        let successes: [UUID: Date] = [
-            splash.id: now.addingTimeInterval(-30)  // inside the 60 s window
-        ]
-        let read: (UUID) -> Date? = { successes[$0] }
-
-        #expect(SplashHealth.evaluate(vendors: [splash], lastSuccess: read, now: now) == .up)
-        #expect(
-            SplashHealth.evaluate(vendors: [splash], lastSuccess: read, now: now.addingTimeInterval(61))
-                == .down(lastSeen: successes[splash.id]!))
-        #expect(
-            SplashHealth.evaluate(vendors: [splash], lastSuccess: { _ in nil }, now: now) == .unknown)
-        #expect(SplashHealth.evaluate(vendors: [relay], lastSuccess: read, now: now) == nil)
+    @Test("lifecycle chip faces: running/adopted/starting/crashed-countdown/stopped")
+    func lifecycleChipFaces() {
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        #expect(SplashLifecycleChip.face(
+            for: .running(profile: "p", since: t0, adopted: false), now: t0)
+            == .init(text: "● splash · p", color: .green))
+        #expect(SplashLifecycleChip.face(
+            for: .running(profile: "p", since: t0, adopted: true), now: t0)
+            == .init(text: "● splash · p · external", color: .green))
+        #expect(SplashLifecycleChip.face(
+            for: .starting(profile: "p"), now: t0)
+            == .init(text: "◐ splash · starting", color: .gray))
+        #expect(SplashLifecycleChip.face(
+            for: .crashed(profile: "p", lastExit: 1, nextRetry: t0.addingTimeInterval(12)), now: t0)
+            == .init(text: "● splash · retry in 12 s", color: .orange))
+        #expect(SplashLifecycleChip.face(
+            for: .stopped, now: t0)
+            == .init(text: "○ splash · off", color: .gray))
     }
 
     // MARK: - Env line

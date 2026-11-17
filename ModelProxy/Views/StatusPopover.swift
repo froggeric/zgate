@@ -6,6 +6,7 @@ struct StatusPopover: View {
     @Environment(ProxyServer.self) private var proxyServer
     @Environment(TrafficLog.self) private var trafficLog
     @Environment(QuotaStatusModel.self) private var quotaModel
+    @Environment(SplashManager.self) private var splashManager
     @Environment(\.openSettings) private var openSettings
     @State private var showingCorruptAlert: Bool = false
     @State private var showingReloginAlert: Bool = false
@@ -188,16 +189,7 @@ struct StatusPopover: View {
         }
     }
 
-    // MARK: - Rules summary + splash health
-
-    private var splashHealth: SplashHealth? {
-        SplashHealth.evaluate(
-            vendors: configStore.config.vendors,
-            lastSuccess: { id in
-                (proxyServer.healthProvider as? LocalHealthMonitor)?.lastSuccess(forVendor: id)
-            },
-            now: tick)
-    }
+    // MARK: - Rules summary + splash lifecycle
 
     @ViewBuilder
     private var rulesAndHealthSection: some View {
@@ -219,34 +211,19 @@ struct StatusPopover: View {
                 }
             }
             Spacer(minLength: 8)
-            if let splash = splashHealth {
-                splashChip(splash)
-            }
+            splashChip(splashManager.state)
         }
         .accessibilityElement(children: .combine)
     }
 
-    private func splashChip(_ health: SplashHealth) -> some View {
-        let (color, symbol): (Color, String) = {
-            switch health {
-            case .up: return (.green, "drop.fill")
-            case .down: return (.red, "drop")
-            case .unknown: return (.secondary, "drop.triangle")
-            }
-        }()
-        return HStack(spacing: 3) {
-            Image(systemName: symbol)
-                .imageScale(.small)
-            Text(health.label)
-        }
-        .font(.caption)
-        .foregroundStyle(color)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(color.opacity(0.10))
-        .clipShape(Capsule())
-        .help("Splash local target reachability (TCP probe, 20 s cadence)")
-        .accessibilityLabel(health.label)
+    /// Lifecycle chip driven by the manager's process state (spec §5); the
+    /// slow tick keeps the crashed-retry countdown live between transitions.
+    private func splashChip(_ state: SplashState) -> some View {
+        let face = SplashLifecycleChip.face(for: state, now: tick)
+        return Text(face.text)
+            .font(.caption)
+            .foregroundStyle(face.color)
+            .help("Splash lifecycle managed by ZGate (Settings → Splash)")
     }
 
     // MARK: - Env line
@@ -588,6 +565,7 @@ private struct TrafficRowView: View {
     let server = ProxyServer(tokenStatsStore: store)
     let quotaModel = QuotaStatusModel.live(server)
     quotaModel.seedDemo(fraction: 0.63)
+    let splashManager = SplashManager()
 
     let log = TrafficLog()
     log.append(
@@ -617,4 +595,5 @@ private struct TrafficRowView: View {
         .environment(store)
         .environment(LoginItemService())
         .environment(quotaModel)
+        .environment(splashManager)
 }
