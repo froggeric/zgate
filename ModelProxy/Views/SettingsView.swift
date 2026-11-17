@@ -17,6 +17,9 @@ struct SettingsView: View {
             QuotaTabView()
                 .tabItem { Label("Quota", systemImage: "gauge.with.needle") }
 
+            SplashTabView()
+                .tabItem { Label("Splash", systemImage: "drop") }
+
             AdvancedTabView()
                 .tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
 
