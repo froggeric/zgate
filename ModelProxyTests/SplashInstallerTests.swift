@@ -35,12 +35,23 @@ import Testing
         let release = try JSONDecoder().decode(SplashRelease.self, from: fix("splash-releases-exact"))
         let outcome = try await installer.installForkBinary(from: release)
         #expect(outcome == .installedAt(path: "/opt/homebrew/bin/splash-m1", fallback: false))
-        #expect(rec.chmodmed)
+        #expect(rec.chmodmedWasSet())
     }
 
     @Test func installFallsBackOnPermissionError() async throws {
         let rec = InstallRecorder()
         let installer = SplashInstaller(deps: rec.deps(writable: false))
+        let release = try JSONDecoder().decode(SplashRelease.self, from: fix("splash-releases-exact"))
+        let outcome = try await installer.installForkBinary(from: release)
+        let expected = AppPaths.appSupport.appendingPathComponent("bin/splash-m1").path
+        #expect(outcome == .installedAt(path: expected, fallback: true))
+    }
+
+    /// Pre-check passes (isWritable true) but the primary move throws at
+    /// move time → catch must fall through to the fallback, not rethrow.
+    @Test func installFallsBackWhenMoveFailsAtMoveTime() async throws {
+        let rec = InstallRecorder()
+        let installer = SplashInstaller(deps: rec.deps(writable: true, moveFails: true))
         let release = try JSONDecoder().decode(SplashRelease.self, from: fix("splash-releases-exact"))
         let outcome = try await installer.installForkBinary(from: release)
         let expected = AppPaths.appSupport.appendingPathComponent("bin/splash-m1").path
@@ -71,16 +82,19 @@ import Testing
         throw CocoaError(.fileNoSuchFile)
     }
 
-    /// Seam recorder: fetch returns marker bytes; move/setExecutable log calls;
-    /// writable false makes the primary move throw NSFileWriteNoPermissionError.
+    /// Seam recorder: fetch returns marker bytes; move/setExecutable log calls.
+    /// writable false makes the pre-check gate skip the primary branch;
+    /// moveFails true makes the primary move throw NSFileWriteNoPermissionError
+    /// at move time (catch-path coverage).
     private final class InstallRecorder: @unchecked Sendable {
         var chmodmed = false
         private let lock = NSLock()
-        func deps(writable: Bool) -> SplashInstallerDeps {
+        func chmodmedWasSet() -> Bool { lock.withLock { chmodmed } }
+        func deps(writable: Bool, moveFails: Bool = false) -> SplashInstallerDeps {
             SplashInstallerDeps(
                 fetch: { _ in Data("#!/bin/sh\necho stub\n".utf8) },
                 move: { src, dst in
-                    if !writable && dst.path == "/opt/homebrew/bin/splash-m1" {
+                    if moveFails && dst.path == "/opt/homebrew/bin/splash-m1" {
                         throw CocoaError(.fileWriteNoPermission)
                     }
                     _ = src; _ = dst
