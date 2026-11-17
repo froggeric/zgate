@@ -279,11 +279,7 @@ final class SplashManager {
         do {
             let p = Process()
             p.executableURL = try effectiveBinaryPath()
-            var args = profile.launchArguments()
-            if !args.contains("--port") {
-                args += ["--port", String(settings?.port ?? 8123)]
-            }
-            p.arguments = args
+            p.arguments = profile.serveArguments(port: settings?.port ?? 8123)
             let out = Pipe(), err = Pipe()
             p.standardOutput = out; p.standardError = err
             Self.wire(pipe: out, into: self)

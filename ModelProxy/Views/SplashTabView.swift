@@ -44,6 +44,7 @@ final class SplashTabModel {
     /// submission and keeps serving the last valid configuration.
     var portIsValid: Bool { Self.portRange.contains(port) }
 
+
     /// Persist; when we're supposed to run, restart onto the active profile
     /// (spec §4: switching = restart; stopped → just record). The manager's
     /// settings are refreshed FIRST so its supervision guards (adopted
@@ -51,6 +52,7 @@ final class SplashTabModel {
     /// Toggle-OFF stops the owned child from the VIEW (`manager.canStop`,
     /// spec §4) — saveAndApply itself never signals children.
     func saveAndApply() async {
+        guard portIsValid else { return }   // mid-edit ports never persist, rebind, or restart
         let s = settings()
         persist(s)
         manager.applySettings(s)

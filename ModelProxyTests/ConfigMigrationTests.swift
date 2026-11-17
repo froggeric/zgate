@@ -73,11 +73,17 @@ extension AppConfig {
         before.modelMappings.removeAll { !($0.conditions ?? []).isEmpty }  // wave-0: no twins
         let relayID = before.vendors.first { $0.vendorKind == .relay }!.id
         let splashID = before.vendors.first { $0.name.lowercased().contains("splash") }!.id
-        if let i = before.modelMappings.firstIndex(where: { $0.matchClass == .sonnet }) {
+        // Plain-row lookups: the default matrix's qwen levers now precede
+        // the plain tier rows, so a bare matchClass lookup would edit them.
+        if let i = before.modelMappings.firstIndex(where: {
+            $0.matchClass == .sonnet && $0.targetModel != "local/qwen3.8-27b-q8"
+        }) {
             before.modelMappings[i].targetModel = "GLM-5.3-Flash"
             before.modelMappings[i].targetVendorID = relayID
         }
-        if let i = before.modelMappings.firstIndex(where: { $0.matchClass == .haiku }) {
+        if let i = before.modelMappings.firstIndex(where: {
+            $0.matchClass == .haiku && $0.targetModel != "local/qwen3.8-27b-q8"
+        }) {
             before.modelMappings[i].targetModel = "local/qwen3.8-27b-q8"
             before.modelMappings[i].targetVendorID = splashID
             before.modelMappings[i].backupTargetModel = "GLM-5.3-Flash"
@@ -99,9 +105,9 @@ extension AppConfig {
                 at: plainOpus)
         }
         let after = ConfigStore.applyMigrations(before)
-        let sonnet = after.modelMappings.first { $0.matchClass == .sonnet }!
+        let sonnet = after.modelMappings.first { $0.matchClass == .sonnet && $0.targetModel != "local/qwen3.8-27b-q8" }!
         #expect(sonnet.targetModel == "GLM-5.3")
-        let haiku = after.modelMappings.first { $0.matchClass == .haiku }!
+        let haiku = after.modelMappings.first { $0.matchClass == .haiku && $0.targetModel != "local/qwen3.8-27b-q8" }!
         #expect(haiku.targetModel == "GLM-5.3-Flash" && haiku.backupTargetModel == nil)
         // Migration 4 inserted the auto twin (disabled); v2 pass disabled any twins.
         let twins = after.modelMappings.filter { !($0.conditions ?? []).isEmpty }
@@ -138,11 +144,17 @@ extension AppConfig {
         before.modelMappings.removeAll { !($0.conditions ?? []).isEmpty }
         let relayID = before.vendors.first { $0.vendorKind == .relay }!.id
         let splashID = before.vendors.first { $0.name.lowercased().contains("splash") }!.id
-        if let i = before.modelMappings.firstIndex(where: { $0.matchClass == .sonnet }) {
+        // Plain-row lookups: the default matrix's qwen levers now precede
+        // the plain tier rows, so a bare matchClass lookup would edit them.
+        if let i = before.modelMappings.firstIndex(where: {
+            $0.matchClass == .sonnet && $0.targetModel != "local/qwen3.8-27b-q8"
+        }) {
             before.modelMappings[i].targetModel = "GLM-5.3-Flash"
             before.modelMappings[i].targetVendorID = relayID
         }
-        if let i = before.modelMappings.firstIndex(where: { $0.matchClass == .haiku }) {
+        if let i = before.modelMappings.firstIndex(where: {
+            $0.matchClass == .haiku && $0.targetModel != "local/qwen3.8-27b-q8"
+        }) {
             before.modelMappings[i].targetModel = "local/qwen3.8-27b-q8"
             before.modelMappings[i].targetVendorID = splashID
             before.modelMappings[i].backupTargetModel = "GLM-5.3-Flash"
@@ -176,9 +188,9 @@ extension AppConfig {
         let reread = try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: url))
         #expect(reread.splash != nil)  // migration 3 seeded + persisted
         #expect(reread.modelMappings.contains { $0.sourceModel == "auto (peak hours)" && !$0.isEnabled })  // migration 4
-        #expect(reread.modelMappings.first { $0.matchClass == .sonnet }?.targetModel == "GLM-5.3")  // migration 5
-        #expect(reread.modelMappings.first { $0.matchClass == .haiku }?.targetModel == "GLM-5.3-Flash")
-        #expect(reread.modelMappings.first { $0.matchClass == .haiku }?.backupTargetModel == nil)
+        #expect(reread.modelMappings.first { $0.matchClass == .sonnet && $0.targetModel != "local/qwen3.8-27b-q8" }?.targetModel == "GLM-5.3")  // migration 5
+        #expect(reread.modelMappings.first { $0.matchClass == .haiku && $0.targetModel != "local/qwen3.8-27b-q8" }?.targetModel == "GLM-5.3-Flash")
+        #expect(reread.modelMappings.first { $0.matchClass == .haiku && $0.targetModel != "local/qwen3.8-27b-q8" }?.backupTargetModel == nil)
         #expect(reread.modelMappings.filter { !($0.conditions ?? []).isEmpty }.allSatisfy { !$0.isEnabled })
         // The store serves exactly what it persisted.
         #expect(store.config.modelMappings.map(\.id) == reread.modelMappings.map(\.id))
@@ -233,6 +245,21 @@ extension AppConfig {
         // Round-trip keeps the stored port.
         let data = try JSONEncoder().encode(custom)
         #expect(try JSONDecoder().decode(SplashSettings.self, from: data).port == 9001)
+    }
+
+    /// Serve argv carries the configured port unless the profile already
+    /// pins one (either `--port X` or `--port=X` — an explicit profile port
+    /// wins, preserving extraArgs' documented override semantics).
+    @Test func serveArgumentsAppendPortUnlessProfilePinsOne() {
+        let plain = SplashProfile(name: "p", model: "m")
+        #expect(plain.serveArguments(port: 8123).suffix(2) == ["--port", "8123"])
+        #expect(plain.serveArguments(port: 8123).first == "serve")
+
+        let space = SplashProfile(name: "p", model: "m", extraArgs: ["--port", "9001"])
+        #expect(space.serveArguments(port: 8123) == space.launchArguments())  // no double append
+
+        let equals = SplashProfile(name: "p", model: "m", extraArgs: ["--port=9001"])
+        #expect(equals.serveArguments(port: 8123) == equals.launchArguments())  // = form respected too
     }
 
     private func configWithSplashVendor(baseURL: String) -> AppConfig {

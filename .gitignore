@@ -36,3 +36,4 @@ Packages/
 # repo is public; this stays local. See private/asc/.
 private/
 __pycache__/
+default.profraw

@@ -214,31 +214,33 @@ extension AppConfig {
             ModelMapping(
                 sourceModel: "auto", targetModel: "GLM-5.3", targetVendorID: relay.id,
                 matchClass: .auto),
-            // v2.1: sonnet-class work → main opus-class relay model (was
-            // flash-tier metering under the 2026-11-16 ruling).
-            ModelMapping(
-                sourceModel: "sonnet", targetModel: "GLM-5.3", targetVendorID: relay.id,
-                matchClass: .sonnet),
-            // v2.1: haiku-class work → fast relay tier; the splash q8 target
-            // and its relay backup are gone (local qwen off default routes).
-            ModelMapping(
-                sourceModel: "haiku", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id,
-                matchClass: .haiku),
             // Qwen levers (2026-11-18): DISABLED rows routing a tier to the
             // local splash qwen model with relay-Flash failover — enable in
             // Settings → Rules to take that tier local (health-gated: splash
             // down = the backup serves). Existing installs get the same rows
-            // from migration 7.
-            ModelMapping(
-                sourceModel: "haiku (local qwen)", targetModel: "local/qwen3.8-27b-q8",
-                targetVendorID: splash.id,
-                backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: relay.id,
-                isEnabled: false, matchClass: .haiku),
+            // from migration 7. ABOVE the plain rows: matching is
+            // first-eligible-wins in config order, so an enabled lever must
+            // precede its tier's plain row (same position migration 7 uses).
             ModelMapping(
                 sourceModel: "sonnet (local qwen)", targetModel: "local/qwen3.8-27b-q8",
                 targetVendorID: splash.id,
                 backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: relay.id,
                 isEnabled: false, matchClass: .sonnet),
+            // v2.1: sonnet-class work → main opus-class relay model (was
+            // flash-tier metering under the 2026-11-16 ruling).
+            ModelMapping(
+                sourceModel: "sonnet", targetModel: "GLM-5.3", targetVendorID: relay.id,
+                matchClass: .sonnet),
+            ModelMapping(
+                sourceModel: "haiku (local qwen)", targetModel: "local/qwen3.8-27b-q8",
+                targetVendorID: splash.id,
+                backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: relay.id,
+                isEnabled: false, matchClass: .haiku),
+            // v2.1: haiku-class work → fast relay tier; the splash q8 target
+            // and its relay backup are gone (local qwen off default routes).
+            ModelMapping(
+                sourceModel: "haiku", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id,
+                matchClass: .haiku),
             ModelMapping(
                 sourceModel: "opus (peak hours)", targetModel: "GLM-5.3-Flash",
                 targetVendorID: relay.id, isEnabled: false,

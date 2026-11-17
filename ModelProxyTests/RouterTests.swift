@@ -559,10 +559,11 @@ struct RouterTests {
         #expect(splash["replayPolicy"] as? String == "portableOnly")
 
         // Rules, ordered (v2.1 + qwen levers 2026-11-18): auto-peak twin
-        // (DISABLED), auto, sonnet, haiku, haiku-qwen (DISABLED),
-        // sonnet-qwen (DISABLED), opus-peak (DISABLED), opus, fallback —
-        // all deliberate work opus-class on the relay (sonnet → GLM-5.3,
-        // haiku → GLM-5.3-Flash), twins + qwen rows dormant levers, local
+        // (DISABLED), auto, sonnet-qwen (DISABLED), sonnet, haiku-qwen
+        // (DISABLED), haiku, opus-peak (DISABLED), opus, fallback — the
+        // levers sit ABOVE their tier's plain row (first-eligible-wins: an
+        // enabled lever must out-prioritize it). All deliberate work
+        // opus-class on the relay; twins + qwen rows dormant levers; local
         // qwen off every ACTIVE default route.
         let mappings = try #require(json["modelMappings"] as? [[String: Any]])
         #expect(mappings.count == 9)
@@ -578,21 +579,22 @@ struct RouterTests {
         #expect(autoPeak[0]["tz"] as? String == "Europe/Paris")
         #expect(mappings[1]["matchClass"] as? String == "auto")
         #expect(mappings[1]["targetModel"] as? String == "GLM-5.3")
-        #expect(mappings[2]["matchClass"] as? String == "sonnet")
-        #expect(mappings[2]["targetModel"] as? String == "GLM-5.3")
-        #expect(mappings[3]["matchClass"] as? String == "haiku")
-        #expect(mappings[3]["targetModel"] as? String == "GLM-5.3-Flash")
-        #expect(mappings[3]["backupTargetModel"] == nil)  // v2.1: no backups
         // Qwen levers (2026-11-18): DISABLED rows to local splash qwen with
-        // relay-Flash failover — single-toggle local routing per tier.
+        // relay-Flash failover — single-toggle local routing per tier,
+        // positioned to WIN when enabled.
+        #expect(mappings[2]["matchClass"] as? String == "sonnet")
+        #expect(mappings[2]["targetModel"] as? String == "local/qwen3.8-27b-q8")
+        #expect(mappings[2]["isEnabled"] as? Bool == false)
+        #expect(mappings[2]["backupTargetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[3]["matchClass"] as? String == "sonnet")
+        #expect(mappings[3]["targetModel"] as? String == "GLM-5.3")
         #expect(mappings[4]["matchClass"] as? String == "haiku")
         #expect(mappings[4]["targetModel"] as? String == "local/qwen3.8-27b-q8")
         #expect(mappings[4]["isEnabled"] as? Bool == false)
         #expect(mappings[4]["backupTargetModel"] as? String == "GLM-5.3-Flash")
-        #expect(mappings[5]["matchClass"] as? String == "sonnet")
-        #expect(mappings[5]["targetModel"] as? String == "local/qwen3.8-27b-q8")
-        #expect(mappings[5]["isEnabled"] as? Bool == false)
-        #expect(mappings[5]["backupTargetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[5]["matchClass"] as? String == "haiku")
+        #expect(mappings[5]["targetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[5]["backupTargetModel"] == nil)  // v2.1: no backups
         #expect(mappings[6]["matchClass"] as? String == "opus")
         #expect(mappings[6]["targetModel"] as? String == "GLM-5.3-Flash")
         // Cost lever ships DISABLED (ruling 2026-11-17: dormant — one toggle
@@ -609,7 +611,6 @@ struct RouterTests {
         #expect(mappings[7]["targetModel"] as? String == "GLM-5.3")
         #expect(mappings[7]["isEnabled"] as? Bool == true)
         #expect(mappings[8]["catchAll"] as? Bool == true)
-        #expect(mappings[6]["targetModel"] as? String == "GLM-5.3-Flash")
 
         // Targets point at the vendors by id — every rule rides the relay
         // (the splash vendor stays configured but unreferenced by defaults).
@@ -617,11 +618,12 @@ struct RouterTests {
         let splashID = try #require(splash["id"] as? String)
         #expect(mappings[0]["targetVendorID"] as? String == relayID)
         #expect(mappings[1]["targetVendorID"] as? String == relayID)
-        #expect(mappings[2]["targetVendorID"] as? String == relayID)
         #expect(mappings[3]["targetVendorID"] as? String == relayID)
+        #expect(mappings[5]["targetVendorID"] as? String == relayID)
         #expect(mappings[6]["targetVendorID"] as? String == relayID)
         #expect(mappings[7]["targetVendorID"] as? String == relayID)
-        // 2026-11-18: the qwen levers (mappings[4..6]) DO target splash —
+        #expect(mappings[8]["targetVendorID"] as? String == relayID)
+        // 2026-11-18: the qwen levers (mappings[2], [4]) DO target splash —
         // but only while DISABLED; no ENABLED default rule routes local.
         #expect(!mappings.contains {
             ($0["targetVendorID"] as? String) == splashID && ($0["isEnabled"] as? Bool ?? true)
@@ -631,8 +633,42 @@ struct RouterTests {
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
         #expect(decoded.modelMappings.map(\.matchClass) == config.modelMappings.map(\.matchClass))
         #expect(decoded.modelMappings[8].catchAll)
-        #expect(decoded.modelMappings[4].conditions == config.modelMappings[4].conditions)
-        #expect(decoded.modelMappings[4].isEnabled == false)
+        #expect(decoded.modelMappings[6].conditions == config.modelMappings[6].conditions)
+        #expect(decoded.modelMappings[6].isEnabled == false)
+    }
+
+    /// The qwen levers are a SINGLE-TOGGLE switch (2026-11-18 wave, review
+    /// finding 1): enabling one must actually take its tier local — the
+    /// lever row sits above the plain tier row, so first-eligible-wins
+    /// resolves to splash qwen with the relay-Flash backup behind it.
+    @Test func enablingQwenLeverRoutesThatTierLocal() throws {
+        var config = AppConfig.makeZGateDefaultRouting(AppConfig())
+        let table = { ClassRuleTable(from: config.modelMappings, vendors: config.vendors, clientID: UUID()) }
+
+        // Baseline: levers disabled → tiers stay on the relay.
+        func firstTarget(_ model: String) -> String? {
+            table().firstMatch(model: model, context: ConditionContext(now: Date(), health: nil, quota: nil))?.targets.first?.targetModel
+        }
+        #expect(firstTarget("glm-5.3-flash[1m]") == "GLM-5.3-Flash")
+        #expect(firstTarget("claude-sonnet-4-5") == "GLM-5.3")
+
+        // Enable the haiku lever → haiku-class goes local qwen.
+        if let i = config.modelMappings.firstIndex(where: {
+            $0.matchClass == .haiku && $0.targetModel == "local/qwen3.8-27b-q8"
+        }) {
+            config.modelMappings[i].isEnabled = true
+        }
+        #expect(firstTarget("glm-5.3-flash[1m]") == "local/qwen3.8-27b-q8")
+
+        // Enable the sonnet lever too → sonnet-class goes local qwen.
+        if let i = config.modelMappings.firstIndex(where: {
+            $0.matchClass == .sonnet && $0.targetModel == "local/qwen3.8-27b-q8"
+        }) {
+            config.modelMappings[i].isEnabled = true
+        }
+        #expect(firstTarget("claude-sonnet-4-5") == "local/qwen3.8-27b-q8")
+        // Unrelated tiers untouched.
+        #expect(firstTarget("glm-5.3[1m]") == "GLM-5.3")
     }
 
     @Test func legacyConfigWithoutNewFieldsDecodesUnchanged() throws {

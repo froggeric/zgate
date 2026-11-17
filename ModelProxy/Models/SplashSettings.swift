@@ -32,6 +32,18 @@ struct SplashProfile: Codable, Equatable, Identifiable, Sendable {
         return args
     }
 
+    /// Serve argv at a configured port: the profile's own flags plus
+    /// `--port <port>` when the args don't already carry a port in either
+    /// `--port X` or `--port=X` form (an explicit profile port wins —
+    /// extraArgs keep their documented override semantics).
+    func serveArguments(port: Int) -> [String] {
+        var args = launchArguments()
+        if !args.contains("--port") && !args.contains(where: { $0.hasPrefix("--port=") }) {
+            args += ["--port", String(port)]
+        }
+        return args
+    }
+
     // Tolerant decode (same pattern as ModelMapping): every key optional.
     enum CodingKeys: String, CodingKey {
         case id, name, model, modelDir, draftModel, mmproj, extraArgs
