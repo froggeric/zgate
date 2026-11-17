@@ -64,6 +64,58 @@ import Testing
             chip: "M2 Max", variant: "fork", installed: nil, latest: nil)
             == "M2 Max · fork · not installed")
     }
+
+    // MARK: Profile delete (spec §5.2)
+
+    private func tabModel(_ settings: SplashSettings) -> SplashTabModel {
+        SplashTabModel(
+            manager: SplashManager(
+                binaryPathProvider: { URL(fileURLWithPath: "/nonexistent") },
+                clock: ManualSplashClock(), probe: { false }),
+            settings: settings, persist: { _ in })
+    }
+
+    @Test func deleteActiveProfileClearsActiveID() {
+        let a = SplashProfile(name: "a", model: "m-a")
+        let b = SplashProfile(name: "b", model: "m-b")
+        let model = tabModel(SplashSettings(
+            keepRunning: false, activeProfileID: a.id, profiles: [a, b]))
+        model.deleteProfile(id: a.id)
+        let s = model.settings()
+        #expect(s.profiles.map(\.id) == [b.id])
+        #expect(s.activeProfileID == nil)
+    }
+
+    @Test func deleteInactiveProfileKeepsActiveID() {
+        let a = SplashProfile(name: "a", model: "m-a")
+        let b = SplashProfile(name: "b", model: "m-b")
+        let model = tabModel(SplashSettings(
+            keepRunning: false, activeProfileID: a.id, profiles: [a, b]))
+        model.deleteProfile(id: b.id)
+        let s = model.settings()
+        #expect(s.profiles.map(\.id) == [a.id])
+        #expect(s.activeProfileID == a.id)
+    }
+
+    @Test func deleteLastProfileLeavesNilActive() {
+        let model = tabModel(SplashSettings.defaultSeeded())   // one profile, active
+        model.deleteProfile(id: model.profiles[0].id)
+        let s = model.settings()
+        #expect(s.profiles.isEmpty)
+        #expect(s.activeProfileID == nil)
+        #expect(s.activeProfile == nil)   // the nil-active path Start keys on
+    }
+
+    // MARK: Install variant (spec §5.3)
+
+    @Test func installVariantFavorsForkOnM1M2AndUnknownChips() {
+        #expect(SplashTabModel.installVariant(chipKind: .forkM1M2) == .fork)
+        #expect(SplashTabModel.installVariant(chipKind: nil) == .fork)
+    }
+
+    @Test func installVariantBrewsOfficialOnM3Plus() {
+        #expect(SplashTabModel.installVariant(chipKind: .officialM3Plus) == .brewOfficial)
+    }
 }
 
 /// Deterministic clock for tab-model tests.

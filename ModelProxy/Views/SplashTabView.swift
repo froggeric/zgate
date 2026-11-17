@@ -48,6 +48,38 @@ final class SplashTabModel {
         }
     }
 
+    /// Spec §5.2: remove a profile; deleting the ACTIVE one also clears
+    /// `activeProfileID` (the nil-active paths then disable Start). Deleting
+    /// the last profile is allowed. Persisting is the caller's saveAndApply.
+    func deleteProfile(id: UUID) {
+        profiles.removeAll { $0.id == id }
+        if activeProfileID == id { activeProfileID = nil }
+    }
+
+    /// Brew execution seam for the M3+ install branch (spec §5.3). argv is
+    /// the FULL command (`SplashInstaller.brewArguments` — argv[0] is the
+    /// executable). Tests inject a recording closure; no test ever runs
+    /// brew or spawns a Process. Default mirrors the installer's Process
+    /// idiom (pipe stdout, null stderr, throw on failure).
+    var runBrew: @Sendable ([String]) async throws -> Void = { argv in
+        try await SplashTabModel.runBrewProcess(argv)
+    }
+
+    private enum BrewProcessError: Error { case failed(Int32) }
+
+    nonisolated private static func runBrewProcess(_ argv: [String]) async throws {
+        try await Task.detached {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: argv[0])
+            p.arguments = Array(argv.dropFirst())
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = FileHandle.nullDevice
+            try p.run()
+            pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            if p.terminationStatus != 0 { throw BrewProcessError.failed(p.terminationStatus) }
+        }.value
+    }
+
     // MARK: Pure derivations (tested)
 
     nonisolated static func duration(_ interval: TimeInterval) -> String {
@@ -91,6 +123,19 @@ final class SplashTabModel {
         if let latest { s += " · \(latest) available" }
         return s
     }
+
+    /// Spec §5.3 install branch: fork binary on M1/M2, official Homebrew
+    /// formula on M3+. Unknown chips stay on fork so the install row's
+    /// variant text (derived from the same call) and the branch actually
+    /// taken can never disagree.
+    nonisolated static func installVariant(chipKind: SplashChip?) -> SplashInstallVariant {
+        chipKind == .officialM3Plus ? .brewOfficial : .fork
+    }
+}
+
+/// Which binary `runInstall` fetches on this machine (spec §5.3).
+enum SplashInstallVariant: Equatable, Sendable {
+    case fork, brewOfficial
 }
 
 extension SplashProfile {
@@ -111,6 +156,7 @@ struct SplashTabView: View {
     @State private var discovered: [SplashModelInfo] = []
     @State private var installLine: String = "…"
     @State private var installBusy = false
+    @State private var chipKind: SplashChip?   // cached for runInstall's branch
 
     var body: some View {
         Form {
@@ -208,6 +254,12 @@ struct SplashTabView: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture { editingProfile = p }
+                    .contextMenu {
+                        Button("Delete", role: .destructive) {
+                            m.deleteProfile(id: p.id)   // clears active if it was p (§5.2)
+                            Task { await m.saveAndApply() }
+                        }
+                    }
                 }
                 Button("Add profile…") {
                     editingProfile = SplashProfile(name: "New profile", model: "")
@@ -236,8 +288,10 @@ struct SplashTabView: View {
     private func refreshInstallLine() {
         Task {
             let brand = SplashChip.currentBrandString() ?? "Unknown chip"
-            let chipKind = SplashChip.from(brandString: brand)
-            let variant = chipKind == .officialM3Plus ? "official" : "fork"
+            chipKind = SplashChip.from(brandString: brand)
+            // Same derivation runInstall branches on — label and action agree.
+            let variant = SplashTabModel.installVariant(chipKind: chipKind) == .brewOfficial
+                ? "official" : "fork"
             let binary = SplashManager.resolvedBinaryPath(override: model?.binaryPathOverride)
             let installed = await SplashInstaller.installedVersion(binaryPath: binary)
                 .flatMap(Self.versionToken)
@@ -260,22 +314,39 @@ struct SplashTabView: View {
     private func runInstall() async {
         installBusy = true
         defer { installBusy = false }
-        guard let release = await SplashInstaller().latestForkRelease(),
-              let asset = SplashAssetPicker.binaryURL(from: release) else {
-            installLine += " · no unambiguous binary asset"
-            return
-        }
-        do {
-            let outcome = try await SplashInstaller().installForkBinary(from: release)
-            if case .installedAt(let path, let fallback) = outcome, fallback,
-               let m = model {
-                m.binaryPathOverride = path
-                await m.saveAndApply()
+        // Chip-gated branch (spec §5.3): fork binary on M1/M2, official
+        // Homebrew formula on M3+ — same variant the install row shows.
+        switch SplashTabModel.installVariant(chipKind: chipKind) {
+        case .fork:
+            guard let release = await SplashInstaller().latestForkRelease(),
+                  let asset = SplashAssetPicker.binaryURL(from: release) else {
+                installLine += " · no unambiguous binary asset"
+                return
             }
-            _ = asset   // selection is re-derived inside installForkBinary
-            refreshInstallLine()
-        } catch {
-            installLine += " · install failed"
+            do {
+                let outcome = try await SplashInstaller().installForkBinary(from: release)
+                if case .installedAt(let path, let fallback) = outcome, fallback,
+                   let m = model {
+                    m.binaryPathOverride = path
+                    await m.saveAndApply()
+                }
+                _ = asset   // selection is re-derived inside installForkBinary
+                refreshInstallLine()
+            } catch {
+                installLine += " · install failed"
+            }
+        case .brewOfficial:
+            guard let m = model else { return }
+            // Same probe the install row's "installed" text uses, so the
+            // install/upgrade verb matches what the row claims.
+            let binary = SplashManager.resolvedBinaryPath(override: m.binaryPathOverride)
+            let installed = await SplashInstaller.installedVersion(binaryPath: binary) != nil
+            do {
+                try await m.runBrew(SplashInstaller.brewArguments(installed: installed))
+                refreshInstallLine()
+            } catch {
+                installLine += " · install failed"   // identical handling to fork
+            }
         }
     }
 }
