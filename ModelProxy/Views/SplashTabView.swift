@@ -252,7 +252,11 @@ struct SplashTabView: View {
                             set: { text in
                                 guard let p = Int(text.trimmingCharacters(in: .whitespaces)) else { return }
                                 m.port = p
-                                Task { await m.saveAndApply() }
+                                // Apply only VALID ports: mid-typing ("8",
+                                // "81", "812") must never persist or rebind.
+                                if m.portIsValid {
+                                    Task { await m.saveAndApply() }
+                                }
                             }))
                         .multilineTextAlignment(.trailing)
                         .frame(width: 90)
