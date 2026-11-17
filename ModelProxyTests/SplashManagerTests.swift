@@ -297,6 +297,68 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         await m.terminateFromApp()
     }
 
+    @Test func togglingKeepRunningOffStandsDownSupervision() async throws {
+        // F1 regression (final review): settings reached the manager only at
+        // launch, so after the UI toggle flipped keepRunning OFF the adopted
+        // takeover and backoff-relaunch guards still read a stale true and
+        // respawned against user intent. Two windows, both pinned here:
+        // (a) adopted — toggle off, external dies, sweeps must NOT take over;
+        // (b) crashed-in-backoff — toggle off while the relaunch is parked in
+        //     its backoff sleep; waking it must NOT spawn.
+        let on = SplashSettings(keepRunning: true, profiles: [SplashProfile(name: "p", model: "m")])
+        let off = SplashSettings(keepRunning: false, profiles: [SplashProfile(name: "p", model: "m")])
+
+        // (a) adopted window: probe answers at configure, dies after OFF.
+        let box = LockedBox(value: true)
+        let adopted = makeManager { box.load() }
+        await adopted.configure(settings: on)
+        if case .running(_, _, true) = adopted.state {} else {
+            Issue.record("expected adopted running, got \(adopted.state)")
+        }
+        adopted.applySettings(off)   // the saveAndApply path's refresh
+        #expect(adopted.state == .stopped)
+        box.store(false)
+        await adopted.runAdoptedSweepNow()
+        await adopted.runAdoptedSweepNow()
+        #expect(adopted.launchCount == 0)
+        if case .stopped = adopted.state {} else {
+            Issue.record("expected stopped after sweeps with keepRunning off, got \(adopted.state)")
+        }
+
+        // (b) crashed-in-backoff window: owned running (probe answers, so the
+        // inline start resolves readiness without a clock sleep), crash it —
+        // the backoff sleep is then the FIRST clock sleep and parks on the
+        // gate; OFF while parked; open the gate and the relaunch must abort.
+        let clock = GatedSplashClock()
+        let stubURL = try writeSplashStub()   // stay-alive, TERM-obeying
+        let parked = SplashManager(
+            binaryPathProvider: { stubURL }, clock: clock, probe: { true })
+        parked.applySettings(on)
+        try await parked.start(profile: SplashProfile(name: "p", model: "m"))
+        #expect(parked.launchCount == 1)
+        if case .running = parked.state {} else {
+            Issue.record("expected owned running, got \(parked.state)")
+        }
+        parked.child?.terminate()
+        let parkedBy = Date().addingTimeInterval(5)
+        while !clock.gateParked, Date() < parkedBy {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        #expect(clock.gateParked)   // exit handled; relaunch parked in backoff
+        if case .crashed = parked.state {} else {
+            Issue.record("expected crashed while parked in backoff, got \(parked.state)")
+        }
+        parked.applySettings(off)   // toggle OFF mid-backoff
+        #expect(parked.state == .stopped)
+        clock.openGate()   // wake the parked relaunch — must observe OFF
+        #expect(parked.launchCount == 1)
+        if case .stopped = parked.state {} else {
+            Issue.record("expected stopped after backoff wake with keepRunning off, got \(parked.state)")
+        }
+        await adopted.terminateFromApp()
+        await parked.terminateFromApp()
+    }
+
     // MARK: Test-context suppression guard (Task 7, pure predicate)
 
     @Test func shouldSuperviseAllowsPlainEnvironment() {

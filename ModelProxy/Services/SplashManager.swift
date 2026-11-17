@@ -187,6 +187,26 @@ final class SplashManager {
         }
     }
 
+    /// Settings refresh from the UI (`SplashTabModel.saveAndApply`): the
+    /// manager's in-memory settings must track the persisted config, or the
+    /// supervision guards below (adopted takeover, backoff relaunch) act on
+    /// a stale `keepRunning == true` after the user toggles OFF — respawning
+    /// against user intent while adopted or crashed-in-backoff (final-review
+    /// F1). OFF stands supervision down WITHOUT signaling anything: the view
+    /// owns stopping an owned child (`canStop`); adopted/external instances
+    /// are never ours to signal. `beginStart` re-clears the suppression on
+    /// the next deliberate start.
+    func applySettings(_ newSettings: SplashSettings?) {
+        settings = newSettings
+        guard newSettings?.keepRunning == true else {
+            suppressingRelaunch = true
+            readinessTask?.cancel(); readinessTask = nil
+            adoptedTask?.cancel(); adoptedTask = nil
+            if child == nil { state = .stopped }
+            return
+        }
+    }
+
     // MARK: Start / stop
 
     func start(profile: SplashProfile) async {

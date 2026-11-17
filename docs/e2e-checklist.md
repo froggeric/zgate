@@ -158,6 +158,15 @@ above.
 
 ## AC4 addendum (2026-11-17)
 
+**Correction (2026-11-17, later the same day):** the two "unmetered"
+conclusions below — and the "therefore" bullet of AC4 above — are WRONG.
+Relay usage IS metered against the same quota windows, with a lazy sync
+that can lag hours; the flat window readings were lag plateaus, not
+exemption (confirmed by steady ~1 pct/~20 min drain under load). Current
+doctrine lives in README §Quota & billing behavior. Everything below this
+banner is the morning audit's historical record, kept as-is; where it says
+"unmetered", read "metered, with lazy-sync lag".
+
 Follow-up audit closing what the section above left open (full tables in
 the usage audit — external, machine-local:
 `/Volumes/ssd/github/zcode/docs/usage-audit-2026-11-17.md`; exact counts

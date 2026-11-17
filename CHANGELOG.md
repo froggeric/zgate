@@ -6,7 +6,19 @@ under Unreleased, newest first.
 
 ## [Unreleased]
 
-### 2026-11-17 — Package C: splash lifecycle management (in progress — T8–T11 pending)
+### 2026-11-17 — clean tier routing (v2.1)
+
+- Routing matrix v2.1: all deliberate work (opus- and sonnet-class) maps to
+  relay `GLM-5.3`; the haiku tier rides the fast relay tier `GLM-5.3-Flash`.
+- Local qwen (splash) is off every default route — quality ruling, not a
+  cost one.
+- The two peak twins (weekdays 07:00–11:00 Paris → Flash) stay in the
+  matrix but ship disabled — a dormant cost lever, one toggle to re-enable.
+- One-time config migration retargets existing live configs to the same
+  matrix and persists at first launch (idempotent; configs showing user
+  edits are left alone).
+
+### 2026-11-17 — Package C: splash lifecycle management
 
 - Saved named splash launch profiles, managed in a new Settings section.
 - Supervised splash child lifecycle: readiness polling, crash backoff

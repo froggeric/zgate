@@ -234,7 +234,7 @@ struct MenuBarUITests {
 
     // MARK: - Splash lifecycle chip (Package C)
 
-    @Test("lifecycle chip faces: running/adopted/starting/crashed-countdown/stopped")
+    @Test("lifecycle chip faces: running/adopted/starting/stopping/crashed-countdown/stopped")
     func lifecycleChipFaces() {
         let t0 = Date(timeIntervalSince1970: 1_700_000_000)
         #expect(SplashLifecycleChip.face(
@@ -247,8 +247,20 @@ struct MenuBarUITests {
             for: .starting(profile: "p"), now: t0)
             == .init(text: "◐ splash · starting", color: .gray))
         #expect(SplashLifecycleChip.face(
+            for: .stopping, now: t0)
+            == .init(text: "◐ splash · stopping", color: .gray))
+        #expect(SplashLifecycleChip.face(
             for: .crashed(profile: "p", lastExit: 1, nextRetry: t0.addingTimeInterval(12)), now: t0)
             == .init(text: "● splash · retry in 12 s", color: .orange))
+        // nil nextRetry = NO retry scheduled (spawn failure / readiness
+        // timeout) — truthful text, never "retry pending".
+        #expect(SplashLifecycleChip.face(
+            for: .crashed(profile: "p", lastExit: 1, nextRetry: nil), now: t0)
+            == .init(text: "● splash · crashed", color: .orange))
+        // Pre-flip render must clamp, not count up backwards.
+        #expect(SplashLifecycleChip.face(
+            for: .crashed(profile: "p", lastExit: 1, nextRetry: t0.addingTimeInterval(-5)), now: t0)
+            == .init(text: "● splash · retry in 0 s", color: .orange))
         #expect(SplashLifecycleChip.face(
             for: .stopped, now: t0)
             == .init(text: "○ splash · off", color: .gray))

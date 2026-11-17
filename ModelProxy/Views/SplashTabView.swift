@@ -38,12 +38,16 @@ final class SplashTabModel {
     }
 
     /// Persist; when we're supposed to run, restart onto the active profile
-    /// (spec §4: switching = restart; stopped → just record). Toggle-OFF
-    /// stops the owned child from the VIEW (`manager.canStop`, spec §4) —
-    /// saveAndApply itself never stops.
+    /// (spec §4: switching = restart; stopped → just record). The manager's
+    /// settings are refreshed FIRST so its supervision guards (adopted
+    /// takeover, backoff relaunch) never act on a stale keepRunning.
+    /// Toggle-OFF stops the owned child from the VIEW (`manager.canStop`,
+    /// spec §4) — saveAndApply itself never signals children.
     func saveAndApply() async {
-        persist(settings())
-        if keepRunning, let p = settings().activeProfile {
+        let s = settings()
+        persist(s)
+        manager.applySettings(s)
+        if keepRunning, let p = s.activeProfile {
             await manager.restart(profile: p)
         }
     }
@@ -100,7 +104,7 @@ final class SplashTabModel {
             return "running · \(p) · \(duration(now.timeIntervalSince(since)))"
         case .crashed(_, let lastExit, let nextRetry):
             var s = "crashed · exit \(lastExit)"
-            if let next = nextRetry { s += " · retry in \(Int(next.timeIntervalSince(now))) s" }
+            if let next = nextRetry { s += " · retry in \(max(0, Int(next.timeIntervalSince(now)))) s" }
             return s
         }
     }
@@ -185,6 +189,11 @@ struct SplashTabView: View {
                     } else {
                         m.profiles.append(saved)   // "Add profile…" round-trip
                     }
+                    // Persist WITHOUT applying: an editor save must not
+                    // restart the server (saveAndApply would) — same
+                    // non-restarting persist as the model's own closure.
+                    configStore.config.splash = m.settings()
+                    configStore.save()
                 }
                 editingProfile = nil
             }

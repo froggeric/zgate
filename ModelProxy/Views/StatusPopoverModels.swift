@@ -159,7 +159,10 @@ enum SplashLifecycleChip: Equatable, Sendable {
         case .crashed(_, _, let nextRetry):
             var text = "● splash"
             if let next = nextRetry {
-                text += " · retry in \(Int(next.timeIntervalSince(now))) s"
+                text += " · retry in \(max(0, Int(next.timeIntervalSince(now)))) s"
+            } else {
+                // No retry scheduled (spawn failure / readiness timeout).
+                text += " · crashed"
             }
             return .init(text: text, color: .orange)
         case .stopping:
