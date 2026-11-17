@@ -159,26 +159,27 @@ extension AppConfig {
             AppConfig(clients: [claudeCodeClient, codexClient]))
     }
 
-    /// Default matrix — owner ruling 2026-11-16 (corrects spec §2's original
-    /// table; the spec carries a dated correction note). Editable in Settings.
-    /// Ordered rules, first match wins: the auto peak twin, then `auto`
-    /// (CC auto mode), then the class rules; the peak-hours cost levers ship
-    /// ENABLED — their time window (weekdays 07:00–11:00 Paris) gates them
-    /// automatically, and each sits before its plain rule so it wins during
-    /// the window only; a terminal catch-all fallback to relay flash means no
-    /// request is ever dropped for an unmatched model.
+    /// Default matrix — v2.1, owner ruling 2026-11-17 (supersedes the
+    /// 2026-11-16 correction of spec §2). Editable in Settings. Ordered
+    /// rules, first match wins: each peak twin sits before its plain rule so
+    /// it wins during the window only; a terminal catch-all fallback to
+    /// relay flash means no request is ever dropped for an unmatched model.
     ///
-    /// Owner cost choices baked in: sonnet (the class Claude Code's main
-    /// thread sends) meters at the flash tier; haiku runs on the owner's
-    /// splash GGUF Q8 quant `local/qwen3.8-27b-q8` (the splash-m1 serve
-    /// model — not an mlx-community id).
+    /// v2.1 semantics: ALL deliberate work runs opus-class GLM-5.3 on the
+    /// relay (sonnet and opus classes alike); haiku-class work rides the
+    /// fast relay tier GLM-5.3-Flash. Local qwen is OFF every default route
+    /// — its names match no class rule and fall to the catch-all.
+    ///
+    /// The two peak twins (weekdays 07:00–11:00 Paris → Flash) STAY in the
+    /// matrix but ship DISABLED — a dormant cost lever (user ruling
+    /// 2026-11-17): if peak metering ever returns, re-enabling is one
+    /// toggle. The time window keeps an enabled twin inert outside peak.
     ///
     /// These defaults apply ONLY on first launch with no config.json
     /// (`ConfigStore.loadOrCreateDefault` writes them exactly once).
-    /// Existing installs keep their saved config unchanged; to adopt this
-    /// matrix, quit ZGate, delete
-    /// `~/Library/Application Support/ModelProxy/config.json`, relaunch
-    /// (README "Configuration" documents the same reset).
+    /// Existing installs are brought to the same shape by ConfigStore's
+    /// one-time migration 5; a config that already shows user edits is left
+    /// alone.
     ///
     /// No secrets: the relay vendor's key is empty (`.relay` auth comes from
     /// the signing chain), splash is a local server.
@@ -203,30 +204,29 @@ extension AppConfig {
         let peakHours = RuleCondition(
             type: .timeWindow, days: .weekdays, from: "07:00", to: "11:00", tz: "Europe/Paris")
         config.modelMappings = [
-            // Auto-class peak twin (Package C rider): the one class that had
-            // no peak guard. Same window as the opus twin — inert outside it.
+            // Peak twins (Package C rider + opus lever): DISABLED by default —
+            // dormant cost lever, user ruling 2026-11-17. Same window both;
+            // inert outside it when enabled.
             ModelMapping(
                 sourceModel: "auto (peak hours)", targetModel: "GLM-5.3-Flash",
-                targetVendorID: relay.id, matchClass: .auto, conditions: [peakHours]),
+                targetVendorID: relay.id, isEnabled: false,
+                matchClass: .auto, conditions: [peakHours]),
             ModelMapping(
                 sourceModel: "auto", targetModel: "GLM-5.3", targetVendorID: relay.id,
                 matchClass: .auto),
+            // v2.1: sonnet-class work → main opus-class relay model (was
+            // flash-tier metering under the 2026-11-16 ruling).
             ModelMapping(
-                sourceModel: "haiku", targetModel: "local/qwen3.8-27b-q8", targetVendorID: splash.id,
-                backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: relay.id,
-                matchClass: .haiku),
-            // Sonnet (CC main-thread traffic) meters at the flash tier — the
-            // owner's explicit cost choice (ruling 2026-11-16).
-            ModelMapping(
-                sourceModel: "sonnet", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id,
+                sourceModel: "sonnet", targetModel: "GLM-5.3", targetVendorID: relay.id,
                 matchClass: .sonnet),
-            // Cost lever: opus downgrades to flash during Paris weekday peak
-            // (3× metering). Ships ENABLED (ruling 2026-11-16, superseding
-            // the ship-disabled ruling) — the time-window condition keeps it
-            // inert outside peak, so nothing else needs to move.
+            // v2.1: haiku-class work → fast relay tier; the splash q8 target
+            // and its relay backup are gone (local qwen off default routes).
+            ModelMapping(
+                sourceModel: "haiku", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id,
+                matchClass: .haiku),
             ModelMapping(
                 sourceModel: "opus (peak hours)", targetModel: "GLM-5.3-Flash",
-                targetVendorID: relay.id,
+                targetVendorID: relay.id, isEnabled: false,
                 matchClass: .opus, conditions: [peakHours]),
             ModelMapping(
                 sourceModel: "opus", targetModel: "GLM-5.3", targetVendorID: relay.id,

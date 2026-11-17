@@ -79,9 +79,11 @@ final class ConfigStore {
 
     // MARK: - Migrations (idempotent, testable)
 
-    /// Package C (spec §6 riders): seed the splash section when absent, and
-    /// insert the auto-class peak twin into pre-wave configs. Existing rules,
-    /// ids and order are otherwise preserved; running twice changes nothing.
+    /// Package C (spec §6 riders) + the v2.1 one-time pass: seed the splash
+    /// section when absent, insert the auto-class peak twin into pre-wave
+    /// configs, and bring pre-v2 tier targets to the all-relay v2.1 shape.
+    /// Existing rules, ids and order are otherwise preserved; running twice
+    /// changes nothing.
     static func applyMigrations(_ config: AppConfig) -> AppConfig {
         var config = config
         // Migration 3: seed splash section only when absent.
@@ -89,7 +91,8 @@ final class ConfigStore {
             config.splash = SplashSettings.defaultSeeded()
         }
         // Migration 4: auto-class peak twin (only when no auto rule already
-        // carries a timeWindow condition).
+        // carries a timeWindow condition). Inserted DISABLED — v2.1 ships the
+        // twins as a dormant cost lever (user ruling 2026-11-17).
         let hasAutoTwin = config.modelMappings.contains {
             $0.matchClass == .auto && !($0.conditions ?? []).isEmpty
         }
@@ -101,11 +104,45 @@ final class ConfigStore {
                }) {
                 let twin = ModelMapping(
                     sourceModel: "auto (peak hours)", targetModel: "GLM-5.3-Flash",
-                    targetVendorID: relayID, matchClass: .auto,
+                    targetVendorID: relayID, isEnabled: false, matchClass: .auto,
                     conditions: [RuleCondition(
                         type: .timeWindow, days: .weekdays,
                         from: "07:00", to: "11:00", tz: "Europe/Paris")])
                 config.modelMappings.insert(twin, at: plainIndex)
+            }
+        }
+        // Migration 5 (v2.1, one-time): tier targets to all-relay (sonnet →
+        // GLM-5.3, haiku → GLM-5.3-Flash, backups dropped) and both peak
+        // twins disabled. Gated on the FULL pre-v2 default shape — the old
+        // sonnet row AND the old haiku row — so it runs exactly once per
+        // config: after the pass (or once the user edits either row) the gate
+        // goes cold and later launches never fight those edits (re-enabling
+        // a twin survives).
+        let relayID = config.vendors.first { $0.vendorKind == .relay }?.id
+        if let relayID,
+           config.modelMappings.contains(where: {
+               $0.matchClass == .sonnet && $0.targetModel == "GLM-5.3-Flash"
+                   && $0.targetVendorID == relayID
+           }),
+           config.modelMappings.contains(where: {
+               $0.matchClass == .haiku && $0.targetModel == "local/qwen3.8-27b-q8"
+           }) {
+            if let i = config.modelMappings.firstIndex(where: {
+                $0.matchClass == .sonnet && $0.targetModel == "GLM-5.3-Flash"
+                    && $0.targetVendorID == relayID
+            }) {
+                config.modelMappings[i].targetModel = "GLM-5.3"
+            }
+            if let i = config.modelMappings.firstIndex(where: {
+                $0.matchClass == .haiku && $0.targetModel == "local/qwen3.8-27b-q8"
+            }) {
+                config.modelMappings[i].targetModel = "GLM-5.3-Flash"
+                config.modelMappings[i].targetVendorID = relayID
+                config.modelMappings[i].backupTargetModel = nil
+                config.modelMappings[i].backupTargetVendorID = nil
+            }
+            for i in config.modelMappings.indices where !(config.modelMappings[i].conditions ?? []).isEmpty {
+                config.modelMappings[i].isEnabled = false
             }
         }
         return config
