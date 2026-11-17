@@ -120,4 +120,92 @@ extension AppConfig {
         }
         #expect(ConfigStore.applyMigrations(custom).modelMappings.first { $0.matchClass == .sonnet }?.targetModel == "GLM-5.3-Flash")
     }
+
+    // MARK: - Launch-path persistence (Task 11 fix round 1)
+
+    private func tempConfigURL() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zgate-configstore-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("config.json")
+    }
+
+    /// The wave-1 install's on-disk shape: no splash section, no auto twin,
+    /// sonnet → relay GLM-5.3-Flash, haiku → splash q8 with relay backup,
+    /// opus peak twin present but disabled.
+    private func wave1LiveConfig() -> AppConfig {
+        var before = AppConfig.makeZGateDefaultRouting(AppConfig())
+        before.modelMappings.removeAll { !($0.conditions ?? []).isEmpty }
+        let relayID = before.vendors.first { $0.vendorKind == .relay }!.id
+        let splashID = before.vendors.first { $0.name.lowercased().contains("splash") }!.id
+        if let i = before.modelMappings.firstIndex(where: { $0.matchClass == .sonnet }) {
+            before.modelMappings[i].targetModel = "GLM-5.3-Flash"
+            before.modelMappings[i].targetVendorID = relayID
+        }
+        if let i = before.modelMappings.firstIndex(where: { $0.matchClass == .haiku }) {
+            before.modelMappings[i].targetModel = "local/qwen3.8-27b-q8"
+            before.modelMappings[i].targetVendorID = splashID
+            before.modelMappings[i].backupTargetModel = "GLM-5.3-Flash"
+            before.modelMappings[i].backupTargetVendorID = relayID
+        }
+        if let plainOpus = before.modelMappings.firstIndex(where: {
+            $0.matchClass == .opus && ($0.conditions ?? []).isEmpty
+        }) {
+            before.modelMappings.insert(
+                ModelMapping(
+                    sourceModel: "opus (peak hours)", targetModel: "GLM-5.3-Flash",
+                    targetVendorID: relayID, isEnabled: false, matchClass: .opus,
+                    conditions: [RuleCondition(
+                        type: .timeWindow, days: .weekdays,
+                        from: "07:00", to: "11:00", tz: "Europe/Paris")]),
+                at: plainOpus)
+        }
+        before.splash = nil
+        return before
+    }
+
+    @Test func storePersistsLaunchMigrationsToDisk() throws {
+        let url = try tempConfigURL()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(wave1LiveConfig()).write(to: url)
+
+        let store = ConfigStore(configFileURL: url)  // the launch path, incl. persistence
+
+        // The file ON DISK now carries the post-migration shape.
+        let reread = try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: url))
+        #expect(reread.splash != nil)  // migration 3 seeded + persisted
+        #expect(reread.modelMappings.contains { $0.sourceModel == "auto (peak hours)" && !$0.isEnabled })  // migration 4
+        #expect(reread.modelMappings.first { $0.matchClass == .sonnet }?.targetModel == "GLM-5.3")  // migration 5
+        #expect(reread.modelMappings.first { $0.matchClass == .haiku }?.targetModel == "GLM-5.3-Flash")
+        #expect(reread.modelMappings.first { $0.matchClass == .haiku }?.backupTargetModel == nil)
+        #expect(reread.modelMappings.filter { !($0.conditions ?? []).isEmpty }.allSatisfy { !$0.isEnabled })
+        // The store serves exactly what it persisted.
+        #expect(store.config.modelMappings.map(\.id) == reread.modelMappings.map(\.id))
+
+        // Write-once: relaunching over the migrated file rewrites nothing
+        // (migrations idempotent → encoded before/after match → no save).
+        let bytes = try Data(contentsOf: url)
+        _ = ConfigStore(configFileURL: url)
+        #expect(try Data(contentsOf: url) == bytes)
+    }
+
+    @Test func storeFreshInstallWritesDefaultsOnce() throws {
+        let url = try tempConfigURL()  // directory exists, no config.json yet
+        let store = ConfigStore(configFileURL: url)
+        #expect(store.didResetFromCorrupt == false)
+        let bytes = try Data(contentsOf: url)  // defaults were written
+        #expect(try JSONDecoder().decode(AppConfig.self, from: bytes).modelMappings.last?.catchAll == true)
+        _ = ConfigStore(configFileURL: url)  // second launch: no rewrite
+        #expect(try Data(contentsOf: url) == bytes)
+    }
+
+    @Test func storeCorruptConfigResetsAndFlags() throws {
+        let url = try tempConfigURL()
+        try Data("not json".utf8).write(to: url)
+        let store = ConfigStore(configFileURL: url)
+        #expect(store.didResetFromCorrupt == true)
+        let reread = try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: url))
+        #expect(reread.modelMappings.last?.catchAll == true)
+    }
 }

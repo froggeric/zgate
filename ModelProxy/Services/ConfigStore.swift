@@ -11,14 +11,13 @@ final class ConfigStore {
     /// True if config.json was corrupt at launch and was reset to defaults.
     private(set) var didResetFromCorrupt: Bool = false
 
-    private static var configFileURL: URL {
-        AppPaths.appSupport.appendingPathComponent("config.json")
-    }
+    private let configFileURL: URL
 
     // MARK: - Init
 
-    init() {
-        let result = ConfigStore.loadOrCreateDefault()
+    init(configFileURL: URL = AppPaths.appSupport.appendingPathComponent("config.json")) {
+        self.configFileURL = configFileURL
+        let result = ConfigStore.loadOrCreateDefault(from: configFileURL)
         self.config = result.config
         self.didResetFromCorrupt = result.wasCorrupt
     }
@@ -29,13 +28,13 @@ final class ConfigStore {
 
     // MARK: - Load
 
-    private static func loadOrCreateDefault() -> (config: AppConfig, wasCorrupt: Bool) {
-        let fileURL = configFileURL
+    private static func loadOrCreateDefault(from fileURL: URL) -> (config: AppConfig, wasCorrupt: Bool) {
         let fm = FileManager.default
 
         // Ensure directory exists.
-        if !fm.fileExists(atPath: AppPaths.appSupport.path) {
-            try? fm.createDirectory(at: AppPaths.appSupport, withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: fileURL.deletingLastPathComponent().path) {
+            try? fm.createDirectory(
+                at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         }
 
         guard fm.fileExists(atPath: fileURL.path),
@@ -47,6 +46,7 @@ final class ConfigStore {
 
         do {
             var config = try JSONDecoder().decode(AppConfig.self, from: data)
+            let preMigration = try? JSONEncoder.pretty.encode(config)
 
             // Migration 1: strip trailing /v1 from baseURLs (Phase 2 convention change).
             for i in 0..<config.vendors.count {
@@ -66,6 +66,23 @@ final class ConfigStore {
             }
 
             config = applyMigrations(config)
+
+            // Persist launch-path migrations (1-5) the FIRST time they change
+            // something: the E2E live-config test, the release swap's
+            // post-install checks, and any external reader all see the
+            // migrated shape on disk. Write-once by encoded-value comparison —
+            // on an already-migrated config the encodings match and this
+            // never writes (the migrations are idempotent), so a user edit
+            // between launches is never clobbered.
+            if let preMigration,
+               let postMigration = try? JSONEncoder.pretty.encode(config),
+               postMigration != preMigration {
+                do {
+                    try postMigration.write(to: fileURL, options: .atomic)
+                } catch {
+                    AppLog.config.error("[ConfigStore] Failed to persist migrated config.json: \(error)")
+                }
+            }
 
             return (config, false)
         } catch {
@@ -156,7 +173,7 @@ final class ConfigStore {
     func save() {
         do {
             let data = try JSONEncoder.pretty.encode(config)
-            try data.write(to: ConfigStore.configFileURL, options: .atomic)
+            try data.write(to: configFileURL, options: .atomic)
         } catch {
             AppLog.config.error("[ConfigStore] Failed to save config.json: \(error)")
         }

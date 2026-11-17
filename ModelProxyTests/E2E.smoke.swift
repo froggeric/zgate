@@ -22,9 +22,10 @@ import Testing
 ///       -destination 'platform=macOS' test -only-testing:ZGateTests/E2ESmokeTests
 ///
 /// `TEST_RUNNER_` is the xcodebuild convention for forwarding env into the
-/// test host. PHASE=A covers AC1/AC3 (+ the AC2 splash-up half when
-/// ZGATE_E2E_SPLASH=1); after the driver kills splash, PHASE=B covers the
-/// AC2 fallback half. The suite skips entirely unless ZGATE_E2E=1.
+/// test host. PHASE=A covers AC1/AC3; PHASE=B covers AC2 (glm-5.3-flash
+/// rides the relay fast tier — since v2.1 no default route touches splash,
+/// so the old splash-up/down halves collapsed into one check). The suite
+/// skips entirely unless ZGATE_E2E=1.
 @Suite
 struct E2ESmokeTests {
 
@@ -310,55 +311,17 @@ struct E2ESmokeTests {
         #expect(!served.isEmpty)
     }
 
-    // MARK: - AC2 (splash-up half): haiku class goes local
+    // MARK: - AC2: haiku class rides the relay fast tier (v2.1)
 
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["ZGATE_E2E"] == "1"
-        && ProcessInfo.processInfo.environment["ZGATE_E2E_PHASE"]?.uppercased() != "B"
-        && ProcessInfo.processInfo.environment["ZGATE_E2E_SPLASH"] == "1"))
-    func ac2a_haikuWithSplashUpGoesLocal() async throws {
-        try await requireAppUp()
-        let baseline = try readLog()
-        let output = try await runClaude(
-            ["-p", "say OK", "--model", "glm-5.3-flash"], workDir: try freshWorkDir("ac2a"))
-        #expect(output.trimmingCharacters(in: .whitespacesAndNewlines) == "OK")
-
-        // Routed to the splash rule AND served by splash: the vendor that
-        // answered is the request-log's ground truth for "went local".
-        let routed = try await waitForNewLogLines(after: baseline) { appended in
-            appended.filter {
-                $0.contains("POST /v1/messages")
-                    && $0.contains("model=glm-5.3-flash")
-                    && $0.contains("mapped → splash (local)")
-            }
-        }
-        #expect(!routed.isEmpty)
-
-        let ids = routed.compactMap { Self.requestID(of: $0) }
-        let served = try await waitForNewLogLines(after: baseline) { appended in
-            appended.filter { line in
-                line.contains("Response: 200") && line.contains("vendor=splash (local)")
-                    && ids.contains { line.contains("[\($0)]") }
-            }
-        }
-        #expect(!served.isEmpty)
-
-        // Splash's own log should show the exchange too (best-effort: its
-        // format is its own; only note it, the app log above is the AC).
-        if let splashLog = Self.env["ZGATE_E2E_SPLASH_LOG"], let lines = try? String(
-            contentsOfFile: splashLog, encoding: .utf8)
-        {
-            let requests = lines.split(separator: "\n").filter {
-                $0.contains("v1/messages") || $0.contains("POST")
-            }
-            #expect(!requests.isEmpty)
-        }
-    }
-
-    // MARK: - AC2 (splash-down half): fallback to relay GLM-5.3-Flash
-
+    // v2.1 retired the splash round-trip: no default route touches local
+    // qwen, so the old splash-up (ac2a) / splash-down (ac2b) split collapsed
+    // into one truth — glm-5.3-flash maps to relay GLM-5.3-Flash directly
+    // (single target, pinned by the config test above). Kept on PHASE=B so
+    // the driver's existing phase flow still exercises it; splash's state is
+    // irrelevant to the outcome now.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["ZGATE_E2E"] == "1"
         && ProcessInfo.processInfo.environment["ZGATE_E2E_PHASE"]?.uppercased() == "B"))
-    func ac2b_haikuWithSplashDownFallsBackToRelayFlash() async throws {
+    func ac2b_haikuClassRidesRelayFlash() async throws {
         try await requireAppUp()
         let baseline = try readLog()
         let output = try await runClaude(
@@ -367,33 +330,22 @@ struct E2ESmokeTests {
 
         let appended = try await waitForNewLogLines(after: baseline, timeout: 20) { $0 }
 
-        // Either the rule fired and the local ladder walked its backup
-        // (splash transport error, then relay served the same requestID),
-        // or splash's health had aged out and the catch-all relay rule
-        // served directly. Both end on the relay — and the persisted token
-        // stats below pin WHICH relay model answered.
+        // The haiku class rule mapped the request to the relay (not splash)
+        // and the relay served it 200. The rewritten target model
+        // (GLM-5.3-Flash) is pinned by the config test's targets(for:)
+        // assertion — the file log does not print it.
         let flashRequests = appended.filter {
             $0.contains("POST /v1/messages") && $0.contains("model=glm-5.3-flash")
         }
         #expect(!flashRequests.isEmpty)
+        #expect(flashRequests.contains { $0.contains("mapped → zcode relay") })
 
-        let viaLadder = flashRequests.contains { $0.contains("mapped → splash (local)") }
-            && appended.contains { $0.contains("Local target upstream error for splash (local)") }
-            && appended.contains { $0.contains("Response: 200") && $0.contains("vendor=zcode relay") }
-        let viaCatchAll = flashRequests.contains { $0.contains("mapped → zcode relay") }
-        #expect(viaLadder || viaCatchAll)
-
-        // WHICH relay model served: viaLadder means the haiku rule's only
-        // backup (relay GLM-5.3-Flash — pinned by the config test's
-        // targets(for:) assertion); viaCatchAll means the catch-all whose
-        // target is GLM-5.3-Flash (pinned the same way). The file log does
-        // not print the rewritten model, and token stats cannot prove it
-        // either: a relay response reached through the local ladder streams
-        // via LocalTarget.relayStream, which never fires the usage callback
-        // — a usage-accounting gap recorded as a Task 10 concern (relay
-        // fallback answers meter at 2/3 but vanish from Statistics).
-        // The popover's TrafficLog row ("haiku → GLM-5.3-Flash") is the
-        // visual confirmation; docs/e2e-checklist.md carries the readback.
+        let ids = flashRequests.compactMap { Self.requestID(of: $0) }
+        let served = appended.filter { line in
+            line.contains("Response: 200") && line.contains("vendor=zcode relay")
+                && ids.contains { line.contains("[\($0)]") }
+        }
+        #expect(!served.isEmpty)
     }
 
     // MARK: - AC3: streaming tool-use round-trip
