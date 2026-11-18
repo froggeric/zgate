@@ -38,6 +38,11 @@ final class ProxyServer {
     private(set) var relayContext: RelayTarget.Context?
     /// Credential events surfaced to the UI (re-login alert observes).
     let credentialEvents = CredentialEventChannel()
+    /// True while the credential face is `actionNeeded` (login-flow UI
+    /// item 2): written by `CredentialStatusModel` on every recompute, read
+    /// by `menuBarSymbol` for the exclamation badge — the menu bar stays
+    /// truthful while the popover is closed.
+    var credentialActionNeeded: Bool = false
     /// Quota threshold-crossing events surfaced to the UI (Task 9 observes).
     let quotaEvents = QuotaEventChannel()
     /// Routing-condition seams; Tasks 7 (health) / 8 (quota) provide the
@@ -82,6 +87,22 @@ final class ProxyServer {
     }
 
     // MARK: - Internal State
+
+    /// Live credential-store base (login-flow UI, item 4): the relay
+    /// context's store loader re-resolves through this box on every
+    /// attempt, so the Settings store selector takes effect on the next
+    /// chain rebuild — no app restart (`updateRouting` rewrites it).
+    private final class StoreBaseBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var base: URL
+
+        init(_ base: URL) { self.base = base }
+
+        var current: URL { lock.withLock { base } }
+        func set(_ newValue: URL) { lock.withLock { base = newValue } }
+    }
+
+    private let storeBaseBox = StoreBaseBox(CredentialStore.resolveBase(nil))
 
     private struct ListenerSlot {
         let channel: any Channel
@@ -128,13 +149,17 @@ final class ProxyServer {
             // Store base: the persisted `credentialStoreBase` setting, nil =
             // the GUI/CLI shared default (item 2 of the login-flow wave).
             // Store-as-loader (item 3): no eager snapshot — the loader
-            // re-runs per login attempt, so an external re-login that
-            // rewrites the shared store is picked up by this RUNNING
-            // process on the next chain rebuild.
-            let storeBase = CredentialStore.resolveBase(config.credentialStoreBase)
+            // re-runs per login attempt through the live box, so an
+            // external re-login that rewrites the shared store — or a
+            // Settings selector change (`updateRouting`) — is picked up by
+            // this RUNNING process on the next chain rebuild.
+            storeBaseBox.set(CredentialStore.resolveBase(config.credentialStoreBase))
             let signingClient = makeSigningClient?() ?? {
                 var configuration = SigningClient.Configuration()
-                configuration.storeLoader = { try CredentialStore.loadDefault(base: storeBase) }
+                let box = storeBaseBox
+                configuration.storeLoader = {
+                    try CredentialStore.loadDefault(base: box.current)
+                }
                 return SigningClient(configuration: configuration)
             }()
             // Quota service: polls z.ai's official monitor API with the same
@@ -305,12 +330,23 @@ final class ProxyServer {
     }
 
     /// SF Symbol name for the menu bar icon. Adapts to light/dark via template rendering.
-    /// States in priority order: not running → xmark.circle, partial error → exclamationmark.circle,
+    /// States in priority order: not running → xmark.circle, credentials need action →
+    /// exclamationmark.triangle, partial error → exclamationmark.circle,
     /// normal → arrow.triangle.branch.
-    var menuBarSymbol: String {
+    nonisolated static func menuBarSymbol(
+        isRunning: Bool, hasError: Bool, credentialActionNeeded: Bool
+    ) -> String {
         guard isRunning else { return "xmark.circle" }
-        if lastError != nil { return "exclamationmark.circle" }
+        if credentialActionNeeded { return "exclamationmark.triangle" }
+        if hasError { return "exclamationmark.circle" }
         return "arrow.triangle.branch"
+    }
+
+    var menuBarSymbol: String {
+        Self.menuBarSymbol(
+            isRunning: isRunning,
+            hasError: lastError != nil,
+            credentialActionNeeded: credentialActionNeeded)
     }
 
     // MARK: - Hot Reload
@@ -320,6 +356,9 @@ final class ProxyServer {
     func updateRouting(config: AppConfig) {
         self.webSearchProvider = WebSearchProviderFactory.make(from: config.webSearch)
         self.webSearchForwardAsIs = config.webSearch.provider == .forwardAsIs
+        // The credential-store selector rides along live (no restart): the
+        // relay loader re-resolves through the box on every attempt.
+        storeBaseBox.set(CredentialStore.resolveBase(config.credentialStoreBase))
         localHealthMonitor?.configure(vendors: config.vendors)
         for slot in listeners {
             guard let clientCfg = config.clients.first(where: { $0.clientName == slot.clientName }) else {

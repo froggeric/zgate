@@ -7,6 +7,7 @@ struct ModelProxyApp: App {
     @State private var proxyServer: ProxyServer
     @State private var loginItemService: LoginItemService
     @State private var quotaModel: QuotaStatusModel
+    @State private var credentialModel: CredentialStatusModel
     @State private var splashManager: SplashManager
 
     init() {
@@ -23,6 +24,11 @@ struct ModelProxyApp: App {
         // closed.
         let quotaModel = QuotaStatusModel.live(server)
         _quotaModel = State(initialValue: quotaModel)
+        // Credential status (login-flow UI): the same model feeds the
+        // popover row, the Settings section, and the menu-bar badge (via
+        // ProxyServer.credentialActionNeeded).
+        let credentialModel = CredentialStatusModel.live(server: server, configStore: configStore)
+        _credentialModel = State(initialValue: credentialModel)
         let splashManager = SplashManager()
         _splashManager = State(initialValue: splashManager)
         // Serve from LAUNCH, not from the first popover open: MenuBarExtra
@@ -35,6 +41,7 @@ struct ModelProxyApp: App {
         Task {
             await server.start(config: configStore.config)
             quotaModel.start()
+            credentialModel.start()
             await AppLogManager.shared.configure(from: configStore.config.debug)
             // Package C: adopt an external splash or start ours per settings.
             // Guard lives here, not in configure — SplashManagerTests call
@@ -55,6 +62,7 @@ struct ModelProxyApp: App {
                 .environment(loginItemService)
                 .environment(AppLogManager.shared)
                 .environment(quotaModel)
+                .environment(credentialModel)
                 .environment(splashManager)
         }
         .menuBarExtraStyle(.window)
@@ -67,6 +75,7 @@ struct ModelProxyApp: App {
                 .environment(loginItemService)
                 .environment(AppLogManager.shared)
                 .environment(quotaModel)
+                .environment(credentialModel)
                 .environment(splashManager)
                 .onDisappear {
                     NSApp.setActivationPolicy(.accessory)
