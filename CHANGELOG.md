@@ -4,6 +4,32 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
+## [2.7.6] — 2026-11-18
+
+### 2026-11-18 — login flow: visible status, in-app sign-in, auto-renewal
+
+- **Credential status is always visible**: the popover has a credential
+  row (green "signed in · N min left", amber "renewing" /
+  "degraded (unsigned)", red "login expired — sign in") and the menu-bar
+  icon gains a badge when action is needed. Settings → General has a
+  Credentials section (Advanced keeps the raw event log).
+- **Sign in from the app**: the red row's Sign In button opens the
+  browser for z.ai approval and picks the session up live — no terminal
+  command, no app restart (the old copyable command remains as a
+  fallback).
+- **Automatic renewal**: a background keeper re-mints the plan token
+  ~2 min before each ~52-min expiry (and on wake), so the ladder stays
+  alive while ZGate runs; failures back off instead of looping.
+- **Shared credential store**: ZGate now reads the same `~/.zcode`
+  store the ZCode GUI/CLI keep fresh — a GUI re-login heals a running
+  ZGate on the next request. The isolated scratch store remains
+  selectable in Settings.
+- **Hot pickup**: refreshed logins (in-app, GUI, or CLI) are adopted by
+  the running app; dead cached sessions are invalidated instead of
+  retried.
+- **Test-host isolation**: running the test suite can no longer mutate
+  production config/credential state (the 2026-11-18 incident class).
+
 ## [2.6.5] — 2026-11-18
 
 ### 2026-11-18 — TTFT columns, cache-read stats, ZGate data dir
