@@ -297,7 +297,7 @@ enum RelayTarget {
                 session: session, signed: signed, context: context, requestID: requestID)
             switch Int(retry.status.code) {
             case 200..<300:
-                await context.signingClient.noteRelaySuccess()
+                await context.signingClient.noteRelaySuccess(signed: signed)
                 return .responded(retry)
             case 401:
                 return await handleReject(
@@ -329,7 +329,8 @@ enum RelayTarget {
                 session: session, signed: false, context: context, requestID: requestID)
             switch Int(response.status.code) {
             case 200..<300:
-                await context.signingClient.noteRelaySuccess()
+                // Served, but UNSIGNED — mark the degraded face (UI item 5).
+                await context.signingClient.noteRelaySuccess(signed: false)
                 return .responded(response)
             case 401:
                 await context.signingClient.noteRelayRejection()

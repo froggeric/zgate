@@ -138,6 +138,10 @@ actor SigningClient {
     private var session: SigningSession?
     private var phase: Phase = .unsigned
     private var consecutiveRelayRejects = 0
+    /// True while the most recent served relay exchange was the UNSIGNED
+    /// fail-open attempt — read by `statusSnapshot()` for the status
+    /// model's `degraded` face (login-flow UI item 5).
+    private var servedUnsigned = false
     private var throttleUntilMs: Int64 = 0
     private var inFlight: Task<SigningSession, Error>?
     private var chainEvents: [ChainEvent] = []
@@ -154,8 +158,9 @@ actor SigningClient {
     /// The events of the most recent chain build (lengths only, no values).
     func lastChainEvents() -> [ChainEvent] { chainEvents }
 
-    /// Read-only ladder snapshot for status UI (item 6): phases and
-    /// timestamps only — no token material anywhere in the type.
+    /// Read-only ladder snapshot for status UI (item 6): phases,
+    /// timestamps, and booleans only — no token material anywhere in the
+    /// type.
     struct StatusSnapshot: Equatable, Sendable {
         let phase: Phase
         let nowMs: Int64
@@ -168,6 +173,11 @@ actor SigningClient {
         let storeAccessTokenExpiresAtMs: Int64?
         /// acquiredAt of the on-disk biz-session cache when present.
         let cacheAcquiredAtMs: Int64?
+        /// True when the most recent served relay exchange went out
+        /// UNSIGNED (RelayTarget's fail-open attempt) — the status model's
+        /// `degraded` face (login-flow UI item 5). Clears on the next
+        /// signed success.
+        let servedUnsigned: Bool
     }
 
     /// Ladder state for the status row (item 6): phase, session expiry,
@@ -183,7 +193,8 @@ actor SigningClient {
             sessionExpiresAtMs: session?.expiresAtMs,
             sessionMarginRelaxed: session?.marginRelaxed ?? false,
             storeAccessTokenExpiresAtMs: storeTokenExpiryMs,
-            cacheAcquiredAtMs: cache.load()?.acquiredAtMs)
+            cacheAcquiredAtMs: cache.load()?.acquiredAtMs,
+            servedUnsigned: servedUnsigned)
     }
 
     /// Returns a valid signing session, building or refreshing as needed.
@@ -234,8 +245,12 @@ actor SigningClient {
     }
 
     /// Task 5 calls this on a relay success — resets the consecutive count.
-    func noteRelaySuccess() {
+    /// `signed: false` marks the success as the UNSIGNED fail-open attempt
+    /// (RelayTarget): the status model then shows `degraded` until the
+    /// next signed success resets the flag.
+    func noteRelaySuccess(signed: Bool = true) {
         consecutiveRelayRejects = 0
+        servedUnsigned = !signed
     }
 
     /// Hot pickup (item 3, report §C.3): forget the held session so the
