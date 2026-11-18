@@ -264,7 +264,7 @@ struct SigningClientTests {
 
     private func makeConfiguration(
         clock: ManualClock,
-        store: CredentialStore? = nil,
+        storeLoader: (@Sendable () throws -> CredentialStore?)? = nil,
         location: MintLocation? = ChainFixtures.location,
         cacheDirectory: URL,
         refreshMargin: TimeInterval = 120,
@@ -274,7 +274,8 @@ struct SigningClientTests {
         let urlSessionConfiguration = URLSessionConfiguration.ephemeral
         urlSessionConfiguration.protocolClasses = [SigningURLProtocol.self]
         configuration.session = URLSession(configuration: urlSessionConfiguration)
-        configuration.store = store
+        // Tests pin their own loader — never the real default load.
+        configuration.storeLoader = storeLoader ?? { nil }
         configuration.initialLocation = location
         configuration.cacheURL = cacheDirectory.appendingPathComponent("biz-session.cache")
         configuration.refreshMargin = refreshMargin
@@ -305,7 +306,7 @@ struct SigningClientTests {
     /// The full synthetic chain: valid store → z/login → mint → handshake.
     private func makeBuiltClient(cacheDirectory: URL, mock: SigningMock) async throws -> SigningClient {
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: try syntheticStore(), cacheDirectory: cacheDirectory))
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: cacheDirectory))
         _ = try await client.ensureSession()
         return client
     }
@@ -374,7 +375,7 @@ struct SigningClientTests {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let session = try await SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: try syntheticStore(), cacheDirectory: directory))
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
             .ensureSession()
 
         #expect(Data(session.privateKey.rawRepresentation) == ChainFixtures.ed25519Seed)
@@ -464,7 +465,7 @@ struct SigningClientTests {
         // A valid store is configured, so a z/login WOULD be possible — the
         // test pins that it does not happen.
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: try syntheticStore(), cacheDirectory: directory))
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
         let session = try await client.ensureSession()
 
         #expect(await client.currentPhase() == .signed)
@@ -511,7 +512,7 @@ struct SigningClientTests {
         }
 
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: try syntheticStore(), cacheDirectory: directory))
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
         let session = try await client.ensureSession()
 
         #expect(await client.currentPhase() == .signed)
@@ -536,7 +537,7 @@ struct SigningClientTests {
 
         mock.clock.advance(3_700)  // synthetic exp is base + 3600 s
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: try syntheticStore(), cacheDirectory: directory))
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
 
         await #expect(throws: SigningClientError.reloginRequired(.storeAccessTokenExpired)) {
             _ = try await client.ensureSession()
@@ -556,7 +557,7 @@ struct SigningClientTests {
         // Live-observed shape of a dead store token: HTTP 200 + code 500.
         mock.loginResponse = { _ in (200, ["code": 500, "msg": "project_token_login_failed"]) }
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: try syntheticStore(), cacheDirectory: directory))
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
 
         await #expect(throws: SigningClientError.reloginRequired(.zLoginRejected)) {
             _ = try await client.ensureSession()
@@ -620,7 +621,7 @@ struct SigningClientTests {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let first = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: try syntheticStore(), cacheDirectory: directory))
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
         _ = try await first.ensureSession()
 
         let cacheURL = directory.appendingPathComponent("biz-session.cache")
@@ -639,7 +640,7 @@ struct SigningClientTests {
         // Restart with NO store: the persisted session alone must rebuild the
         // chain (a z/login would be impossible — pins that none fires).
         let second = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: nil, cacheDirectory: directory))
+            clock: mock.clock, cacheDirectory: directory))
         _ = try await second.ensureSession()
         #expect(await second.currentPhase() == .signed)
         #expect(mock.count(matching: "/api/auth/z/login") == 1)  // only the first build's
@@ -683,7 +684,7 @@ struct SigningClientTests {
         // Cached session far past its 180 d TTL − margin.
         try seedCache(directory: directory, acquiredAtMs: SigningClientTests.baseMs - 200 * 86_400_000)
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: try syntheticStore(), cacheDirectory: directory))
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
         _ = try await client.ensureSession()
 
         #expect(mock.count(matching: "/api/auth/z/login") == 1)
@@ -698,7 +699,7 @@ struct SigningClientTests {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: try syntheticStore(), cacheDirectory: directory))
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
 
         async let first = client.ensureSession()
         async let second = client.ensureSession()
@@ -741,7 +742,7 @@ struct SigningClientTests {
         // Usable cached session whose location is null, no injected location.
         try seedCache(directory: directory, location: nil)
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: nil, location: nil, cacheDirectory: directory))
+            clock: mock.clock, location: nil, cacheDirectory: directory))
 
         await #expect(throws: SigningClientError.noLocation) {
             _ = try await client.ensureSession()
@@ -762,7 +763,7 @@ struct SigningClientTests {
         try seedCache(directory: directory, location: nil)
         let store = try syntheticStore()
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: store, location: nil, cacheDirectory: directory))
+            clock: mock.clock, storeLoader: { store }, location: nil, cacheDirectory: directory))
         _ = try await client.ensureSession()
 
         #expect(await client.currentPhase() == .signed)
@@ -780,6 +781,144 @@ struct SigningClientTests {
             organizationId: storedLocation.organizationId,
             projectId: storedLocation.projectId,
             apiKeyId: storedLocation.apiKeyId))
+    }
+
+    // MARK: - Store-as-loader + hot pickup (item 3, report C.3)
+
+    /// Mutable "disk" flag a @Sendable loader closure can capture.
+    private final class DiskRewrite: @unchecked Sendable {
+        private let lock = NSLock()
+        private var fresh = false
+        var isFresh: Bool { lock.withLock { fresh } }
+        func rewriteToFresh() { lock.withLock { fresh = true } }
+    }
+
+    @Test func storeLoaderPicksUpFreshExternalLoginWithoutReinit() async throws {
+        let mock = SigningMock()
+        installMock(mock)
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // "Expired on disk": a store whose access token expired an hour
+        // before the injected clock's base instant.
+        let expiredDir = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: expiredDir) }
+        let expiredJWT = ChainFixtures.fakeJWT(
+            payload: ["exp": 1_763_000_000.0 - 3600])
+        try JSONEncoder()
+            .encode([CredentialStore.accessTokenField: expiredJWT])
+            .write(to: expiredDir.appendingPathComponent("credentials.json"))
+        try Data("any-secret".utf8).write(to: expiredDir.appendingPathComponent("secret.txt"))
+        func expiredStore() throws -> CredentialStore {
+            try CredentialStore(
+                storeURL: expiredDir.appendingPathComponent("credentials.json"),
+                secretURL: expiredDir.appendingPathComponent("secret.txt"))
+        }
+
+        // The loader serves the expired store first, then — as if an
+        // external CLI re-login just rewrote the shared store — the fresh
+        // synthetic one. A RUNNING client must adopt it with no re-init.
+        let disk = DiskRewrite()
+        let client = SigningClient(configuration: makeConfiguration(
+            clock: mock.clock,
+            storeLoader: { disk.isFresh ? try syntheticStore() : try expiredStore() },
+            cacheDirectory: directory))
+
+        await #expect(throws: SigningClientError.reloginRequired(.storeAccessTokenExpired)) {
+            _ = try await client.ensureSession()
+        }
+        // The expiry was caught locally: zero requests left the process.
+        #expect(mock.count(matching: "/api/auth/z/login") == 0)
+
+        disk.rewriteToFresh()
+        let session = try await client.ensureSession()
+        #expect(await client.currentPhase() == .signed)
+        // Exactly one z/login — for the fresh attempt only.
+        #expect(mock.count(matching: "/api/auth/z/login") == 1)
+        #expect(mock.count(matching: "/access_tokens") == 1)
+        #expect(session.projectToken == mock.mintedTokenList.first)
+        // The recovered chain persisted its biz session (cache overwritten).
+        let reloaded = try #require(BizSessionCache(
+            fileURL: directory.appendingPathComponent("biz-session.cache")).load())
+        #expect(reloaded.acquiredAtMs == SigningClientTests.baseMs)
+    }
+
+    @Test func dropSessionForcesRebuildReusingValidCache() async throws {
+        let mock = SigningMock()
+        installMock(mock)
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let client = SigningClient(configuration: makeConfiguration(
+            clock: mock.clock, storeLoader: { try syntheticStore() },
+            cacheDirectory: directory))
+        _ = try await client.ensureSession()
+        #expect(mock.count(matching: "/api/auth/z/login") == 1)
+        #expect(mock.count(matching: "/access_tokens") == 1)
+
+        // Without a drop, the healthy session is served with no re-mint.
+        _ = try await client.ensureSession()
+        #expect(mock.count(matching: "/access_tokens") == 1)
+
+        await client.dropSession()
+        #expect(await client.currentPhase() == .unsigned)
+
+        // The next ensureSession rebuilds on the SAME client (no
+        // re-init): re-mint through the still-valid cached biz JWT — no
+        // second z/login. When the chain does need the store (dead cache
+        // or expiry), the per-attempt loader picks up the freshest disk
+        // state (covered by the disk-rewrite test above).
+        _ = try await client.ensureSession()
+        #expect(await client.currentPhase() == .signed)
+        #expect(mock.count(matching: "/api/auth/z/login") == 1)
+        #expect(mock.count(matching: "/access_tokens") == 2)
+    }
+
+    @Test func cachedMintAuthRejectInvalidatesCacheForLaterBuilds() async throws {
+        let mock = SigningMock()
+        installMock(mock)
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let cachedJWT = ChainFixtures.bizJwt(tag: "dead-cache")
+        let freshJWT = ChainFixtures.bizJwt(tag: "fresh")
+        mock.bizJwtForLogin = freshJWT
+        let bearersLock = NSLock()
+        var mintBearers: [String] = []
+        mock.mintResponse = { request, _ in
+            bearersLock.lock()
+            mintBearers.append(request.headers["Authorization"] ?? "")
+            bearersLock.unlock()
+            // Every mint is an auth reject — the cached JWT AND the fresh one.
+            return (401, ["code": 401])
+        }
+
+        try seedCache(directory: directory, bizJwt: cachedJWT, acquiredAtMs: SigningClientTests.baseMs - 1_000)
+        let cacheURL = directory.appendingPathComponent("biz-session.cache")
+        let client = SigningClient(configuration: makeConfiguration(
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
+        await #expect(throws: SigningClientError.mintFailed(status: 401, code: 401)) {
+            _ = try await client.ensureSession()
+        }
+        // The dead cached JWT was removed — later builds must not retry it
+        // first (fixes the dead-JWT retry loop, report §A.5).
+        #expect(BizSessionCache(fileURL: cacheURL).load() == nil)
+
+        // A later build (new client over the same cache location) starts at
+        // z/login; its mint carries the FRESH login JWT, never the dead one.
+        let second = SigningClient(configuration: makeConfiguration(
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
+        await #expect(throws: SigningClientError.mintFailed(status: 401, code: 401)) {
+            _ = try await second.ensureSession()
+        }
+        bearersLock.lock()
+        let bearers = mintBearers
+        bearersLock.unlock()
+        // Build 1: cached then fresh; build 2: fresh only.
+        #expect(bearers.count == 3)
+        #expect(bearers.filter { $0 == "Bearer \(cachedJWT)" }.count == 1)
+        #expect(bearers.last == "Bearer \(freshJWT)")
+        #expect(mock.count(matching: "/api/auth/z/login") == 2)
     }
 
     // MARK: - Cold-start location from the store (real store value shape)
@@ -809,7 +948,7 @@ struct SigningClientTests {
         let store = try syntheticStore()
         let storedLocation = try #require(try store.projectKeyLocation())
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: store, location: nil, cacheDirectory: directory))
+            clock: mock.clock, storeLoader: { store }, location: nil, cacheDirectory: directory))
         _ = try await client.ensureSession()
         #expect(await client.currentPhase() == .signed)
 
@@ -830,7 +969,7 @@ struct SigningClientTests {
         // No cache, no injected location, and a store with no location entry:
         // noLocation must surface BEFORE z/login leaves the process.
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: try storeWithoutLocation(),
+            clock: mock.clock, storeLoader: { try storeWithoutLocation() },
             location: nil, cacheDirectory: directory))
 
         await #expect(throws: SigningClientError.noLocation) {
@@ -870,7 +1009,7 @@ struct SigningClientTests {
         // The claim wins (and the mock seals the key with it — a location-id
         // AAD would fail the unseal).
         let client = SigningClient(configuration: makeConfiguration(
-            clock: mock.clock, store: try syntheticStore(), cacheDirectory: directory))
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
         let session = try await client.ensureSession()
         #expect(session.apiKeyId == claimId)
 
@@ -881,7 +1020,7 @@ struct SigningClientTests {
         let directory2 = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory2) }
         let client2 = SigningClient(configuration: makeConfiguration(
-            clock: mock2.clock, store: try syntheticStore(), cacheDirectory: directory2))
+            clock: mock2.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory2))
         let session2 = try await client2.ensureSession()
         #expect(session2.apiKeyId == ChainFixtures.location.apiKeyId)
     }
@@ -931,9 +1070,9 @@ struct SigningClientLiveSmokeTests {
         }
 
         // Build 1 — full path: store → z/login → mint → handshake.
-        let store = try? CredentialStore(scratchHome: scratchHome)
+        let store = try? CredentialStore(base: scratchHome)
         var fullConfiguration = SigningClient.Configuration()
-        fullConfiguration.store = store
+        fullConfiguration.storeLoader = { store }
         fullConfiguration.initialLocation = location
         fullConfiguration.cacheURL = cacheURL
         let fullClient = SigningClient(configuration: fullConfiguration)
@@ -972,7 +1111,7 @@ struct SigningClientLiveSmokeTests {
         // Build 2 — restart on the persisted session; z/login is impossible
         // (no store configured), so success proves it was skipped.
         var cacheConfiguration = SigningClient.Configuration()
-        cacheConfiguration.store = nil
+        cacheConfiguration.storeLoader = { nil }
         cacheConfiguration.initialLocation = location
         cacheConfiguration.cacheURL = cacheURL
         let cacheClient = SigningClient(configuration: cacheConfiguration)

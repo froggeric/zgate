@@ -28,6 +28,17 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
+      <!-- Item 1 (login-flow wave): the test host opts into path isolation;
+           AppPaths redirects app-support + credential-store defaults to a
+           per-run temp dir. ZGATE_E2E=1 (forwarded via TEST_RUNNER_ZGATE_E2E)
+           overrides this back to live paths for the E2E suite. -->
+      <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "ZGATE_TEST_HOST_ISOLATION"
+            value = "1"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
       <Testables>
          <TestableReference
             skipped = "NO">

@@ -432,7 +432,7 @@ struct RelayTargetTests {
         let urlSessionConfiguration = URLSessionConfiguration.ephemeral
         urlSessionConfiguration.protocolClasses = [SigningURLProtocolMock.self]
         configuration.session = URLSession(configuration: urlSessionConfiguration)
-        configuration.store = nil
+        configuration.storeLoader = { nil }
         configuration.initialLocation = Fixtures.location
         let cacheURL = directory.appendingPathComponent("biz-session.cache")
         configuration.cacheURL = cacheURL

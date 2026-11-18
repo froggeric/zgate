@@ -8,6 +8,11 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
+            // General first (login-flow UI item 4): the human credential
+            // surface lives here — status, sign-in, store selector.
+            GeneralTabView()
+                .tabItem { Label("General", systemImage: "gearshape") }
+
             RulesTabView()
                 .tabItem { Label("Rules", systemImage: "arrow.triangle.branch") }
 
@@ -22,9 +27,6 @@ struct SettingsView: View {
 
             AdvancedTabView()
                 .tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
-
-            GeneralTabView()
-                .tabItem { Label("General", systemImage: "gearshape") }
 
             ClientsTabView()
                 .tabItem { Label("Clients", systemImage: "desktopcomputer") }
@@ -55,6 +57,7 @@ struct SettingsView: View {
         .environment(statsStore)
         .environment(LoginItemService())
         .environment(QuotaStatusModel.live(server))
+        .environment(CredentialStatusModel())
 }
 
 // MARK: - Rules tab (spec §2/§6 editor for the Task 6 rule schema)
@@ -747,6 +750,7 @@ struct AdvancedTabView: View {
     @Environment(ConfigStore.self) private var configStore
     @Environment(ProxyServer.self) private var proxyServer
     @State private var copied: String?
+    @State private var chainEvents: [SigningClient.ChainEvent] = []
 
     var body: some View {
         Form {
@@ -757,6 +761,11 @@ struct AdvancedTabView: View {
         }
         .formStyle(.grouped)
         .padding()
+        // Refresh the raw chain log whenever credential activity happens;
+        // credentialEvents is observable, so the id change re-runs the task.
+        .task(id: proxyServer.credentialEvents.events.count) {
+            chainEvents = await proxyServer.relayContext?.signingClient.lastChainEvents() ?? []
+        }
     }
 
     private var clientSetupSection: some View {
@@ -823,10 +832,14 @@ struct AdvancedTabView: View {
         }
     }
 
+    /// Raw credential detail (login-flow UI item 4 split): the human surface
+    /// (face, sign-in, store selector) lives on General; this keeps the raw
+    /// event log — expiry reasons and the last chain build's telemetry
+    /// (lengths only, never values).
     private var credentialSection: some View {
         Section {
             HStack {
-                Text("Credential status")
+                Text("Last expiry reason")
                 Spacer()
                 if case let .expired(reason)? = proxyServer.credentialEvents.events.last {
                     Label(reason, systemImage: "exclamationmark.triangle.fill")
@@ -837,16 +850,35 @@ struct AdvancedTabView: View {
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("Re-login command (opens a browser for OAuth):")
+                Text("Re-login command (terminal fallback, opens a browser for OAuth):")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 CopyableLineView(line: ReloginAlertContent.command, copiedKey: $copied, key: ReloginAlertContent.command)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Last chain build (stage · HTTP · duration · outcome length):")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if chainEvents.isEmpty {
+                    Text("No chain events yet")
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(.tertiary)
+                } else {
+                    ForEach(Array(chainEvents.enumerated()), id: \.offset) { _, event in
+                        Text(
+                            verbatim: "\(event.stage.rawValue) · HTTP \(event.status) · \(event.ms) ms"
+                                + (event.outcomeTokenLength.map { " · \($0) chars" } ?? ""))
+                            .font(.footnote.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } header: {
-            Text("Credentials")
+            Text("Credentials — raw event log")
         } footer: {
-            Text("Credentials live in the scratch store; ZGate never displays token values.")
+            Text("The human credential surface (status, sign-in, store selector) is on the General tab. ZGate never displays token values — lengths only.")
         }
     }
 }

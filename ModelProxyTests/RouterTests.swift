@@ -694,7 +694,7 @@ struct RouterTests {
     /// ladder fails fast with the signing-unavailable 502 and nothing is sent.
     private nonisolated static func makeUnusableSigningClientSendable() -> SigningClient {
         var configuration = SigningClient.Configuration()
-        configuration.store = nil
+        configuration.storeLoader = { nil }
         configuration.initialLocation = nil
         configuration.cacheURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("zgate-router-unusable-\(UUID().uuidString).cache")

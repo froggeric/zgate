@@ -7,6 +7,7 @@ struct StatusPopover: View {
     @Environment(TrafficLog.self) private var trafficLog
     @Environment(QuotaStatusModel.self) private var quotaModel
     @Environment(SplashManager.self) private var splashManager
+    @Environment(CredentialStatusModel.self) private var credentialModel
     @Environment(\.openSettings) private var openSettings
     @State private var showingCorruptAlert: Bool = false
     @State private var showingReloginAlert: Bool = false
@@ -33,6 +34,10 @@ struct StatusPopover: View {
             quotaSection
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+
+            credentialSection
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
 
             rulesAndHealthSection
                 .padding(.horizontal, 12)
@@ -64,10 +69,15 @@ struct StatusPopover: View {
             }
             presentLatestCredentialEvent()
             quotaModel.recompute()
+            Task { await credentialModel.recompute() }
         }
-        .onReceive(slowTick) { _ in tick = .now }
+        .onReceive(slowTick) { _ in
+            tick = .now
+            Task { await credentialModel.recompute() }
+        }
         .onChange(of: proxyServer.credentialEvents.events.count) { _, _ in
             presentLatestCredentialEvent()
+            Task { await credentialModel.recompute() }
         }
         .onChange(of: proxyServer.quotaEvents.events.count) { _, _ in
             quotaModel.recompute()
@@ -78,7 +88,10 @@ struct StatusPopover: View {
             Text("config.json was corrupt and has been reset to defaults. Your previous settings were not recoverable.")
         }
         .alert(ReloginAlertContent.title, isPresented: $showingReloginAlert) {
-            Button("Copy Command") {
+            Button(ReloginAlertContent.signInActionTitle) {
+                credentialModel.startSignIn()
+            }
+            Button(ReloginAlertContent.copyCommandActionTitle) {
                 copyToClipboard(ReloginAlertContent.command)
             }
             Button("OK", role: .cancel) { }
@@ -186,6 +199,48 @@ struct StatusPopover: View {
                 .accessibilityLabel("Refresh quota now")
                 .accessibilityHint("Polls the quota monitor immediately.")
             }
+        }
+    }
+
+    // MARK: - Credentials
+
+    /// Persistent credential row (login-flow UI item 2): same visual
+    /// weight as the splash chip, directly under the quota section.
+    /// Controller ruling: renders ONLY when a relay-kind vendor is
+    /// configured — the `off` face is Settings-only.
+    @ViewBuilder
+    private var credentialSection: some View {
+        if configStore.config.vendors.contains(where: { $0.vendorKind == .relay }) {
+            let chip = credentialModel.face.chip
+            HStack(spacing: 8) {
+                Text(chip.text)
+                    .font(.caption)
+                    .foregroundStyle(chip.color)
+                if let retry = credentialModel.lastLoginOutcome?.retryText {
+                    Text(retry)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if credentialModel.loginInFlight {
+                    Button("Cancel") {
+                        credentialModel.cancelSignIn()
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .accessibilityLabel("Cancel sign-in")
+                    .accessibilityHint("Aborts the browser login flow.")
+                } else if credentialModel.face.isActionNeeded {
+                    Button("Sign In") {
+                        credentialModel.startSignIn()
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .accessibilityLabel("Sign in to ZCode")
+                    .accessibilityHint("Opens the browser for the ZCode login flow.")
+                }
+            }
+            .accessibilityElement(children: .combine)
         }
     }
 
@@ -336,6 +391,9 @@ struct StatusPopover: View {
             Divider()
             Button("Simulate credential alert") {
                 proxyServer.credentialEvents.emit(.expired(reason: "demo (seeded)"))
+            }
+            Button("Resolve credential alert (demo)") {
+                proxyServer.credentialEvents.emit(.renewed(expiresAtMs: Int64(Date().addingTimeInterval(3600).timeIntervalSince1970 * 1000)))
             }
         } label: {
             Image(systemName: "ladybug")
@@ -597,4 +655,5 @@ private struct TrafficRowView: View {
         .environment(LoginItemService())
         .environment(quotaModel)
         .environment(splashManager)
+        .environment(CredentialStatusModel())
 }

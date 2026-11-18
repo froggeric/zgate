@@ -44,12 +44,11 @@ struct BizSession: Codable, Equatable, Sendable {
 struct BizSessionCache {
     let fileURL: URL
 
-    static func defaultFileURL(fileManager: FileManager = .default) -> URL {
-        let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
-        return baseURL
-            .appendingPathComponent("ZGate", isDirectory: true)
-            .appendingPathComponent("biz-session.cache", isDirectory: false)
+    /// Default cache location: the app-support dir (`AppPaths`, so an
+    /// isolated test host redirects here too — the cache is production
+    /// state).
+    nonisolated static func defaultFileURL() -> URL {
+        AppPaths.appSupport.appendingPathComponent("biz-session.cache", isDirectory: false)
     }
 
     /// The cached session, or nil when absent, unreadable, or malformed —
@@ -57,6 +56,14 @@ struct BizSessionCache {
     func load() -> BizSession? {
         guard let data = try? Data(contentsOf: fileURL) else { return nil }
         return try? JSONDecoder().decode(BizSession.self, from: data)
+    }
+
+    /// Removes the cache file (best-effort). Called when a cached
+    /// session's mint is an auth-reject — the biz JWT is dead server-side
+    /// even though it is client-"usable", so later builds must start at
+    /// z/login instead of retrying it (item 3, report §A.5).
+    func invalidate() {
+        try? FileManager.default.removeItem(at: fileURL)
     }
 
     /// Writes the session as JSON with owner-only permissions (0600).

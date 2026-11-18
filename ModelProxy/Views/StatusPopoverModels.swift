@@ -42,10 +42,11 @@ final class CredentialAlertPresenter {
 }
 
 /// Content for the credential-expired alert, driven by
-/// `CredentialEventChannel`'s `.expired` events. The command is the EXACT
-/// re-login line from the Task 5 surface — presented copyable; the alert
-/// carries the command and neutral instructions only, never a token, key,
-/// or signature value.
+/// `CredentialEventChannel`'s `.expired` events. Primary action is the
+/// in-app browser login (login-flow UI item 3); the exact terminal command
+/// from the Task 5 surface stays as the copyable fallback — the recovery
+/// path if the browser flow ever breaks. The alert carries the command and
+/// neutral instructions only, never a token, key, or signature value.
 enum ReloginAlertContent: Sendable {
     /// The exact command (single line; wrapped only by display).
     static let command =
@@ -54,8 +55,15 @@ enum ReloginAlertContent: Sendable {
     /// Alert title.
     static let title = "ZCode login required"
 
-    /// Alert message: the service reason, the command to run, and the note
-    /// that it opens a browser for OAuth.
+    /// Primary action: runs the in-app browser OAuth flow.
+    static let signInActionTitle = "Sign In…"
+
+    /// Secondary action: terminal fallback (copies the command below).
+    static let copyCommandActionTitle = "Copy Command"
+
+    /// Alert message: the service reason, the command to run, and the
+    /// pickup note. With the store loader this is true for a RUNNING app —
+    /// after the in-app login or an external one, no restart needed.
     static func message(for reason: String) -> String {
         """
         The relay rejected the stored credentials (\(reason)).
@@ -64,7 +72,7 @@ enum ReloginAlertContent: Sendable {
 
         \(command)
 
-        It opens a browser for OAuth. ZGate picks up the refreshed session on the next request.
+        It opens a browser for OAuth. After signing in, ZGate picks up the new session automatically — no restart needed.
         """
     }
 }
