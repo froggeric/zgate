@@ -25,6 +25,24 @@ APP="${1:-}"
     print -u2 "usage: notarize.sh <path-to-ZGate.app>"; exit 1
 }
 
+# Deterministic Developer ID re-sign (2026-11-18): xcodebuild's Manual-style
+# signing of this project leaves the app without a secure timestamp and with
+# a get-task-allow entitlement — both notarization blockers. Sign nested
+# code first (innermost-out), then the bundle, with the project's (empty)
+# entitlements file, hardened runtime, and a secure timestamp.
+# SHA-1 of the Developer ID Application cert (from `security
+# find-identity`) — ASCII hash avoids encoding trouble with accents.
+IDENTITY="432C0A2711F592AE130323315704C5D5071A8C07"
+ENTITLEMENTS="$(dirname "$0")/../ModelProxy/ModelProxy.entitlements"
+find "$APP/Contents" -type f \( -name "*.dylib" -o -name "*.framework" \) | while read -r nested; do
+    codesign --force --sign "$IDENTITY" --options runtime --timestamp "$nested" >/dev/null 2>&1 || true
+done
+if ! codesign --force --sign "$IDENTITY" --options runtime --timestamp \
+    --entitlements "$ENTITLEMENTS" "$APP"; then
+    print -u2 "notarize: re-sign failed"; exit 2
+fi
+codesign --verify --deep --strict "$APP" || { print -u2 "notarize: re-sign failed verify"; exit 2; }
+
 SUBMIT_ZIP="$(mktemp -d)/ZGate-notary-submit.zip"
 if ! ditto -c -k --keepParent "$APP" "$SUBMIT_ZIP"; then
     print -u2 "notarize: could not zip for submission"; exit 2
