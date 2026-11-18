@@ -475,6 +475,114 @@ extension CredentialStoreTests {
         let store = try CredentialStore(base: base)
         #expect(try store.accessToken() == "a")
     }
+
+    // MARK: - Poisoned-store write edge (fast-follow F3: store exists,
+    // secret missing)
+
+    /// Seeds `<base>/.zcode/v2/credentials.json` from the committed fixture
+    /// WITHOUT the secret — the poisoned precondition: every envelope is
+    /// sealed under a secret that no longer exists, so nothing in the file
+    /// can ever be decrypted again.
+    private func seedStoreWithoutSecret(_ base: URL) throws -> URL {
+        let v2 = base.appendingPathComponent(".zcode/v2", isDirectory: true)
+        try FileManager.default.createDirectory(at: v2, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: Self.fixtureDirectory.appendingPathComponent("credentials.json"),
+            to: v2.appendingPathComponent("credentials.json"))
+        return v2
+    }
+
+    @Test func saveOnStoreWithoutSecretQuarantinesAndWritesCleanStore() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let fixtureStoreURL = Self.fixtureDirectory.appendingPathComponent("credentials.json")
+        let v2 = try seedStoreWithoutSecret(base)
+
+        let result = try CredentialStore.saveZaiLogin(
+            accessToken: "fresh-access-jwt",
+            zcodeJwtToken: "fresh-identity-jwt",
+            userInfoJSON: "{}",
+            base: base)
+
+        // The unreadable file is preserved aside under the deterministic
+        // quarantine name — a user who later recovers the old secret can
+        // still restore it.
+        #expect(result.quarantinedUnreadableStore)
+        let quarantineURL = v2.appendingPathComponent("credentials.json.unreadable-store")
+        #expect(try Data(contentsOf: quarantineURL) == Data(contentsOf: fixtureStoreURL))
+
+        // The fresh store loads cleanly through the real read path — no
+        // dead preserved envelopes, revision restarts at 1.
+        let store = try CredentialStore(base: base)
+        #expect(try store.accessToken() == "fresh-access-jwt")
+        #expect(try store.zcodeJwtToken() == "fresh-identity-jwt")
+        #expect(try store.value(for: CredentialStore.activeProviderField) == "zai")
+        #expect(try store.value(for: CredentialStore.sessionRevisionField) == "1")
+        #expect(try store.projectKeyLocation() == nil)
+        let raw = try JSONDecoder().decode(
+            [String: String].self,
+            from: Data(contentsOf: v2.appendingPathComponent("credentials.json")))
+        #expect(!raw.keys.contains { $0.hasPrefix(CredentialStore.projectKeyLocationFieldPrefix) })
+
+        // The honest gap is reported: the resulting store has no location.
+        #expect(result.storeLacksProjectLocation)
+    }
+
+    @Test func quarantineIsReplacedOnASecondPoisonedOccurrence() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let v2 = try seedStoreWithoutSecret(base)
+        let storeURL = v2.appendingPathComponent("credentials.json")
+        let quarantineURL = v2.appendingPathComponent("credentials.json.unreadable-store")
+
+        // First poisoned occurrence quarantines the unreadable bytes.
+        _ = try CredentialStore.saveZaiLogin(
+            accessToken: "first-login", zcodeJwtToken: "identity", userInfoJSON: "{}",
+            base: base)
+        #expect(try FileManager.default.fileExists(atPath: quarantineURL.path))
+
+        // Re-poison (the fresh secret disappears again): the second
+        // occurrence REPLACES the quarantine instead of failing or
+        // accumulating files.
+        try FileManager.default.removeItem(at: base.appendingPathComponent("secret.txt"))
+        try Data(#"{"second":"dead-store"}"#.utf8).write(to: storeURL)
+        _ = try CredentialStore.saveZaiLogin(
+            accessToken: "second-login", zcodeJwtToken: "identity", userInfoJSON: "{}",
+            base: base)
+        #expect(try String(contentsOf: quarantineURL, encoding: .utf8)
+            == #"{"second":"dead-store"}"#)
+        // Exactly the live store plus one quarantine file — no leftovers.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: v2.path).sorted()
+            == ["credentials.json", "credentials.json.unreadable-store"])
+        // The second clean write is intact and loadable.
+        let store = try CredentialStore(base: base)
+        #expect(try store.accessToken() == "second-login")
+        #expect(try store.value(for: CredentialStore.sessionRevisionField) == "1")
+    }
+
+    @Test func saveResultReportsLocationPresenceAndQuarantine() throws {
+        // Virgin store: nothing quarantined, and the login-only field set
+        // carries no location entry.
+        let virginBase = try makeBase()
+        defer { try? FileManager.default.removeItem(at: virginBase) }
+        let virgin = try CredentialStore.saveZaiLogin(
+            accessToken: "a", zcodeJwtToken: "i", userInfoJSON: "{}", base: virginBase)
+        #expect(virgin == ZaiLoginSaveResult(
+            storeLacksProjectLocation: true, quarantinedUnreadableStore: false))
+
+        // Store + secret seeded from the fixture: the location entry
+        // survives the write, so no gap is reported.
+        let seededBase = try makeBase()
+        defer { try? FileManager.default.removeItem(at: seededBase) }
+        _ = try seedStoreWithoutSecret(seededBase)
+        try FileManager.default.copyItem(
+            at: Self.fixtureDirectory.appendingPathComponent("secret.txt"),
+            to: seededBase.appendingPathComponent("secret.txt"))
+        let seeded = try CredentialStore.saveZaiLogin(
+            accessToken: "a", zcodeJwtToken: "i", userInfoJSON: "{}", base: seededBase)
+        #expect(seeded == ZaiLoginSaveResult(
+            storeLacksProjectLocation: false, quarantinedUnreadableStore: false))
+    }
 }
 
 extension CredentialStore {
