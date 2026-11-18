@@ -121,7 +121,10 @@ final class ProxyServer {
         // SigningClient); a cold start with no store fails later as the
         // signing-unavailable 502, never an unsigned request.
         if relayContext == nil, config.vendors.contains(where: { $0.vendorKind == .relay }) {
-            let store = try? CredentialStore.loadDefault()
+            // Store base: the persisted `credentialStoreBase` setting, nil =
+            // the GUI/CLI shared default (item 2 of the login-flow wave).
+            let storeBase = CredentialStore.resolveBase(config.credentialStoreBase)
+            let store = try? CredentialStore.loadDefault(base: storeBase)
             let signingClient = makeSigningClient?() ?? {
                 var configuration = SigningClient.Configuration()
                 configuration.store = store

@@ -339,3 +339,25 @@ extension AppConfig {
         #expect(!disabledQwen.isEmpty)
     }
 }
+
+// MARK: - Credential store base setting (item 2)
+
+extension ConfigMigrationTests {
+
+    @Test func credentialStoreBaseDefaultsNilAndRoundTrips() throws {
+        // Existing live configs have no key — nil = shared default store.
+        let decoded = try JSONDecoder().decode(
+            AppConfig.self, from: Data(#"{"vendors":[],"clients":[]}"#.utf8))
+        #expect(decoded.credentialStoreBase == nil)
+
+        var config = AppConfig()
+        config.credentialStoreBase = "~/.zcode-scratch-v3"
+        let reloaded = try JSONDecoder().decode(
+            AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(reloaded.credentialStoreBase == "~/.zcode-scratch-v3")
+
+        // nil is omitted from the encoded form — existing configs stay stable.
+        let plain = try String(data: JSONEncoder().encode(AppConfig()), encoding: .utf8) ?? ""
+        #expect(!plain.contains("credentialStoreBase"))
+    }
+}

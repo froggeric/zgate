@@ -71,6 +71,12 @@ final class AppConfig: Codable {
     /// Splash supervision settings; absent in pre-splash configs, seeded by
     /// `makeZGateDefaultRouting` on first launch.
     var splash: SplashSettings?
+    /// Credential-store data base (item 2, login-flow wave): nil = the
+    /// GUI/CLI shared default (`$HOME/.zcode`); an absolute path string
+    /// (tilde-expanded) selects another base — notably the legacy
+    /// `~/.zcode-scratch-v3`. Settings UI ships in the wave's UI task;
+    /// this is the persistence + plumbing.
+    var credentialStoreBase: String?
 
     // MARK: - Init
 
@@ -81,7 +87,8 @@ final class AppConfig: Codable {
         debug: DebugConfig = DebugConfig(),
         modelPricingOverrides: [String: ModelPrice] = [:],
         webSearch: WebSearchConfig = WebSearchConfig(),
-        splash: SplashSettings? = nil
+        splash: SplashSettings? = nil,
+        credentialStoreBase: String? = nil
     ) {
         self.vendors = vendors
         self.clients = clients
@@ -90,6 +97,7 @@ final class AppConfig: Codable {
         self.modelPricingOverrides = modelPricingOverrides
         self.webSearch = webSearch
         self.splash = splash
+        self.credentialStoreBase = credentialStoreBase
     }
 
     // MARK: - Codable
@@ -102,6 +110,7 @@ final class AppConfig: Codable {
         case modelPricingOverrides
         case webSearch
         case splash
+        case credentialStoreBase
     }
 
     required init(from decoder: Decoder) throws {
@@ -117,6 +126,8 @@ final class AppConfig: Codable {
         modelPricingOverrides = (try? container.decode([String: ModelPrice].self, forKey: .modelPricingOverrides)) ?? [:]
         webSearch = (try? container.decode(WebSearchConfig.self, forKey: .webSearch)) ?? WebSearchConfig()
         splash = try? container.decode(SplashSettings.self, forKey: .splash)
+        // Absent in every pre-wave config — nil = shared default store.
+        credentialStoreBase = try? container.decodeIfPresent(String.self, forKey: .credentialStoreBase)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -131,6 +142,9 @@ final class AppConfig: Codable {
         try container.encode(webSearch, forKey: .webSearch)
         if let splash {
             try container.encode(splash, forKey: .splash)
+        }
+        if let credentialStoreBase {
+            try container.encode(credentialStoreBase, forKey: .credentialStoreBase)
         }
     }
 }

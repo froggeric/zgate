@@ -362,3 +362,52 @@ extension CredentialStore {
                       secretURL: directory.appendingPathComponent("secret.txt"))
     }
 }
+
+// MARK: - Configurable base (item 2: shared store)
+
+extension CredentialStoreTests {
+
+    @Test func defaultBaseIsSharedZcodeHomeUnlessIsolated() throws {
+        if let isolated = AppPaths.isolatedBase {
+            // Test host: the default base redirects to the per-run temp dir.
+            #expect(CredentialStore.defaultBase.path.hasPrefix(isolated.path))
+        } else {
+            // Live run: the GUI/CLI shared store (approved user decision
+            // 2026-11-18) — $HOME/.zcode, layout $HOME/.zcode/v2/…
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            #expect(CredentialStore.defaultBase == home.appendingPathComponent(".zcode"))
+        }
+    }
+
+    @Test func legacyScratchHomeRemainsAddressable() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        #expect(CredentialStore.legacyScratchHome
+            == home.appendingPathComponent(".zcode-scratch-v3"))
+    }
+
+    @Test func resolveBaseMapsPersistedSetting() {
+        #expect(CredentialStore.resolveBase(nil) == CredentialStore.defaultBase)
+        #expect(CredentialStore.resolveBase("") == CredentialStore.defaultBase)
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        #expect(CredentialStore.resolveBase("~/.zcode-scratch-v3")
+            == home.appendingPathComponent(".zcode-scratch-v3"))
+        #expect(CredentialStore.resolveBase("/opt/zgate-store")
+            == URL(fileURLWithPath: "/opt/zgate-store", isDirectory: true))
+    }
+
+    @Test func loadDefaultReadsBaseLayout() throws {
+        // <base>/.zcode/v2/credentials.json + <base>/secret.txt — the layout
+        // the shared default resolves to ($HOME/.zcode/v2/…).
+        let base = try Self.makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let v2 = base.appendingPathComponent(".zcode/v2", isDirectory: true)
+        try FileManager.default.createDirectory(at: v2, withIntermediateDirectories: true)
+        try JSONEncoder()
+            .encode([CredentialStore.accessTokenField: "synthetic-token"])
+            .write(to: v2.appendingPathComponent("credentials.json"))
+        try Data("any-secret".utf8).write(to: base.appendingPathComponent("secret.txt"))
+
+        let store = try CredentialStore.loadDefault(base: base)
+        #expect(try store.accessToken() == "synthetic-token")
+    }
+}

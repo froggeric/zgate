@@ -72,27 +72,48 @@ struct ProjectKeyLocation: Equatable {
 /// string. Errors carry paths and field names only.
 struct CredentialStore {
 
-    /// Interactive re-login command that (re)creates the scratch store and
-    /// secret file (mirrors docs/signing-notes.md).
+    /// Interactive re-login command that (re)creates the store and secret
+    /// file in the shared default base (`$HOME/.zcode` — the CLI's own
+    /// default, no env vars needed since the 2026-11-18 shared-store
+    /// decision). Transitional: the in-app login client replaces it.
     static let loginRemedy =
-        "ZCODE_DATA_BASE_DIR=$HOME/.zcode-scratch-v3 ZCODE_CREDENTIAL_SECRET_FILE=$HOME/.zcode-scratch-v3/secret.txt "
-        + "node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai"
+        "node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai"
 
     static let accessTokenField = "oauth:zai:access_token"
     static let zcodeJwtTokenField = "zcodejwttoken"
     static let projectKeyLocationFieldPrefix = "project-key-location:v1:"
 
-    /// Default scratch home used by the zcode capture flow.
-    static var defaultScratchHome: URL {
+    /// The GUI/CLI shared store base (approved user decision 2026-11-18):
+    /// the default `$HOME/.zcode` the zcode CLI and GUI both use, so a
+    /// login in either is immediately visible to ZGate.
+    nonisolated static var sharedBase: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zcode")
+    }
+
+    /// Legacy scratch home from the capture-time remedy (selectable via the
+    /// persisted `credentialStoreBase` setting for installs that still
+    /// ride it).
+    nonisolated static var legacyScratchHome: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zcode-scratch-v3")
     }
 
     /// Data-base directory the default store resolves under (layout
-    /// `<base>/.zcode/v2/credentials.json` + `<base>/secret.txt`). An
+    /// `<base>/.zcode/v2/credentials.json` + `<base>/secret.txt`; for the
+    /// shared default the effective path is `$HOME/.zcode/v2/…`). An
     /// isolated test host redirects to its per-run temp base so suite runs
     /// never touch the live home store.
     nonisolated static var defaultBase: URL {
-        AppPaths.isolatedBase ?? defaultScratchHome
+        AppPaths.isolatedBase ?? sharedBase
+    }
+
+    /// Maps the persisted `credentialStoreBase` setting to a store base:
+    /// nil/empty = shared default (isolation-aware), otherwise the
+    /// tilde-expanded absolute path string.
+    nonisolated static func resolveBase(_ setting: String?) -> URL {
+        guard let setting, !setting.isEmpty else { return defaultBase }
+        return URL(
+            fileURLWithPath: (setting as NSString).expandingTildeInPath,
+            isDirectory: true)
     }
 
     private static let envelopePrefix = "enc:v2:env:"
@@ -173,9 +194,9 @@ struct CredentialStore {
             secretURL: base.appendingPathComponent("secret.txt"))
     }
 
-    /// Loads from `CredentialStore.defaultBase`.
-    static func loadDefault() throws -> CredentialStore {
-        try CredentialStore(base: defaultBase)
+    /// Loads from `CredentialStore.defaultBase`, or an explicit base.
+    static func loadDefault(base: URL? = nil) throws -> CredentialStore {
+        try CredentialStore(base: base ?? defaultBase)
     }
 
     // MARK: - Typed accessors
