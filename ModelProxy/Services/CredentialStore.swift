@@ -82,6 +82,9 @@ struct CredentialStore {
     static let accessTokenField = "oauth:zai:access_token"
     static let zcodeJwtTokenField = "zcodejwttoken"
     static let projectKeyLocationFieldPrefix = "project-key-location:v1:"
+    static let activeProviderField = "oauth:active_provider"
+    static let userInfoField = "oauth:zai:user_info"
+    static let sessionRevisionField = "oauth:session_revision"
 
     /// The GUI/CLI shared store base (approved user decision 2026-11-18):
     /// the default `$HOME/.zcode` the zcode CLI and GUI both use, so a
@@ -328,6 +331,154 @@ struct CredentialStore {
             .joined()
             .prefix(fingerprintLength)
             .description
+    }
+}
+
+// MARK: - Envelope write path (item 4: in-app login)
+
+/// Failures of the store write path. Carries revisions and field names
+/// only — never credential bytes.
+enum CredentialWriteError: Error, Equatable {
+    /// `oauth:session_revision` changed between read and write — a
+    /// concurrent writer committed first (expected-revision CAS).
+    case revisionConflict(expected: Int64, found: Int64)
+}
+
+extension CredentialStore {
+
+    /// Seals `value` exactly as the read path expects — the inverse of the
+    /// decrypt above: AES-256-GCM under key = SHA256(secret bytes),
+    /// envelope `enc:v2:env:<24-hex fingerprint>:<iv>.<tag>.<ct>` with the
+    /// triple in unpadded base64url. Fresh random nonce per value (the
+    /// committed fixtures' deterministic IVs are test-only).
+    static func sealEnvelope(value: String, secretData: Data) throws -> String {
+        let keyData = Data(SHA256.hash(data: secretData))
+        let sealed = try AES.GCM.seal(
+            Data(value.utf8), using: SymmetricKey(data: keyData))
+        let fingerprint = Self.fingerprint(ofKey: keyData)
+        return "\(envelopePrefix)\(fingerprint)"
+            + ":\(Base64URL.encode(Data(sealed.nonce)))"
+            + ".\(Base64URL.encode(Data(sealed.tag)))"
+            + ".\(Base64URL.encode(sealed.ciphertext))"
+    }
+
+    /// Writes the field set the CLI's `saveZaiLoginCredentials` writes on
+    /// flow `ready` (§A.6 step 4): `oauth:active_provider`,
+    /// `oauth:zai:access_token`, `zcodejwttoken`, `oauth:zai:user_info`,
+    /// preserving existing `project-key-location:v1:*` entries verbatim
+    /// (they stay sealed under the same secret) and wiping other-provider
+    /// fields. `oauth:session_revision` bumps with expected-revision CAS
+    /// semantics — a stale expectation throws `revisionConflict` and
+    /// leaves the store untouched.
+    ///
+    /// Files: `<base>/.zcode/v2/credentials.json` + `<base>/secret.txt`.
+    /// A store that does not exist yet gets a freshly generated 32-byte
+    /// secret; an existing secret is reused (and must agree with the
+    /// existing envelopes — a mismatch surfaces as the read path's
+    /// `fingerprintMismatch`, never a blind overwrite). Writes are 0600
+    /// from the first byte and atomic (temp + rename, mirroring
+    /// BizSessionCache.save).
+    static func saveZaiLogin(
+        accessToken: String,
+        zcodeJwtToken: String,
+        userInfoJSON: String,
+        base: URL,
+        expectedRevision: Int64? = nil
+    ) throws {
+        let fileManager = FileManager.default
+        let storeURL = base.appendingPathComponent(".zcode/v2/credentials.json")
+        let secretURL = base.appendingPathComponent("secret.txt")
+
+        // Secret: reuse the existing file, or generate one for a new store.
+        let secretExisted = fileManager.fileExists(atPath: secretURL.path)
+        let secretData: Data
+        if secretExisted {
+            secretData = try Data(contentsOf: secretURL)
+        } else {
+            secretData = Self.generateSecret()
+        }
+
+        func readRawFields() throws -> [String: String] {
+            guard fileManager.fileExists(atPath: storeURL.path) else { return [:] }
+            let data = try Data(contentsOf: storeURL)
+            return try JSONDecoder().decode([String: String].self, from: data)
+        }
+
+        // CAS: decrypt the existing store to read the current revision —
+        // this also verifies the secret agrees with the envelopes.
+        let existing = try readRawFields()
+        let foundRevision: Int64 = try {
+            guard !existing.isEmpty else { return 0 }
+            let store = try CredentialStore(storeURL: storeURL, secretURL: secretURL)
+            guard let raw = try? store.value(for: sessionRevisionField) else { return 0 }
+            return Int64(raw) ?? 0
+        }()
+        let expected = expectedRevision ?? foundRevision
+        guard expected == foundRevision else {
+            throw CredentialWriteError.revisionConflict(expected: expected, found: foundRevision)
+        }
+
+        // Assemble: preserved location entries verbatim, the zai login
+        // set sealed fresh, revision bumped.
+        var fields = existing.filter { $0.key.hasPrefix(projectKeyLocationFieldPrefix) }
+        fields[activeProviderField] = try sealEnvelope(value: "zai", secretData: secretData)
+        fields[accessTokenField] = try sealEnvelope(value: accessToken, secretData: secretData)
+        fields[zcodeJwtTokenField] = try sealEnvelope(value: zcodeJwtToken, secretData: secretData)
+        fields[userInfoField] = try sealEnvelope(value: userInfoJSON, secretData: secretData)
+        fields[sessionRevisionField] = try sealEnvelope(
+            value: String(foundRevision + 1), secretData: secretData)
+
+        // Narrow the CAS window: re-read and re-verify right before write.
+        let reread = try readRawFields()
+        if !reread.isEmpty {
+            let rereadRevision: Int64 = try {
+                let store = try CredentialStore(storeURL: storeURL, secretURL: secretURL)
+                guard let raw = try? store.value(for: sessionRevisionField) else { return 0 }
+                return Int64(raw) ?? 0
+            }()
+            guard rereadRevision == foundRevision else {
+                throw CredentialWriteError.revisionConflict(
+                    expected: foundRevision, found: rereadRevision)
+            }
+        }
+
+        try Self.writeAtomically0600(
+            try JSONEncoder().encode(fields), to: storeURL)
+        if !secretExisted {
+            try Self.writeAtomically0600(secretData, to: secretURL)
+        }
+    }
+
+    /// 32 random bytes for a new store's secret file (SystemRandomNumberGenerator).
+    private static func generateSecret() -> Data {
+        SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+    }
+
+    /// Writes `data` to `url` with owner-only permissions (0600) from its
+    /// first byte and atomically (temp file + rename — rename(2) replaces
+    /// atomically, same pattern as BizSessionCache.save).
+    private static func writeAtomically0600(_ data: Data, to url: URL) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let temporaryURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        guard fileManager.createFile(
+            atPath: temporaryURL.path, contents: data,
+            attributes: [.posixPermissions: 0o600])
+        else {
+            throw NSError(
+                domain: "CredentialStore", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "could not create temporary store file at \(temporaryURL.path)"])
+        }
+        if rename(temporaryURL.path, url.path) != 0 {
+            let errorCode = errno
+            let reason = String(cString: strerror(errorCode))
+            try? fileManager.removeItem(at: temporaryURL)
+            throw NSError(
+                domain: NSPOSIXErrorDomain, code: Int(errorCode),
+                userInfo: [NSLocalizedDescriptionKey: "could not replace store file: \(reason)"])
+        }
     }
 }
 

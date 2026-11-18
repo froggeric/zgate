@@ -352,6 +352,131 @@ struct CredentialStoreTests {
     }
 }
 
+// MARK: - Envelope write path (item 4: in-app login)
+
+extension CredentialStoreTests {
+
+    private func makeBase() throws -> URL {
+        try Self.makeTempDirectory()
+    }
+
+    @Test func saveZaiLoginRoundTripsThroughReadPath() throws {
+        // MANDATORY (brief item 4): seal with a synthetic secret → read
+        // back via the real CredentialStore decrypt → fields equal.
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        try CredentialStore.saveZaiLogin(
+            accessToken: "synthetic-access-jwt",
+            zcodeJwtToken: "synthetic-identity-jwt",
+            userInfoJSON: #"{"id":"synthetic-user"}"#,
+            base: base)
+
+        let store = try CredentialStore(base: base)
+        #expect(try store.accessToken() == "synthetic-access-jwt")
+        #expect(try store.zcodeJwtToken() == "synthetic-identity-jwt")
+        #expect(try store.value(for: CredentialStore.userInfoField)
+            == #"{"id":"synthetic-user"}"#)
+        #expect(try store.value(for: CredentialStore.activeProviderField) == "zai")
+        // First write on an empty store: revision 0 → 1.
+        #expect(try store.value(for: CredentialStore.sessionRevisionField) == "1")
+    }
+
+    @Test func savePreservesProjectKeyLocationsAndBumpsRevision() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        // Seed the base with the committed synthetic store (envelopes
+        // sealed with the fixture secret — the write must reuse it).
+        let v2 = base.appendingPathComponent(".zcode/v2", isDirectory: true)
+        try FileManager.default.createDirectory(at: v2, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: Self.fixtureDirectory.appendingPathComponent("credentials.json"),
+            to: v2.appendingPathComponent("credentials.json"))
+        try FileManager.default.copyItem(
+            at: Self.fixtureDirectory.appendingPathComponent("secret.txt"),
+            to: base.appendingPathComponent("secret.txt"))
+
+        try CredentialStore.saveZaiLogin(
+            accessToken: "second-login-access",
+            zcodeJwtToken: "second-login-identity",
+            userInfoJSON: "{}",
+            base: base)
+        try CredentialStore.saveZaiLogin(
+            accessToken: "third-login-access",
+            zcodeJwtToken: "third-login-identity",
+            userInfoJSON: "{}",
+            base: base)
+
+        // The preserved location entry still resolves, revision bumped 0→2.
+        let store = try CredentialStore(base: base)
+        #expect(try store.accessToken() == "third-login-access")
+        #expect(try store.projectKeyLocation()?.apiKeyId == Self.syntheticAPIKeyId)
+        #expect(try store.value(for: CredentialStore.sessionRevisionField) == "2")
+        // The location field NAME (percent-encoded identity array) is
+        // preserved verbatim.
+        let raw = try JSONDecoder().decode(
+            [String: String].self,
+            from: Data(contentsOf: base.appendingPathComponent(".zcode/v2/credentials.json")))
+        #expect(raw.keys.contains { $0.hasPrefix(CredentialStore.projectKeyLocationFieldPrefix) })
+    }
+
+    @Test func writtenStoreRejectedUnderDifferentSecret() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try CredentialStore.saveZaiLogin(
+            accessToken: "synthetic-access-jwt",
+            zcodeJwtToken: "synthetic-identity-jwt",
+            userInfoJSON: "{}",
+            base: base)
+        // Swap the secret file: the envelopes' fingerprints no longer
+        // match — the read path must reject, not mis-decrypt.
+        try Data("a-different-secret".utf8)
+            .write(to: base.appendingPathComponent("secret.txt"))
+        #expect(throws: CredentialError.fingerprintMismatch(
+            field: CredentialStore.activeProviderField)) {
+            try CredentialStore(base: base)
+        }
+    }
+
+    @Test func saveWrites0600WithNoTempLeftovers() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try CredentialStore.saveZaiLogin(
+            accessToken: "a", zcodeJwtToken: "i", userInfoJSON: "{}", base: base)
+
+        let storeURL = base.appendingPathComponent(".zcode/v2/credentials.json")
+        let secretURL = base.appendingPathComponent("secret.txt")
+        let permissions = { (url: URL) -> Int in
+            ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        }
+        #expect(permissions(storeURL) & 0o777 == 0o600)
+        #expect(permissions(secretURL) & 0o777 == 0o600)
+        // No temporary files survive the atomic rename.
+        let v2Entries = try FileManager.default.contentsOfDirectory(
+            atPath: storeURL.deletingLastPathComponent().path)
+        #expect(v2Entries == ["credentials.json"])
+        let baseEntries = try FileManager.default.contentsOfDirectory(atPath: base.path)
+        #expect(Set(baseEntries) == [".zcode", "secret.txt"])
+    }
+
+    @Test func saveRejectsStaleExpectedRevision() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try CredentialStore.saveZaiLogin(
+            accessToken: "a", zcodeJwtToken: "i", userInfoJSON: "{}", base: base)
+        // Current revision is 1; a writer that read revision 0 must lose
+        // the CAS instead of clobbering.
+        #expect(throws: CredentialWriteError.revisionConflict(expected: 0, found: 1)) {
+            try CredentialStore.saveZaiLogin(
+                accessToken: "b", zcodeJwtToken: "j", userInfoJSON: "{}",
+                base: base, expectedRevision: 0)
+        }
+        // The store is untouched by the conflicted write.
+        let store = try CredentialStore(base: base)
+        #expect(try store.accessToken() == "a")
+    }
+}
+
 extension CredentialStore {
     /// Test-only loader for the committed synthetic fixtures.
     enum Fixture { case synthetic }
