@@ -38,11 +38,12 @@ enum CredentialFace: Equatable, Sendable {
 
     /// The face for a given observable state. Priority: off/unknown guards,
     /// then the in-app login (authorizing…), then a dead ladder (persistent
-    /// red), then transient renewal, then the standing degraded flag, then
-    /// signed-in views — session countdown first, store/cache without
-    /// countdown second — and finally the derived dead states (expired
-    /// store token / no ladder at all), which are action-needed even before
-    /// any request has fired.
+    /// red), then transient renewal (only when a rung can still build it —
+    /// a futile retry falls through to the dead-ladder red), then the
+    /// standing degraded flag, then signed-in views — session countdown
+    /// first, store/cache without countdown second — and finally the derived
+    /// dead states (expired store token / no ladder at all), which are
+    /// action-needed even before any request has fired.
     static func face(
         relayConfigured: Bool,
         snapshot: SigningClient.StatusSnapshot?,
@@ -57,7 +58,16 @@ enum CredentialFace: Equatable, Sendable {
         }
         if snapshot.phase == .handshaking { return .renewing }
         if snapshot.servedUnsigned { return .degraded }
-        if case .refreshFailed = events.last { return .renewing }
+        if case .refreshFailed = events.last {
+            // A pending backoff retry reads as renewal only while some rung
+            // can still build it: a held session (its in-memory biz JWT can
+            // re-mint) or a viable store/cache. With neither — login-less or
+            // unreadable store — the retry can never succeed and must not
+            // mask the derived dead-ladder red below.
+            if snapshot.sessionExpiresAtMs != nil || storeOrCacheViable(snapshot) {
+                return .renewing
+            }
+        }
         if let expiresAtMs = snapshot.sessionExpiresAtMs {
             return .signedIn(
                 minutesLeft: max(0, Int((expiresAtMs - snapshot.nowMs) / 60_000)))

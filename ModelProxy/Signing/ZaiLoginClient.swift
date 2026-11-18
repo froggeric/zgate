@@ -176,7 +176,7 @@ actor ZaiLoginClient {
     // MARK: - HTTP
 
     private func post(path: String, body: Data) async throws -> (Int, [String: Any]?) {
-        var request = request(path: path)
+        var request = try request(path: path)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
@@ -184,13 +184,17 @@ actor ZaiLoginClient {
     }
 
     private func get(path: String) async throws -> (Int, [String: Any]?) {
-        var request = request(path: path)
+        var request = try request(path: path)
         request.httpMethod = "GET"
         return try await send(request)
     }
 
-    private func request(path: String) -> URLRequest {
-        var request = URLRequest(url: URL(string: configuration.origin + path)!)
+    private func request(path: String) throws -> URLRequest {
+        guard let url = URL(string: configuration.origin + path) else {
+            // path embeds the server-supplied flow_id — never force-unwrap it
+            throw ZaiLoginError.malformed(stage: "url", reason: "unbuildable request URL")
+        }
+        var request = URLRequest(url: url)
         request.timeoutInterval = configuration.requestTimeout
         request.setValue(
             "Bearer \(configuration.pollToken)", forHTTPHeaderField: "Authorization")

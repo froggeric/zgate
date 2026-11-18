@@ -148,6 +148,44 @@ struct CredentialStatusModelTests {
         #expect(face == .renewing)
     }
 
+    @Test("a refresh failure over a usable cache still reads renewing (cache can build)")
+    func refreshFailureOverUsableCacheShowsRenewing() {
+        let face = CredentialFace.face(
+            relayConfigured: true,
+            snapshot: snapshot(
+                phase: .unsigned, sessionExpiresAtMs: nil,
+                cacheAcquiredAtMs: Self.nowMs - Self.minutes(1)),
+            events: [.refreshFailed(stage: "mint", reason: "HTTP 503")],
+            loginInFlight: false)
+        #expect(face == .renewing)
+    }
+
+    // MARK: - Machine: futile retries cannot mask the dead-ladder red
+
+    @Test("a refresh failure cannot mask a login-less dead ladder (retry can never build)")
+    func refreshFailureDoesNotMaskLoginlessDeadLadder() {
+        // The keeper retries every ≤5 min and its .refreshFailed events used
+        // to seat the face on "renewing" forever, unseating the red Sign In.
+        let face = CredentialFace.face(
+            relayConfigured: true,
+            snapshot: snapshot(phase: .unsigned, sessionExpiresAtMs: nil),
+            events: [.refreshFailed(stage: "zLogin", reason: "no location")],
+            loginInFlight: false)
+        #expect(face == .actionNeeded(reason: "no stored login"))
+    }
+
+    @Test("a refresh failure cannot mask an expired stored login")
+    func refreshFailureDoesNotMaskExpiredStore() {
+        let face = CredentialFace.face(
+            relayConfigured: true,
+            snapshot: snapshot(
+                phase: .unsigned, sessionExpiresAtMs: nil,
+                storeAccessTokenExpiresAtMs: Self.nowMs - 1),
+            events: [.refreshFailed(stage: "zLogin", reason: "HTTP 401")],
+            loginInFlight: false)
+        #expect(face == .actionNeeded(reason: "stored login expired"))
+    }
+
     // MARK: - Machine: awaitingAuthorization
 
     @Test("an in-flight in-app login shows authorizing — even over an unrecovered expiry")

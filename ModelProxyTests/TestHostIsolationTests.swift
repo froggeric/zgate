@@ -34,6 +34,13 @@ import Testing
             "XCTestConfigurationFilePath": "/tmp/xctest-config",
             "ZGATE_E2E": "1",
         ]))
+        // Only "=1" opts into E2E live-path mode — a stray other value
+        // (e.g. "0") must not silently restore the production-mutation
+        // hazard.
+        #expect(AppPaths.isolationWanted(environment: [
+            "XCTestConfigurationFilePath": "/tmp/xctest-config",
+            "ZGATE_E2E": "0",
+        ]))
     }
 
     @Test func hostAppliedIsolationToApplicationSupport() throws {

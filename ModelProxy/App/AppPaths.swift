@@ -31,7 +31,10 @@ enum AppPaths {
     /// live-path behavior — its tests deliberately drive a staged app and
     /// read on-disk artifacts).
     nonisolated static func isolationWanted(environment: [String: String]) -> Bool {
-        guard environment["ZGATE_E2E"] == nil else { return false }
+        // Only the explicit "=1" opts into E2E live-path mode; any other
+        // value (e.g. a stray "0") must NOT silently restore the
+        // production-mutation hazard.
+        guard environment["ZGATE_E2E"] != "1" else { return false }
         return environment["ZGATE_TEST_HOST_ISOLATION"] == "1"
             || environment["XCTestConfigurationFilePath"] != nil
     }
