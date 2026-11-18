@@ -1,5 +1,13 @@
 # Signing intelligence — zcode relay (Task 1 findings)
 
+> **2026-11-18 — superseded in parts by ZGate 2.7.6's native login stack.**
+> ZGate now runs the OAuth flow in-app (`oauth/cli/init` → browser → poll,
+> `ModelProxy/Signing/ZaiLoginClient.swift`), reads the shared `~/.zcode`
+> store by default, renews tokens proactively (`CredentialKeeper`), and
+> adopts external logins without restart. The scratch-home terminal remedy
+> below is historical (kept as the alert's fallback path). The wire/protocol
+> findings remain accurate.
+
 Observed 2026-11-15. Sources: live instrumented runs (`capture2.js`, this task — failed run
 2026-11-15T18:13Z with expired credentials; successful run 2026-11-15T18:25Z after user
 re-login), V3 wire capture (`/Volumes/ssd/github/zcode/wire.log`, 2026-11-15T17:08Z),

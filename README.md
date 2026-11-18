@@ -74,9 +74,6 @@ which keep their 1M assumption — the relay's real offering.
 ## Requirements
 
 - macOS (Apple Silicon), admin access to copy ZGate.app into `/Applications`.
-- **ZCode.app installed at `/Applications`** — ZGate's login flow borrows its
-  CLI binary: `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`.
-- **node** (any recent version; it only runs the login command above).
 - **Splash** — optional local server; Settings → Splash installs and manages
   it (see [Splash](#splash-local-server-optional)).
 
@@ -93,19 +90,23 @@ cp -R build/Build/Products/Release/ZGate.app /Applications/
 (Ad-hoc signed — fine for a personal machine. First build resolves SPM
 packages: swift-nio, async-http-client.)
 
-### 2. Log in once (the scratch home)
+### 2. Sign in (in the app)
 
-ZGate reads credentials from the zcode scratch home. Log in once from a
-terminal — a browser OAuth page opens; complete it and come back:
+ZGate reads credentials from the zcode store — by default the **shared
+store** at `~/.zcode`, the same one the ZCode GUI and CLI use (Settings →
+General → Credentials can switch to an isolated scratch store instead). If
+you are already logged into the ZCode GUI or CLI, ZGate uses that session
+as-is.
 
-```bash
-ZCODE_DATA_BASE_DIR=$HOME/.zcode-scratch-v3 ZCODE_CREDENTIAL_SECRET_FILE=$HOME/.zcode-scratch-v3/secret.txt node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai
-```
+Otherwise sign in from the app: the credential row's **Sign In** button
+(popover, or Settings → General → Credentials) opens the z.ai approval page
+in your browser; ZGate picks the session up live — no terminal command, no
+restart. The old copyable terminal command remains as a fallback in the
+login alert.
 
-This is needed about **once per 180 days** (or on revocation): ZGate
-persists a 180-day business session after the first successful relay
-request. When re-login is required, ZGate surfaces an alert containing the
-exact command above (with a Copy button) — you don't have to remember it.
+Interactive login is needed about **once per 180 days** (or on revocation):
+while ZGate runs, a background keeper renews the short-lived tokens
+automatically (see [Credentials & login status](#credentials--login-status)).
 
 ### 3. Launch ZGate
 
@@ -132,12 +133,32 @@ tells the truth. Set the tier aliases too — see
 - **A few seconds of latency on the very first relay request**: ZGate builds
   its V4 signing session (handshake + key derivation) once, on demand. Later
   requests are fast.
-- **If your scratch login (step 2) is older than ~1 hour AND ZGate has never
-  cached a business session yet**, that first request will fail with a
-  credential alert: the 1-hour OAuth token from `login zai` has expired, so
-  ZGate can't bootstrap the 180-day session. Re-run the login command from
-  the alert (Copy button, browser opens) — from then on the cached session
-  carries you for ~180 days and the 1-hour token no longer matters.
+- **If no login is available yet**, the credential row shows red
+  ("login expired — sign in") instead: click Sign In, complete the browser
+  approval, and the row flips to green without restarting ZGate. From then
+  on the keeper keeps the ladder renewed.
+
+## Credentials & login status
+
+The popover's credential row (and Settings → General → Credentials) is
+always current:
+
+| Face | Meaning |
+|---|---|
+| ● signed in · N min left | plan token healthy; renewed before it lapses |
+| ● renewing | a renewal is in flight or retrying (backoff) |
+| ● authorizing… | an in-app login is waiting for browser approval |
+| ● login expired — sign in | the ladder is dead: click Sign In (red, persistent; the menu-bar icon badges too) |
+| ● degraded (unsigned) | the last request was served by the unsigned fail-open path — working, but not healthy |
+
+- **Auto-renewal**: while ZGate runs, a background keeper mints each new
+  plan token ~2 min before its ~52-min expiry and re-evaluates after
+  sleep/wake; failures back off instead of looping. Interactive login only
+  matters when the ~180-day session itself dies.
+- **Hot pickup**: a login made in the ZCode GUI or CLI (shared store) — or
+  via Sign In — is adopted by the running app on the next request. Settings
+  → General → Credentials → Reload forces it immediately. Restarting ZGate
+  is never required for credential changes.
 
 ## Splash (local server, optional)
 
@@ -166,8 +187,8 @@ server's last 500 output lines.
   its saved config forever — upgrading ZGate never rewrites your rules.
 - **Reset to defaults:** quit ZGate (popover → Quit), delete
   `~/Library/Application Support/ZGate/config.json`, relaunch. This
-  discards rule edits (not your login — credentials live in the scratch
-  store).
+  discards rule edits (not your login — credentials live in the zcode
+  store, `~/.zcode` by default, outside ZGate's Application Support).
 - **Settings editor:** Settings → Rules gives full CRUD on the rule table —
   add, delete, reorder (order = priority, first match wins), enable/disable,
   and edit every field (match class/model, conditions like time windows and
@@ -259,14 +280,14 @@ Gatekeeper prompts on any machine.
 
 ## Troubleshooting
 
-- **Credential-expired alert** (relogin required): the alert contains the
-  exact `login zai` command with a Copy button — copy it, run it in a
-  terminal, complete the browser OAuth, then Retry in the alert. Expect this
-  at most ~once per 180 days.
+- **Credential row red / "login expired":** click **Sign In** (popover row
+  or Settings → General → Credentials) — the browser opens, approval
+  completes the login in-app, and the running app picks it up. The alert's
+  Copy Command button remains as the terminal fallback. Expect this at most
+  ~once per 180 days (or after a revocation).
 - **Relay 502 on the first request:** either the signing session is still
-  building (give it a few seconds and retry), or the scratch login is stale
-  (older than ~1h with no cached business session yet) — the credential
-  alert with the login command appears; see above.
+  building (give it a few seconds and retry), or no login is available — the
+  credential row shows red; see above.
 - **Port 8787 already in use:** ZGate auto-advances to the next free port —
   check the popover's env line for the actual port and export that. Port
   edits in Settings need Pause/Resume (or relaunch) to rebind.
