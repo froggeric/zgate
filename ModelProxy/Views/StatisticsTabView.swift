@@ -141,7 +141,7 @@ struct StatisticsTabView: View {
                     .padding(.vertical, 5)
                     .padding(.horizontal, 4)
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(sourceModel.map { "\($0) to " } ?? "")\(row.model): \(row.record.inputTokens.compactTokenString) input, \(row.record.outputTokens.compactTokenString) output, cost \(costText(cost))")
+                    .accessibilityLabel("\(row.model): fresh input \(row.record.freshInputTokens), cache read \(row.record.cacheReadTokens), output \(row.record.outputTokens), total \(row.record.inputTokens + row.record.outputTokens) tokens")
 
                     Divider()
                 }

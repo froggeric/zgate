@@ -168,8 +168,14 @@ struct MenuBarUITests {
         #expect(entry.tokensPerSecondDisplayText == "935/s")
         #expect(entry.tokensDisplayText == "1.9K")
 
-        // Rounded-to-seconds TTFT above 1 s; tok/s without TTFT falls back
-        // to the whole duration.
+        // Non-streamed: first body byte ~ whole duration → tok/s suppressed
+        // (a "speed" over a zero-width window would be fiction).
+        let buffered = TrafficEntry(
+            model: "glm-5.3", routeType: .mapped(targetModel: "GLM-5.3"),
+            requestKind: .generation, httpStatus: 200, duration: 6.0, ttft: 5.9, outputTokens: 500)
+        #expect(buffered.tokensPerSecondDisplayText == "—")
+
+        // Rounded-to-seconds TTFT above 1 s; tok/s over the stream window.
         let slow = TrafficEntry(
             model: "glm-5.3", routeType: .mapped(targetModel: "GLM-5.3"),
             requestKind: .generation, httpStatus: 200, duration: 12.6, ttft: 3.4, outputTokens: 1000)

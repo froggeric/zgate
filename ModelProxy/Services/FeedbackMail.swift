@@ -33,7 +33,7 @@ enum FeedbackMail {
     }
 
     static func subject(version: String, build: String) -> String {
-        "ModelProxy Feedback - \(version) (\(build))"
+        "ZGate Feedback - \(version) (\(build))"
     }
 
     static func body(version: String, build: String, osVersion: String) -> String {
@@ -42,7 +42,7 @@ enum FeedbackMail {
 
 
         ---
-        ModelProxy \(version) (\(build))
+        ZGate \(version) (\(build))
         macOS \(osVersion)
         """
     }

@@ -27,13 +27,13 @@ struct FeedbackMailTests {
 
     @Test func bodyCarriesVersionsAndNothingElse() {
         let body = FeedbackMail.body(version: "2.4", build: "2", osVersion: "Version 15.0 (Build 24A335)")
-        #expect(body.contains("ModelProxy 2.4 (2)"))
+        #expect(body.contains("ZGate 2.4 (2)"))
         #expect(body.contains("macOS Version 15.0 (Build 24A335)"))
         #expect(body.contains("Describe the issue or suggestion:"))
     }
 
     @Test func subjectIdentifiesTheBuild() {
-        #expect(FeedbackMail.subject(version: "2.4", build: "2") == "ModelProxy Feedback - 2.4 (2)")
+        #expect(FeedbackMail.subject(version: "2.4", build: "2") == "ZGate Feedback - 2.4 (2)")
     }
 
     @Test func newlinesAreEncoded() throws {

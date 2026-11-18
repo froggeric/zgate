@@ -53,7 +53,7 @@ Deployment target: `MACOSX_DEPLOYMENT_TARGET = 15.6` on all targets (15.7 at pro
 1. **Signing is ad-hoc.** Upstream shipped `DEVELOPMENT_TEAM = 2JXYA862GQ` + automatic signing; this machine has none of their identities, so the build failed. All configs now carry `CODE_SIGN_STYLE = Manual`, `CODE_SIGN_IDENTITY = "-"`, `DEVELOPMENT_TEAM = ""` — same recipe as upstream's own e2e `build.sh`. Sandbox entitlements + hardened runtime still work locally. If a real signing identity is ever added, revert these three.
 2. **Test imports** updated `@testable import ModelProxy` → `@testable import ZGate` (11 files in `ModelProxyTests/`) — mechanical consequence of the module rename; no test logic touched.
 3. **`ModelProxyTests/ModelProxyTests.swift` `hostAppBundleHasExpectedIdentity`** now expects `local.zgate.mac` / `ZGate.app` / executable `ZGate` — this test pins product identity, so it must track the fork identity.
-4. **e2e harness** (`scripts/e2e/`) project-identity references updated: `build.sh` (xcodeproj path, scheme, product path), `up.sh`/`down.sh` (executable match strings), `env.sh` (e2e bundle id). Source-derived strings unchanged (app-support dir `~/Library/Application Support/ZGate`, `.modelproxy-e2e` marker, `modelproxy-*.log` names — these come from app code and stay ModelProxy).
+4. **e2e harness** (`scripts/e2e/`) project-identity references updated: `build.sh` (xcodeproj path, scheme, product path), `up.sh`/`down.sh` (executable match strings), `env.sh` (e2e bundle id). Source-derived strings unchanged where still upstream-flavored (`.modelproxy-e2e` marker, `modelproxy-*.log` names). The app-support DIR itself was renamed to `~/Library/Application Support/ZGate` on 2026-11-18 (one-time move at launch).
 
 ## Upstream context worth knowing
 

@@ -32,7 +32,9 @@ enum AppPaths {
                 at: appSupport.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fm.moveItem(at: legacyAppSupport, to: appSupport)
         } catch {
-            // Never block launch: fall back to a fresh ZGate dir.
+            // Never block launch: fall back to a fresh ZGate dir. NSLog
+            // because AppLog setup ordering isn't guaranteed this early.
+            NSLog("[ZGate] AppPaths: legacy dir move failed (\(error)) — starting fresh at %@", appSupport.path)
             try? fm.createDirectory(at: appSupport, withIntermediateDirectories: true)
         }
     }

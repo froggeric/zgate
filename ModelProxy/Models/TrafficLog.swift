@@ -152,8 +152,6 @@ struct TrafficEntry: Identifiable, Sendable {
         return "\(className) → \(routeDisplayLabel)"
     }
 
-    /// "1200ms" — duration in whole milliseconds; "—" when there was no
-    /// upstream call (blocked).
     /// TTFT rounded to seconds (one decimal under 1 s so fast relays stay
     /// distinguishable); "—" when unmeasured.
     var ttftDisplayText: String {
@@ -162,12 +160,16 @@ struct TrafficEntry: Identifiable, Sendable {
     }
 
     /// Decode speed: output tokens over the streaming window (duration
-    /// minus TTFT when known); "—" when not derivable.
+    /// minus TTFT). "—" when not derivable — including NON-STREAMED
+    /// responses, where the first body byte arrives with the complete body
+    /// (ttft ~ duration) and a "speed" would be fiction.
     var tokensPerSecondDisplayText: String {
         guard requestKind.shouldDisplayTPS,
               let outputTokens, outputTokens > 0,
-              let duration else { return "—" }
-        let streamSeconds = max(duration - (ttft ?? 0), 0.05)
+              let duration,
+              let ttft,
+              ttft < 0.9 * duration else { return "—" }
+        let streamSeconds = max(duration - ttft, 0.05)
         return "\(Int((Double(outputTokens) / streamSeconds).rounded()))/s"
     }
 

@@ -7,7 +7,7 @@
 # `claude` traffic rides the SIGNED relay path.
 #
 # The app has no config-dir override, so the E2E OWNS ~/Library/Application
-# Support/ModelProxy for its duration: the live directory is moved aside
+# Support/ZGate for its duration: the live directory is moved aside
 # (not deleted) and zgate-down.sh restores it. Refuses to start if a previous
 # run's swap is still in place.
 #
