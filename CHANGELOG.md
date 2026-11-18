@@ -4,6 +4,20 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
+## [Unreleased]
+
+### 2026-11-18 — TTFT columns, cache-read stats, ZGate data dir
+
+- Recent Requests shows TTFT (first relayed byte, seconds) and decode
+  speed (tok/s over the streaming window) instead of raw milliseconds;
+  column headers align with rows (scrollbar no longer shifts them).
+- Statistics splits input into fresh vs cache-read per model — the
+  cache-read share is the compaction-discipline lever under the
+  cache-reads-bill-as-input doctrine.
+- App-support directory renamed `ModelProxy` → `ZGate` (one-time move at
+  launch; a pre-rename app re-seeds defaults).
+- Feedback address is the fork owner's; credits list this repo.
+
 ## [2.6.4] — 2026-11-18
 
 ### 2026-11-18 — post-2.6(3) fixes: splash port, qwen levers, signing, UI polish
