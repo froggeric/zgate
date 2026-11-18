@@ -17,6 +17,9 @@ struct SettingsView: View {
             QuotaTabView()
                 .tabItem { Label("Quota", systemImage: "gauge.with.needle") }
 
+            SplashTabView()
+                .tabItem { Label("Splash", systemImage: "drop") }
+
             AdvancedTabView()
                 .tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
 
@@ -399,7 +402,7 @@ private struct RuleRow: View {
 
     private func badge(_ title: String, color: Color) -> some View {
         Text(title)
-            .font(.caption2)
+            .font(.caption)
             .foregroundStyle(color)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
@@ -467,7 +470,7 @@ private struct RuleEditorSheet: View {
                     .autocorrectionDisabled()
             } else if case .catchAll = draft.matchMode {
                 Text("Serves every request no earlier rule matched. Evaluated after all class rules.")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
@@ -555,7 +558,7 @@ private struct RuleEditorSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             if let message = validationMessage {
                 Label(message, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.orange)
             }
             HStack {
@@ -609,7 +612,7 @@ private struct ConditionEditorRow: View {
                 Label(
                     condition.type == .timeWindow ? "Time window" : "Quota below",
                     systemImage: condition.type == .timeWindow ? "clock" : "gauge.with.needle")
-                    .font(.caption.weight(.medium))
+                    .font(.footnote.weight(.medium))
                 Spacer()
                 Button("Remove", action: onRemove)
                     .buttonStyle(.mpDestructive)
@@ -697,7 +700,7 @@ struct QuotaTabView: View {
                     .disabled(!quotaModel.canRefresh)
                     if quotaModel.isDemoSeeded {
                         Text("demo data seeded (debug menu)")
-                            .font(.caption)
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -782,14 +785,16 @@ struct AdvancedTabView: View {
                     Spacer()
                     if let bound = proxyServer.boundPorts[client.clientName] {
                         if bound != client.port {
-                            Text("configured \(client.port) → bound \(bound)")
+                            // verbatim: LocalizedStringKey Int interpolation
+                            // would group digits ("8,787").
+                            Text(verbatim: "configured \(client.port) → bound \(bound)")
                                 .foregroundStyle(.orange)
                         } else {
-                            Text("127.0.0.1:\(bound)")
+                            Text(verbatim: "127.0.0.1:\(bound)")
                                 .foregroundStyle(.secondary)
                         }
                     } else {
-                        Text("configured \(client.port) — not listening")
+                        Text(verbatim: "configured \(client.port) — not listening")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -811,7 +816,7 @@ struct AdvancedTabView: View {
                 }
             }
             Text("Rejected signatures re-handshake automatically (once), then fail open unsigned with a warning.")
-                .font(.caption)
+                .font(.footnote)
                 .foregroundStyle(.secondary)
         } header: {
             Text("Signing")
@@ -833,7 +838,7 @@ struct AdvancedTabView: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Re-login command (opens a browser for OAuth):")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 CopyableLineView(line: ReloginAlertContent.command, copiedKey: $copied, key: ReloginAlertContent.command)
             }
@@ -855,7 +860,7 @@ private struct CopyableLineView: View {
     var body: some View {
         HStack {
             Text(line)
-                .font(.caption.monospaced())
+                .font(.footnote.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -886,7 +891,7 @@ struct AboutTabView: View {
             Section("ZGate") {
                 row("Version", value: FeedbackMail.versionDisplay)
                 Text("A native menu-bar proxy for Claude Code: signed zcode relay routing, local splash fallback, and quota-aware rules.")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
@@ -895,13 +900,13 @@ struct AboutTabView: View {
                     Text("Built on model-proxy (MIT)")
                     if let url = URL(string: "https://github.com/n0rvyn/model-proxy") {
                         Link("github.com/n0rvyn/model-proxy", destination: url)
-                            .font(.caption)
+                            .font(.footnote)
                     }
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Splash local target")
-                    Text("Anthropic-protocol server on 127.0.0.1:8000 (default rule target local/qwen3.8-27b-q8) — haiku-class traffic stays local, with relay failover.")
-                        .font(.caption)
+                    Text("Anthropic-protocol local server (splash). Port is configured on the Splash tab (default 8123); the disabled qwen rules under Rules route here once enabled.")
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -909,7 +914,7 @@ struct AboutTabView: View {
             Section("Config & data") {
                 row("Config", value: "config.json")
                 Text(AppPaths.appSupport.path)
-                    .font(.caption.monospaced())
+                    .font(.footnote.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }

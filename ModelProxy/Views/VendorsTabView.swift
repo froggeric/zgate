@@ -23,7 +23,7 @@ struct VendorsTabView: View {
                                 Text(vendor.name)
                                     .fontWeight(.medium)
                                 Text(vendor.baseURL)
-                                    .font(.caption)
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()

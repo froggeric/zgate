@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 
 // MARK: - Credential re-login alert (Task 9, testable)
 
@@ -135,35 +136,39 @@ enum RulesSummary: Sendable {
     }
 }
 
-// MARK: - Splash health chip (Task 9, testable)
+// MARK: - Splash lifecycle chip (Package C, testable)
 
-/// Splash (loopback target) reachability for the popover chip. Mirrors the
-/// router's health semantics (`ClassRuleTable.healthStalenessLimit`): a
-/// success inside the window is up; an aged-out success is down with the
-/// last-seen time; never probed is unknown (routing fail-open).
-enum SplashHealth: Equatable, Sendable {
-    case up
-    case down(lastSeen: Date?)
-    case unknown
+/// Popover face for the manager's process state (spec §5). The router's
+/// health seam keeps its own truth in `LocalHealthMonitor` — this chip is
+/// lifecycle, not reachability.
+enum SplashLifecycleChip: Equatable, Sendable {
 
-    /// nil when no loopback (splash) vendor is configured — the chip hides.
-    static func evaluate(
-        vendors: [Vendor],
-        lastSuccess: (UUID) -> Date?,
-        now: Date,
-        staleness: TimeInterval = ClassRuleTable.healthStalenessLimit
-    ) -> SplashHealth? {
-        let splashVendors = vendors.filter { LocalTarget.isLoopbackBaseURL($0.baseURL) }
-        guard let splash = splashVendors.first else { return nil }
-        guard let lastSeen = lastSuccess(splash.id) else { return .unknown }
-        return now.timeIntervalSince(lastSeen) <= staleness ? .up : .down(lastSeen: lastSeen)
+    struct Face: Equatable, Sendable {
+        let text: String
+        let color: Color
     }
 
-    var label: String {
-        switch self {
-        case .up: return "splash up"
-        case .down: return "splash down"
-        case .unknown: return "splash n/a"
+    static func face(for state: SplashState, now: Date) -> Face {
+        switch state {
+        case .running(let profile, _, let adopted):
+            return .init(
+                text: "● splash · \(profile)" + (adopted ? " · external" : ""),
+                color: .green)
+        case .starting:
+            return .init(text: "◐ splash · starting", color: .gray)
+        case .crashed(_, _, let nextRetry):
+            var text = "● splash"
+            if let next = nextRetry {
+                text += " · retry in \(max(0, Int(next.timeIntervalSince(now)))) s"
+            } else {
+                // No retry scheduled (spawn failure / readiness timeout).
+                text += " · crashed"
+            }
+            return .init(text: text, color: .orange)
+        case .stopping:
+            return .init(text: "◐ splash · stopping", color: .gray)
+        case .stopped:
+            return .init(text: "○ splash · off", color: .gray)
         }
     }
 }

@@ -91,8 +91,10 @@ struct RouterTests {
         if let mappings {
             table = mappings
         } else {
-            // Same order as `AppConfig.makeZGateDefaultRouting` (owner
-            // ruling 2026-11-16: sonnet → relay flash, haiku → splash q8).
+            // Synthetic wave-0-shaped table (not the v2.1 default matrix —
+            // that one is pinned by cleanTierRoutingEndToEnd): the haiku row
+            // deliberately keeps its splash primary + relay backup so the
+            // failover/health tests below have a two-target rule to exercise.
             table = [
                 ModelMapping(sourceModel: "auto", targetModel: "GLM-5.3", targetVendorID: relay.id, matchClass: .auto),
                 ModelMapping(
@@ -140,9 +142,11 @@ struct RouterTests {
 
     @Test func classMapMatchesCCWireNames() {
         // CC env aliases: opus/sonnet → glm-5.3 (also [1m]), haiku → glm-5.3-flash.
-        #expect(ModelClass.classify("glm-5.3") == .sonnet)
-        #expect(ModelClass.classify("glm-5.3[1m]") == .sonnet)
-        #expect(ModelClass.classify("GLM-5.3") == .sonnet)  // case-insensitive
+        // v2.1 (ruling 2026-11-17): all deliberate work opus-class — the bare
+        // glm-5.3 prefix maps to .opus.
+        #expect(ModelClass.classify("glm-5.3") == .opus)
+        #expect(ModelClass.classify("glm-5.3[1m]") == .opus)
+        #expect(ModelClass.classify("GLM-5.3") == .opus)  // case-insensitive
         #expect(ModelClass.classify("glm-5.3-flash") == .haiku)  // flash before glm-5.3 prefix
         #expect(ModelClass.classify("claude-3-5-haiku-20241022") == .haiku)
         #expect(ModelClass.classify("claude-opus-4-6") == .opus)
@@ -156,14 +160,26 @@ struct RouterTests {
         #expect(ModelClass.classify("some-new-model-name") == nil)  // unknown → fallback
     }
 
+    // MARK: - Clean tier names (v2.1, ruling 2026-11-17)
+
+    @Test func classifyCleanTierNames() {
+        #expect(ModelClass.classify("glm-5.3[1m]") == .opus)
+        #expect(ModelClass.classify("glm-5.3") == .opus)
+        #expect(ModelClass.classify("glm-5.3-flash[1m]") == .haiku)
+        #expect(ModelClass.classify("glm-5.3-opus[1m]") == .opus)
+    }
+
     @Test func classRulesRouteCCModels() {
         let fixture = makeFixture()
 
-        // glm-5.3 lands on the sonnet rule (CC aliasing), not the fallback —
-        // which meters at the flash tier per the owner's 2026-11-16 ruling.
-        let sonnetTarget = routedTarget(resolve(fixture, model: "glm-5.3"))
-        #expect(sonnetTarget?.vendorKind == .relay)
-        #expect(sonnetTarget?.targetModel == "GLM-5.3-Flash")
+        // v2.1: glm-5.3 is opus-class (CC aliasing), so it lands on the opus
+        // rule — not the fallback and not the sonnet rule.
+        let glmTarget = routedTarget(resolve(fixture, model: "glm-5.3"))
+        #expect(glmTarget?.vendorKind == .relay)
+        #expect(glmTarget?.targetModel == "GLM-5.3")
+
+        // Claude sonnet wire names still land on the sonnet rule.
+        #expect(routedTarget(resolve(fixture, model: "claude-sonnet-4-5-20250929"))?.targetModel == "GLM-5.3-Flash")
 
         // glm-5.3-flash lands on the haiku rule → splash.
         let haikuTarget = routedTarget(resolve(fixture, model: "glm-5.3-flash"))
@@ -355,11 +371,12 @@ struct RouterTests {
             return buffer
         }
 
-        let sonnet = try await router.resolve(bodyBytes: body("glm-5.3"), originalAPIKey: "k")
-        if case .routed(let target) = sonnet.result {
-            #expect(target.targetModel == "GLM-5.3-Flash")
+        // v2.1: glm-5.3 is opus-class → the opus rule's GLM-5.3.
+        let glm = try await router.resolve(bodyBytes: body("glm-5.3"), originalAPIKey: "k")
+        if case .routed(let target) = glm.result {
+            #expect(target.targetModel == "GLM-5.3")
         } else {
-            Issue.record("expected routed sonnet target")
+            Issue.record("expected routed glm-5.3 target")
         }
 
         let fallback = try await router.resolve(bodyBytes: body("some-new-model-name"), originalAPIKey: "k")
@@ -538,50 +555,120 @@ struct RouterTests {
         #expect(relay["vendorKind"] as? String == "relay")
         #expect(relay["apiKey"] as? String == "")
         let splash = try #require(vendors.first { ($0["name"] as? String) == "splash (local)" })
-        #expect(splash["baseURL"] as? String == "http://127.0.0.1:8000")
+        #expect(splash["baseURL"] as? String == "http://127.0.0.1:8123")  // 2026-11-18: off 8000 (webserver conflicts)
         #expect(splash["replayPolicy"] as? String == "portableOnly")
 
-        // Rules, ordered: auto, haiku, sonnet, opus-peak (disabled), opus,
-        // fallback — with the owner-ruled targets (2026-11-16 correction of
-        // spec §2): sonnet meters at flash, haiku rides the splash q8 quant.
+        // Rules, ordered (v2.1 + qwen levers 2026-11-18): auto-peak twin
+        // (DISABLED), auto, sonnet-qwen (DISABLED), sonnet, haiku-qwen
+        // (DISABLED), haiku, opus-peak (DISABLED), opus, fallback — the
+        // levers sit ABOVE their tier's plain row (first-eligible-wins: an
+        // enabled lever must out-prioritize it). All deliberate work
+        // opus-class on the relay; twins + qwen rows dormant levers; local
+        // qwen off every ACTIVE default route.
         let mappings = try #require(json["modelMappings"] as? [[String: Any]])
-        #expect(mappings.count == 6)
+        #expect(mappings.count == 9)
         #expect(mappings[0]["matchClass"] as? String == "auto")
-        #expect(mappings[0]["targetModel"] as? String == "GLM-5.3")
-        #expect(mappings[1]["matchClass"] as? String == "haiku")
-        #expect(mappings[1]["targetModel"] as? String == "local/qwen3.8-27b-q8")
-        #expect(mappings[1]["backupTargetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[0]["targetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[0]["isEnabled"] as? Bool == false)
+        let autoPeak = try #require(mappings[0]["conditions"] as? [[String: Any]])
+        #expect(autoPeak.count == 1)
+        #expect(autoPeak[0]["type"] as? String == "timeWindow")
+        #expect(autoPeak[0]["days"] as? String == "weekdays")
+        #expect(autoPeak[0]["from"] as? String == "07:00")
+        #expect(autoPeak[0]["to"] as? String == "11:00")
+        #expect(autoPeak[0]["tz"] as? String == "Europe/Paris")
+        #expect(mappings[1]["matchClass"] as? String == "auto")
+        #expect(mappings[1]["targetModel"] as? String == "GLM-5.3")
+        // Qwen levers (2026-11-18): DISABLED rows to local splash qwen with
+        // relay-Flash failover — single-toggle local routing per tier,
+        // positioned to WIN when enabled.
         #expect(mappings[2]["matchClass"] as? String == "sonnet")
-        #expect(mappings[2]["targetModel"] as? String == "GLM-5.3-Flash")
-        #expect(mappings[3]["matchClass"] as? String == "opus")
-        #expect(mappings[3]["targetModel"] as? String == "GLM-5.3-Flash")
-        #expect(mappings[3]["isEnabled"] as? Bool == false)  // cost lever ships disabled
-        let peak = try #require(mappings[3]["conditions"] as? [[String: Any]])
+        #expect(mappings[2]["targetModel"] as? String == "local/qwen3.8-27b-q8")
+        #expect(mappings[2]["isEnabled"] as? Bool == false)
+        #expect(mappings[2]["backupTargetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[3]["matchClass"] as? String == "sonnet")
+        #expect(mappings[3]["targetModel"] as? String == "GLM-5.3")
+        #expect(mappings[4]["matchClass"] as? String == "haiku")
+        #expect(mappings[4]["targetModel"] as? String == "local/qwen3.8-27b-q8")
+        #expect(mappings[4]["isEnabled"] as? Bool == false)
+        #expect(mappings[4]["backupTargetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[5]["matchClass"] as? String == "haiku")
+        #expect(mappings[5]["targetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[5]["backupTargetModel"] == nil)  // v2.1: no backups
+        #expect(mappings[6]["matchClass"] as? String == "opus")
+        #expect(mappings[6]["targetModel"] as? String == "GLM-5.3-Flash")
+        // Cost lever ships DISABLED (ruling 2026-11-17: dormant — one toggle
+        // to re-arm if peak metering ever returns).
+        #expect(mappings[6]["isEnabled"] as? Bool == false)
+        let peak = try #require(mappings[6]["conditions"] as? [[String: Any]])
         #expect(peak.count == 1)
         #expect(peak[0]["type"] as? String == "timeWindow")
         #expect(peak[0]["days"] as? String == "weekdays")
         #expect(peak[0]["from"] as? String == "07:00")
         #expect(peak[0]["to"] as? String == "11:00")
         #expect(peak[0]["tz"] as? String == "Europe/Paris")
-        #expect(mappings[4]["matchClass"] as? String == "opus")
-        #expect(mappings[4]["targetModel"] as? String == "GLM-5.3")
-        #expect(mappings[4]["isEnabled"] as? Bool == true)
-        #expect(mappings[5]["catchAll"] as? Bool == true)
-        #expect(mappings[5]["targetModel"] as? String == "GLM-5.3-Flash")
+        #expect(mappings[7]["matchClass"] as? String == "opus")
+        #expect(mappings[7]["targetModel"] as? String == "GLM-5.3")
+        #expect(mappings[7]["isEnabled"] as? Bool == true)
+        #expect(mappings[8]["catchAll"] as? Bool == true)
 
-        // Targets point at the vendors by id.
+        // Targets point at the vendors by id — every rule rides the relay
+        // (the splash vendor stays configured but unreferenced by defaults).
         let relayID = try #require(relay["id"] as? String)
         let splashID = try #require(splash["id"] as? String)
         #expect(mappings[0]["targetVendorID"] as? String == relayID)
-        #expect(mappings[1]["targetVendorID"] as? String == splashID)
+        #expect(mappings[1]["targetVendorID"] as? String == relayID)
+        #expect(mappings[3]["targetVendorID"] as? String == relayID)
         #expect(mappings[5]["targetVendorID"] as? String == relayID)
+        #expect(mappings[6]["targetVendorID"] as? String == relayID)
+        #expect(mappings[7]["targetVendorID"] as? String == relayID)
+        #expect(mappings[8]["targetVendorID"] as? String == relayID)
+        // 2026-11-18: the qwen levers (mappings[2], [4]) DO target splash —
+        // but only while DISABLED; no ENABLED default rule routes local.
+        #expect(!mappings.contains {
+            ($0["targetVendorID"] as? String) == splashID && ($0["isEnabled"] as? Bool ?? true)
+        })
 
         // Round-trip keeps the rule semantics.
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
         #expect(decoded.modelMappings.map(\.matchClass) == config.modelMappings.map(\.matchClass))
-        #expect(decoded.modelMappings[5].catchAll)
-        #expect(decoded.modelMappings[3].conditions == config.modelMappings[3].conditions)
-        #expect(!decoded.modelMappings[3].isEnabled)
+        #expect(decoded.modelMappings[8].catchAll)
+        #expect(decoded.modelMappings[6].conditions == config.modelMappings[6].conditions)
+        #expect(decoded.modelMappings[6].isEnabled == false)
+    }
+
+    /// The qwen levers are a SINGLE-TOGGLE switch (2026-11-18 wave, review
+    /// finding 1): enabling one must actually take its tier local — the
+    /// lever row sits above the plain tier row, so first-eligible-wins
+    /// resolves to splash qwen with the relay-Flash backup behind it.
+    @Test func enablingQwenLeverRoutesThatTierLocal() throws {
+        var config = AppConfig.makeZGateDefaultRouting(AppConfig())
+        let table = { ClassRuleTable(from: config.modelMappings, vendors: config.vendors, clientID: UUID()) }
+
+        // Baseline: levers disabled → tiers stay on the relay.
+        func firstTarget(_ model: String) -> String? {
+            table().firstMatch(model: model, context: ConditionContext(now: Date(), health: nil, quota: nil))?.targets.first?.targetModel
+        }
+        #expect(firstTarget("glm-5.3-flash[1m]") == "GLM-5.3-Flash")
+        #expect(firstTarget("claude-sonnet-4-5") == "GLM-5.3")
+
+        // Enable the haiku lever → haiku-class goes local qwen.
+        if let i = config.modelMappings.firstIndex(where: {
+            $0.matchClass == .haiku && $0.targetModel == "local/qwen3.8-27b-q8"
+        }) {
+            config.modelMappings[i].isEnabled = true
+        }
+        #expect(firstTarget("glm-5.3-flash[1m]") == "local/qwen3.8-27b-q8")
+
+        // Enable the sonnet lever too → sonnet-class goes local qwen.
+        if let i = config.modelMappings.firstIndex(where: {
+            $0.matchClass == .sonnet && $0.targetModel == "local/qwen3.8-27b-q8"
+        }) {
+            config.modelMappings[i].isEnabled = true
+        }
+        #expect(firstTarget("claude-sonnet-4-5") == "local/qwen3.8-27b-q8")
+        // Unrelated tiers untouched.
+        #expect(firstTarget("glm-5.3[1m]") == "GLM-5.3")
     }
 
     @Test func legacyConfigWithoutNewFieldsDecodesUnchanged() throws {
@@ -738,5 +825,73 @@ struct RouterTests {
 
         _ = try? await firstBlocker.close().get()
         _ = try? await secondBlocker.close().get()
+    }
+
+    // MARK: - Clean tier routing v2.1 (ruling 2026-11-17)
+
+    @Test func cleanTierRoutingEndToEnd() throws {
+        var cfg = AppConfig.makeZGateDefaultRouting(AppConfig())
+        let table = ClassRuleTable(from: cfg.modelMappings, vendors: cfg.vendors, clientID: UUID())
+        func target(_ model: String, _ date: Date) -> String? {
+            table.firstMatch(model: model, context: ConditionContext(now: date, health: nil, quota: nil))?.targets.first?.targetModel
+        }
+        var paris = Calendar(identifier: .gregorian)
+        paris.timeZone = TimeZone(identifier: "Europe/Paris")!
+        let monday9 = paris.date(from: DateComponents(year: 2026, month: 11, day: 16, hour: 9))!
+        #expect(cfg.modelMappings.count == 9)
+        let twins = cfg.modelMappings.filter { !($0.conditions ?? []).isEmpty }
+        #expect(twins.count == 2 && twins.allSatisfy { $0.isEnabled == false })
+        let qwenLevers = cfg.modelMappings.filter { $0.targetModel == "local/qwen3.8-27b-q8" }
+        #expect(qwenLevers.count == 2 && qwenLevers.allSatisfy { !$0.isEnabled })
+        #expect(target("glm-5.3[1m]", monday9) == "GLM-5.3")        // twins disabled → big model always
+        #expect(target("glm-5.3-flash[1m]", monday9) == "GLM-5.3-Flash")
+        #expect(target("qwen3.8-27b", monday9) == "GLM-5.3-Flash")  // catchAll: qwen off default routes
+        // The cost lever still works: enable the opus twin → peak morning goes Flash.
+        if let i = cfg.modelMappings.firstIndex(where: { $0.sourceModel == "opus (peak hours)" }) {
+            cfg.modelMappings[i].isEnabled = true
+        }
+        let table2 = ClassRuleTable(from: cfg.modelMappings, vendors: cfg.vendors, clientID: UUID())
+        #expect(table2.firstMatch(model: "glm-5.3[1m]", context: ConditionContext(now: monday9, health: nil, quota: nil))?.targets.first?.targetModel == "GLM-5.3-Flash")
+    }
+
+    // MARK: - Auto peak twin (Package C rider)
+
+    @Test func autoTwinRedirectsInsidePeakAndInertOutside() throws {
+        // One default-matrix instance: mappings and vendors must come from
+        // the same call or the vendor-id join in ClassRuleTable finds nothing.
+        var defaultConfig = AppConfig.makeZGateDefaultRouting(AppConfig())
+        func makeTable() -> ClassRuleTable {
+            ClassRuleTable(
+                from: defaultConfig.modelMappings,
+                vendors: defaultConfig.vendors,
+                clientID: UUID())
+        }
+        func target(_ table: ClassRuleTable, model: String, date: Date) -> String? {
+            table.firstMatch(
+                model: model,
+                context: ConditionContext(now: date, health: nil, quota: nil)
+            )?.targets.first?.targetModel
+        }
+        var paris = Calendar(identifier: .gregorian)
+        paris.timeZone = TimeZone(identifier: "Europe/Paris")!
+        // Monday 2026-11-16 09:00 Paris — inside the 07:00–11:00 window.
+        let monday = paris.date(from: DateComponents(year: 2026, month: 11, day: 16, hour: 9))!
+        // Same day 14:00 — outside.
+        let afternoon = paris.date(from: DateComponents(year: 2026, month: 11, day: 16, hour: 14))!
+
+        // v2.1 default: the twin ships DISABLED — even inside the window,
+        // auto-class (and opus-class) names get the big model.
+        let disabled = makeTable()
+        #expect(target(disabled, model: "", date: monday) == "GLM-5.3")
+        #expect(target(disabled, model: "glm-5.3[1m]", date: monday) == "GLM-5.3")
+        #expect(target(disabled, model: "", date: afternoon) == "GLM-5.3")
+
+        // The lever still works: enable the auto twin → peak morning goes Flash.
+        if let i = defaultConfig.modelMappings.firstIndex(where: { $0.sourceModel == "auto (peak hours)" }) {
+            defaultConfig.modelMappings[i].isEnabled = true
+        }
+        let enabled = makeTable()
+        #expect(target(enabled, model: "", date: monday) == "GLM-5.3-Flash")
+        #expect(target(enabled, model: "", date: afternoon) == "GLM-5.3")
     }
 }

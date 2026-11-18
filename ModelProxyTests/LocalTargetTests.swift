@@ -191,6 +191,26 @@ import Testing
         }
     }
 
+    @Test func isLocalTargetExcludesPassthroughTargets() {
+        // Baseline: the splash shape (loopback, non-relay) is local.
+        #expect(LocalTarget.isLocalTarget(localRouteTarget(port: 8000)))
+        // A passthrough target that happens to point at loopback (e.g. a
+        // defaultUpstream override) must NOT take the local path —
+        // passthrough means the proxy does not touch headers, key, or body.
+        let passthrough = RoutingSnapshot.RouteTarget(
+            baseURL: "http://127.0.0.1:9999",
+            apiKey: "",
+            vendorName: "loopback upstream",
+            vendorID: nil,
+            targetModel: nil,
+            isPassthrough: true,
+            connectTimeoutSeconds: 5,
+            readTimeoutSeconds: 10,
+            signingDomain: .compatibleThirdParty,
+            replayPolicy: .portableOnly)
+        #expect(!LocalTarget.isLocalTarget(passthrough))
+    }
+
     private func localRouteTarget(port: Int, targetModel: String? = LocalTarget.defaultModel) -> RoutingSnapshot.RouteTarget {
         RoutingSnapshot.RouteTarget(
             baseURL: "http://127.0.0.1:\(port)",

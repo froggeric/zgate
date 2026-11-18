@@ -28,7 +28,7 @@ struct DebugTabView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Debug Mode")
                     Text("Enable file-based logging and log viewer")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -84,7 +84,7 @@ struct DebugTabView: View {
             HStack {
                 Text("Log storage:")
                 Text(logManager.logsDirectory.path)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)

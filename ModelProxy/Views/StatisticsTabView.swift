@@ -29,7 +29,7 @@ struct StatisticsTabView: View {
                 .font(.headline)
             Spacer()
             Text("Today: \(tokenStatsStore.todayTotalTokens.compactTokenString) tokens")
-                .font(.caption)
+                .font(.footnote)
                 .foregroundStyle(.secondary)
         }
         .padding(.bottom, 8)
@@ -47,7 +47,7 @@ struct StatisticsTabView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
             Text("Token counts appear after the first proxied request.")
-                .font(.caption)
+                .font(.footnote)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
             Spacer()
@@ -80,7 +80,7 @@ struct StatisticsTabView: View {
                     Text("Cost")
                         .frame(width: 60, alignment: .trailing)
                 }
-                .font(.caption)
+                .font(.footnote)
                 .foregroundStyle(.secondary)
                 .padding(.vertical, 6)
                 .padding(.horizontal, 4)
@@ -159,7 +159,7 @@ struct StatisticsTabView: View {
                     .foregroundStyle(.green)
                     .font(.caption)
                 Text("Estimated savings today: $\(savings, specifier: "%.2f")")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
             }

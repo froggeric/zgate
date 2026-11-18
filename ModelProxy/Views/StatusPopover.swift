@@ -6,6 +6,7 @@ struct StatusPopover: View {
     @Environment(ProxyServer.self) private var proxyServer
     @Environment(TrafficLog.self) private var trafficLog
     @Environment(QuotaStatusModel.self) private var quotaModel
+    @Environment(SplashManager.self) private var splashManager
     @Environment(\.openSettings) private var openSettings
     @State private var showingCorruptAlert: Bool = false
     @State private var showingReloginAlert: Bool = false
@@ -107,7 +108,7 @@ struct StatusPopover: View {
                 Image(systemName: "exclamationmark.circle.fill")
                     .foregroundStyle(.red)
                 Text(error)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.leading)
             }
@@ -121,7 +122,7 @@ struct StatusPopover: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                 Text(error)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.leading)
             }
@@ -144,13 +145,13 @@ struct StatusPopover: View {
                 id: \.key
             ) { name, port in
                 Text(verbatim: "\(name):\(port)")
-                    .font(.caption)
+                    .font(.footnote)
                     .fontWeight(.medium)
                     .foregroundStyle(.secondary)
             }
             if proxyServer.boundPorts.isEmpty {
                 Text("No active listeners")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.tertiary)
             }
         }
@@ -183,21 +184,12 @@ struct StatusPopover: View {
                 }
                 .buttonStyle(.bordered)
                 .accessibilityLabel("Refresh quota now")
-                .accessibilityHint("Polls the billing endpoints immediately.")
+                .accessibilityHint("Polls the quota monitor immediately.")
             }
         }
     }
 
-    // MARK: - Rules summary + splash health
-
-    private var splashHealth: SplashHealth? {
-        SplashHealth.evaluate(
-            vendors: configStore.config.vendors,
-            lastSuccess: { id in
-                (proxyServer.healthProvider as? LocalHealthMonitor)?.lastSuccess(forVendor: id)
-            },
-            now: tick)
-    }
+    // MARK: - Rules summary + splash lifecycle
 
     @ViewBuilder
     private var rulesAndHealthSection: some View {
@@ -208,45 +200,30 @@ struct StatusPopover: View {
                     vendors: configStore.config.vendors)
                 {
                     Text(summary)
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .truncationMode(.middle)
                 } else {
                     Text("No rules enabled — unmatched models pass through")
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.tertiary)
                 }
             }
             Spacer(minLength: 8)
-            if let splash = splashHealth {
-                splashChip(splash)
-            }
+            splashChip(splashManager.state)
         }
         .accessibilityElement(children: .combine)
     }
 
-    private func splashChip(_ health: SplashHealth) -> some View {
-        let (color, symbol): (Color, String) = {
-            switch health {
-            case .up: return (.green, "drop.fill")
-            case .down: return (.red, "drop")
-            case .unknown: return (.secondary, "drop.triangle")
-            }
-        }()
-        return HStack(spacing: 3) {
-            Image(systemName: symbol)
-                .imageScale(.small)
-            Text(health.label)
-        }
-        .font(.caption2)
-        .foregroundStyle(color)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(color.opacity(0.10))
-        .clipShape(Capsule())
-        .help("Splash local target reachability (TCP probe, 20 s cadence)")
-        .accessibilityLabel(health.label)
+    /// Lifecycle chip driven by the manager's process state (spec §5); the
+    /// slow tick keeps the crashed-retry countdown live between transitions.
+    private func splashChip(_ state: SplashState) -> some View {
+        let face = SplashLifecycleChip.face(for: state, now: tick)
+        return Text(face.text)
+            .font(.caption)
+            .foregroundStyle(face.color)
+            .help("Splash lifecycle managed by ZGate (Settings → Splash)")
     }
 
     // MARK: - Env line
@@ -259,7 +236,7 @@ struct StatusPopover: View {
         {
             HStack(spacing: 6) {
                 Text(line)
-                    .font(.caption2.monospaced())
+                    .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -273,7 +250,7 @@ struct StatusPopover: View {
                     }
                 } label: {
                     Text(copiedEnvLine ? "Copied" : "Copy")
-                        .font(.caption2)
+                        .font(.footnote)
                 }
                 .buttonStyle(.link)
                 .accessibilityLabel("Copy environment line")
@@ -438,22 +415,22 @@ struct StatusPopover: View {
             if proxyServer.isRunning {
                 HStack(spacing: 5) {
                     Circle().fill(.green).frame(width: 7, height: 7)
-                    Text("Running").font(.caption).fontWeight(.medium)
+                    Text("Running").font(.footnote).fontWeight(.medium)
                 }
             } else if proxyServer.lastError != nil {
                 HStack(spacing: 5) {
                     Circle().fill(.red).frame(width: 7, height: 7)
-                    Text("Error").font(.caption).fontWeight(.medium).foregroundStyle(.red)
+                    Text("Error").font(.footnote).fontWeight(.medium).foregroundStyle(.red)
                 }
             } else if proxyServer.isStopped {
                 HStack(spacing: 5) {
                     Circle().fill(.secondary).frame(width: 7, height: 7)
-                    Text("Paused").font(.caption).fontWeight(.medium).foregroundStyle(.secondary)
+                    Text("Paused").font(.footnote).fontWeight(.medium).foregroundStyle(.secondary)
                 }
             } else {
                 HStack(spacing: 5) {
                     ProgressView().scaleEffect(0.55).frame(width: 7, height: 7)
-                    Text("Starting...").font(.caption).foregroundStyle(.secondary)
+                    Text("Starting...").font(.footnote).foregroundStyle(.secondary)
                 }
             }
         }
@@ -475,7 +452,7 @@ struct StatusPopover: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text("Recent Requests")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text("ms")
@@ -485,13 +462,13 @@ struct StatusPopover: View {
                 Text("code")
                     .frame(width: 28, alignment: .trailing)
             }
-            .font(.caption2)
+            .font(.caption)
             .foregroundStyle(.tertiary)
             .padding(.horizontal, 4)
 
             if trafficLog.entries.isEmpty {
                 Text("No requests yet")
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 8)
@@ -505,7 +482,7 @@ struct StatusPopover: View {
                             }
                         }
                     }
-                    .frame(maxHeight: 240)
+                    .frame(height: 220)
                     .onChange(of: trafficLog.entries.last?.id) { _, _ in
                         if let last = trafficLog.entries.last {
                             withAnimation(.easeOut(duration: 0.2)) {
@@ -528,17 +505,17 @@ private struct TrafficRowView: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(entry.timeDisplayText)
-                .font(.caption2.monospacedDigit())
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(entry.displayModelLabel)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(entry.isAuxiliaryTraffic ? .secondary : .primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(entry.classTargetDisplayLabel)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -546,17 +523,17 @@ private struct TrafficRowView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Text(entry.msDisplayText)
-                .font(.caption2.monospacedDigit())
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
                 .frame(width: 42, alignment: .trailing)
 
             Text(entry.tokensDisplayText)
-                .font(.caption2.monospacedDigit())
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
                 .frame(width: 34, alignment: .trailing)
 
             Text("\(entry.httpStatus)")
-                .font(.caption2.monospacedDigit())
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(statusColor)
                 .frame(width: 28, alignment: .trailing)
         }
@@ -588,6 +565,7 @@ private struct TrafficRowView: View {
     let server = ProxyServer(tokenStatsStore: store)
     let quotaModel = QuotaStatusModel.live(server)
     quotaModel.seedDemo(fraction: 0.63)
+    let splashManager = SplashManager()
 
     let log = TrafficLog()
     log.append(
@@ -617,4 +595,5 @@ private struct TrafficRowView: View {
         .environment(store)
         .environment(LoginItemService())
         .environment(quotaModel)
+        .environment(splashManager)
 }

@@ -1103,6 +1103,61 @@ struct RelayTargetTests {
         #expect(elapsed >= 0.045)         // the backoff ran before the retry
     }
 
+    @Test func failOpen429FollowsTheRateLimitPolicy() async throws {
+        // A 429 on the unsigned fail-open attempt must follow the same
+        // rate-limit policy as the signed path: one backoff retry (also
+        // unsigned), then the caller's rate-limit decision — not a raw
+        // 429 passed through as `.responded`.
+        let reject = MockRelayServer.Script.json(
+            ["type": "error", "error": ["type": "authentication_error", "message": "signature mismatch"]],
+            status: 401)
+        let limited = MockRelayServer.Script.json(
+            ["type": "error", "error": ["type": "rate_limit_error", "message": "rate limited"]],
+            status: 429)
+        // Signed → 401; rebuilt signed → 401; fail-open unsigned → 429;
+        // its backoff retry (also unsigned) → 429.
+        let relay = MockRelayServer(scripts: [reject, reject, limited, limited])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        control.failHandshakeFromCount = 1  // first handshake OK, the rebuild fails
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "failopen429")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        context.rateLimitBackoff = 0.05
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        // Request 1 establishes the signed session, then rejects once.
+        let first = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-failopen429-1")
+        guard case .responded(let firstResponse) = first else {
+            Issue.record("expected responded, got \(first)")
+            return
+        }
+        #expect(Int(firstResponse.status.code) == 401)
+
+        // Request 2: reject → rebuild fails → the established session allows
+        // ONE unsigned attempt → 429 there → backoff retry (unsigned) → 429
+        // → rateLimitedAfterRetry for the caller.
+        let second = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-failopen429-2")
+        guard case .rateLimitedAfterRetry = second else {
+            Issue.record("expected rateLimitedAfterRetry, got \(second)")
+            return
+        }
+        // Signed, signed, unsigned, unsigned retry — the retry rode the SAME
+        // fail-open attempt, not a new signed exchange.
+        #expect(relay.requestCount == 4)
+        if relay.requests.count >= 4 {
+            #expect(relay.requests[2].headers["x-client-sig"] == nil)
+            #expect(relay.requests[3].headers["x-client-sig"] == nil)
+        }
+    }
+
     // MARK: - ProxyForwarder integration (route wiring + terminal bodies)
 
     private struct ForwardFixture {

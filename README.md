@@ -1,9 +1,10 @@
 # ZGate
 
 Native macOS menu-bar proxy for Claude Code: routes Anthropic-protocol traffic
-to the **signed zcode relay** (GLM models) with **local-model fallback** and
-**quota-aware routing rules**. Menu-bar app — no dock icon, no window unless
-you open Settings. Everything a fresh install needs is in this README.
+to the **signed zcode relay** (GLM models) with **quota-aware routing rules**
+and an optional **local-model server** (Splash). Menu-bar app — no dock icon,
+no window unless you open Settings. Everything a fresh install needs is in
+this README.
 
 ZGate is a fork of [model-proxy](https://github.com/n0rvyn/model-proxy) (MIT).
 The original project's README is preserved at [`README.upstream.md`](README.upstream.md).
@@ -26,22 +27,49 @@ editable in Settings → Rules.
 | Match | Primary target | Backup | Notes |
 |---|---|---|---|
 | `auto` (no/unset model) | zcode relay `GLM-5.3` | — | Claude Code auto mode |
-| `haiku` class (incl. `glm-5.3-flash`) | splash (local) `local/qwen3.8-27b-q8` | relay `GLM-5.3-Flash` | cheap/local first |
-| `sonnet` class (incl. `glm-5.3`, `glm-5.3[1m]`) | zcode relay `GLM-5.3-Flash` | — | **meters at the flash tier — see below** |
-| `opus` class, weekdays 07:00–11:00 Europe/Paris | zcode relay `GLM-5.3-Flash` | — | cost lever — **disabled** by default (3× peak metering) |
+| `haiku` class (incl. `glm-5.3-flash`) | zcode relay `GLM-5.3-Flash` | — | fast/background tier |
+| `sonnet` class | zcode relay `GLM-5.3` | — | v2.1: same serving as opus |
+| `opus` class, weekdays 07:00–11:00 Europe/Paris | zcode relay `GLM-5.3-Flash` | — | peak twin — **disabled** by default (3× peak metering; dormant cost lever) |
 | `opus` class | zcode relay `GLM-5.3` | — | |
-| fallback (catch-all) | zcode relay `GLM-5.3-Flash` | — | no request is ever dropped |
+| `haiku`/`sonnet` (local qwen levers) | splash `local/qwen3.8-27b-q8` | relay `GLM-5.3-Flash` | **disabled** by default — one toggle in Settings → Rules takes that tier local (health-gated) |
+| fallback (catch-all, incl. unknown/local qwen ids) | zcode relay `GLM-5.3-Flash` | — | no request is ever dropped |
 
-**Cost note, so nobody is surprised:** sonnet-class traffic — which is what
-Claude Code's main thread sends — is routed to `GLM-5.3-Flash` on purpose
-(owner's explicit cost choice, 2026-11-16). Your main-thread conversations
-meter at the cheaper flash tier, not the full-price tier. If you want
-main-thread traffic on full `GLM-5.3` instead, edit the sonnet rule's target
-model in Settings → Rules — no relaunch needed.
+**v2.1 routing (2026-11-17):** all deliberate work — the opus and sonnet
+tiers — goes to full `GLM-5.3`; fast/background chatter (the haiku tier)
+goes to `GLM-5.3-Flash`. The local qwen model is off all default routes
+(quality ruling, 2026-11-17). The peak twins (auto and opus) ship disabled
+by default — a dormant cost lever if relay peak metering is ever confirmed.
 
-Splash = the local Anthropic-protocol server on `127.0.0.1:8000` (see
-[Splash setup](#splash-setup-haiku-route-optional)). Splash down? The haiku
-rule's relay backup serves the request automatically.
+Splash — the local Anthropic-protocol server on `127.0.0.1` (port
+configurable, default **8123** — moved off 8000 in 2026-11-18 to stop
+colliding with local webservers) — is optional and managed from Settings →
+Splash (see [Splash](#splash-local-server-optional)); no ENABLED default
+rule targets it.
+
+### Claude Code tier aliases
+
+Claude Code sends the strings from its `ANTHROPIC_DEFAULT_OPUS_MODEL`,
+`ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` env
+as the model field, and ZGate classifies those strings: a `haiku` or `flash`
+substring → haiku class (the fast tier), `opus`/`fable` → opus, `sonnet` →
+sonnet, a bare `glm-5.3` prefix → opus, unset or `auto*` → auto; anything
+unrecognized (local qwen ids) falls through to the terminal fallback rule.
+The aliases below (set 2026-11-17) deliberately land the opus and sonnet
+picks on the **same** class: all deliberate work — main thread and
+subagents — runs full GLM-5.3 on the relay, the haiku alias carries
+fast/background chatter on GLM-5.3-Flash, and the local qwen model is off
+all default routes (quality ruling, 2026-11-17):
+
+| CC pick | Alias | Class | Serves |
+|---|---|---|---|
+| opus | `glm-5.3[1m]` | opus | relay GLM-5.3 |
+| sonnet | `glm-5.3[1m]` | opus | relay GLM-5.3 |
+| haiku | `glm-5.3-flash[1m]` | haiku | relay GLM-5.3-Flash |
+
+Also set `CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144`: for model ids it doesn't
+recognize, Claude Code would otherwise shrink its context-window assumption
+— this pins it at 262,144. The variable is inert for the `[1m]` aliases,
+which keep their 1M assumption — the relay's real offering.
 
 ## Requirements
 
@@ -49,7 +77,8 @@ rule's relay backup serves the request automatically.
 - **ZCode.app installed at `/Applications`** — ZGate's login flow borrows its
   CLI binary: `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`.
 - **node** (any recent version; it only runs the login command above).
-- **Splash** (`splash-m1`) — optional, only for the local haiku route.
+- **Splash** — optional local server; Settings → Splash installs and manages
+  it (see [Splash](#splash-local-server-optional)).
 
 ## First-run setup
 
@@ -95,7 +124,8 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 8787 is the default Claude Code port on fresh installs (Codex listens on
 8789; 8788 is reserved by zbridge on this machine). If the configured port
 is taken, ZGate advances to the next free port — the popover line always
-tells the truth.
+tells the truth. Set the tier aliases too — see
+[Claude Code tier aliases](#claude-code-tier-aliases).
 
 ### 5. First request — two things to expect
 
@@ -109,26 +139,20 @@ tells the truth.
   the alert (Copy button, browser opens) — from then on the cached session
   carries you for ~180 days and the 1-hour token no longer matters.
 
-## Splash setup (haiku route, optional)
+## Splash (local server, optional)
 
-Skip this if you don't run the local haiku route — the haiku rule's relay
-backup keeps those requests working either way. To serve the model the
-default haiku rule targets, run the owner's splash-m1 command:
-
-```bash
-splash-m1 serve \
-  --model local/qwen3.8-27b-q8 \
-  --model-dir /Volumes/ssd/ai/llm-models/froggeric/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q8_0.gguf \
-  --draft-model "/Volumes/ssd/ai/cache/misc/hub/models--incoai--Qwen3.8-27B-DFlash2/snapshots/015e795645c74b1a0eeef3b570031fb62e769bc5" \
-  --persistent-cache --cache-dir /Volumes/ssd/ai/cache/splash --max-cache-disk 20G \
-  --mmproj /Volumes/ssd/ai/llm-models/froggeric/Qwen3.8-27B-GGUF/mmproj-F16.gguf
-```
-
-**Start Splash before haiku-class requests if you want them local.** ZGate
-TCP-probes `127.0.0.1:8000`; while Splash is down the health check rules the
-haiku rule out and requests skip to the relay `GLM-5.3-Flash` fallback —
-they still succeed, just not locally. Nothing to restart: ZGate picks Splash
-back up as soon as it answers probes again.
+Settings → Splash manages the local server. Keep-running starts splash with
+the active profile at ZGate launch (adopting an already-running external
+instance instead of double-starting; when that instance dies, ZGate starts
+its own). The server is a ZGate child process: quitting ZGate stops it.
+Model profiles carry the full `splash serve` command line — switching the
+active profile restarts the server onto it; a new model (qwen4, say) is a
+new profile, no code change. The Binary row detects the chip (fork
+`splash-m1` for M1/M2, Homebrew `incoai/tap/splash` for M3+) and
+installs/updates — M1/M2 downloads the release binary directly (never the
+install script); a permission error at `/opt/homebrew/bin` falls back to
+ZGate's app-support dir and records the override. The Log section tails the
+server's last 500 output lines.
 
 ## Configuration
 
@@ -164,6 +188,56 @@ back up as soon as it answers probes again.
   and quota-gated rules are skipped; routing is unaffected. Last-known
   values are kept and dimmed when a poll fails while data exists.
 
+## Quota & billing behavior
+
+The menu bar's `ZΓ <N>%` and the popover's quota windows are the **only
+user-visible billing surface** — the API quota windows (weekly + 5-hour)
+polled from z.ai's monitor API. Those windows meter **everything z.ai
+serves you**: direct API calls authenticated by the key in your
+`~/.claude/settings.json` **and every request ZGate relays** — relayed
+traffic consumes the same quota windows (confirmed 2026-11-17). Direct
+usage bills at full price (cache reads bill at full uncached input price),
+and `glm-5.3` bills **3× during Paris weekday peak** (07:00–11:00).
+
+Relayed traffic draws the windows down with a **lazy sync lag**: the weekly
+window updates in small steps that can lag hours behind, so a flat
+menu-bar % right after heavy relay routing is a lag plateau, not exemption.
+Splash (local, `127.0.0.1:<port>` — default 8123) never touches z.ai. There is no second
+ledger to watch either: the z.ai web dashboard and the ZCode app show the
+same quota windows the menu bar polls.
+
+- **The 5-hour window slides:** its reset time is the oldest in-window
+  usage + 5 h, not a fixed tumbling boundary. The weekly window syncs
+  lazily in 1-pct steps; monitor hourly buckets are UTC+8 with a 15–45 min
+  ingestion lag.
+- **Counter semantics differ by source, by design:** ZGate's token stats
+  count streams whose usage parsed successfully, while z.ai's monitor
+  counters include all server attempts (background and failed ones too) —
+  expect the totals to disagree. Full tables live in the usage audit
+  (external, machine-local:
+  `/Volumes/ssd/github/zcode/docs/usage-audit-2026-11-17.md`).
+
+## Release process & signing
+
+Release builds are signed with a **Developer ID Application** certificate
+(team 46BZ85ALNS, hardened runtime on) and **notarized** with Apple — no
+Gatekeeper prompts on any machine.
+
+1. Bump `CURRENT_PROJECT_VERSION` in the ZGate target (Debug + Release).
+2. `xcodebuild -configuration Release build` → BUILD SUCCEEDED.
+3. `scripts/notarize.sh <Release>/ZGate.app` — submits (zips for the notary
+   service), waits, staples the ticket onto the app, and runs a Gatekeeper
+   assessment. One-time setup: `xcrun notarytool store-credentials
+   zgate-notary` (app-specific password).
+4. `scripts/release-swap.sh --dry-run <app>` then the real run (nohup,
+   disowned): SIGTERM the verified prod pid → port free → backup-mv → ditto
+   the new app in → relaunch → health check → automatic rollback on failure.
+   Log: `/tmp/zgate-release-swap.log`.
+5. Version the CHANGELOG (`marketing.build`, e.g. 2.6.4 = 2.6 / build 4),
+   merge `zgate-main` → `main` (`--no-ff`), push, tag `v<marketing.build>`,
+   and publish a GitHub release with the stapled app zipped
+   (`ditto -c -k --keepParent`) as the asset.
+
 ## Verify install
 
 - [ ] `ZGate.app` runs from `/Applications`, **no dock icon**, and the **ZΓ
@@ -195,9 +269,11 @@ back up as soon as it answers probes again.
 - **Port 8787 already in use:** ZGate auto-advances to the next free port —
   check the popover's env line for the actual port and export that. Port
   edits in Settings need Pause/Resume (or relaunch) to rebind.
-- **Splash down:** haiku-class requests silently fall back to relay
-  `GLM-5.3-Flash` — they still succeed. Start Splash (command above) to go
-  local again; no ZGate restart needed.
+- **Splash down:** nothing in the default matrix routes to splash, so
+  default routing is unaffected. Custom rules targeting splash are held
+  back while its probe (`127.0.0.1:<splash port>`) fails and resume automatically when
+  it answers again — start it from Settings → Splash; no ZGate restart
+  needed.
 - **Quota bar stays empty (bare `ZΓ`):** the monitor poll couldn't
   authenticate — check that `~/.claude/settings.json` has
   `env.ANTHROPIC_AUTH_TOKEN` set (Claude Code writes it when configured for
@@ -213,7 +289,7 @@ back up as soon as it answers probes again.
 - **model-proxy** by norvyn — MIT; this fork's `LICENSE` is upstream's.
   Original README: [`README.upstream.md`](README.upstream.md).
 - **Splash** (`splash-m1`) — the local Anthropic-protocol inference server
-  used as the haiku target on `127.0.0.1:8000`.
+  on `127.0.0.1` (default port 8123), managed from Settings → Splash.
 - End-to-end proof against the live signed relay:
   [`docs/e2e-checklist.md`](docs/e2e-checklist.md).
 - Working notes for the fork: [`docs/zgate-notes.md`](docs/zgate-notes.md).

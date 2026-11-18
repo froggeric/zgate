@@ -22,9 +22,10 @@ import Testing
 ///       -destination 'platform=macOS' test -only-testing:ZGateTests/E2ESmokeTests
 ///
 /// `TEST_RUNNER_` is the xcodebuild convention for forwarding env into the
-/// test host. PHASE=A covers AC1/AC3 (+ the AC2 splash-up half when
-/// ZGATE_E2E_SPLASH=1); after the driver kills splash, PHASE=B covers the
-/// AC2 fallback half. The suite skips entirely unless ZGATE_E2E=1.
+/// test host. PHASE=A covers AC1/AC3; PHASE=B covers AC2 (glm-5.3-flash
+/// rides the relay fast tier — since v2.1 no default route touches splash,
+/// so the old splash-up/down halves collapsed into one check). The suite
+/// skips entirely unless ZGATE_E2E=1.
 @Suite
 struct E2ESmokeTests {
 
@@ -201,40 +202,76 @@ struct E2ESmokeTests {
         let data = try Data(contentsOf: AppPaths.appSupport.appendingPathComponent("config.json"))
         let config = try JSONDecoder().decode(AppConfig.self, from: data)
 
-        // The spec §2 matrix, by class, exactly once each.
+        // Pre-migration guard: the wave-1 live shape pinned sonnet → relay
+        // GLM-5.3-Flash. If that row is still there the new app has not
+        // launched against this config yet — name the cause instead of
+        // failing a cascade of shape expectations below.
+        if config.modelMappings.contains(where: {
+            $0.matchClass == .sonnet && $0.targetModel == "GLM-5.3-Flash"
+        }) {
+            Issue.record(
+                "live config not yet migrated — launch the new app once to run migration 5 (sonnet row still targets GLM-5.3-Flash)")
+            return
+        }
+
+        // The v2.1 matrix + qwen levers (2026-11-18), by class, in the LIVE
+        // config's rule order — the live config keeps its wave-1 order
+        // (auto, haiku, sonnet, opus, opus); migrations bring the rest:
+        // migration 3 seeds the splash section, migration 4 inserts the auto
+        // peak twin (DISABLED) at the top, migration 5 retargets sonnet →
+        // GLM-5.3 / haiku → relay GLM-5.3-Flash (backups dropped) and
+        // disables every conditioned rule — so BOTH twins ship as the
+        // dormant cost lever. Migrations 6+7 (2026-11-18) retarget the
+        // splash vendor to :8123 and insert the two DISABLED qwen rows at
+        // each tier's plain row. Disabled = both twins + both qwen levers.
         let classRules = config.modelMappings.filter { $0.matchClass != nil }
-        #expect(classRules.map(\.matchClass) == [.auto, .haiku, .sonnet, .opus, .opus])
+        #expect(classRules.map(\.matchClass) == [.auto, .auto, .haiku, .haiku, .sonnet, .sonnet, .opus, .opus])
         #expect(config.modelMappings.last?.catchAll == true)
+        #expect(config.splash != nil)
+        #expect(config.splash?.port == 8123)
         let disabled = config.modelMappings.filter { !$0.isEnabled }
-        #expect(disabled.count == 1 && disabled[0].matchClass == .opus)
+        #expect(disabled.map(\.sourceModel).sorted() == [
+            "auto (peak hours)", "haiku (local qwen)", "opus (peak hours)", "sonnet (local qwen)"])
 
         let relay = config.vendors.first { $0.vendorKind == .relay }
         let splash = config.vendors.first { $0.name.hasPrefix("splash") }
         #expect(relay?.baseURL == "https://zcode.z.ai/api/v1/ultra-zai/anthropic")
-        #expect(splash?.baseURL == "http://127.0.0.1:8000")
+        #expect(splash?.baseURL == "http://127.0.0.1:8123")
 
-        // Resolution through the REAL router code (no health seam → splash
-        // counts as healthy; the disabled opus rule never matches), against
-        // the owner-ruled matrix (2026-11-16 correction of spec §2):
-        // glm-5.3 → sonnet → relay GLM-5.3-Flash (flash-tier metering, AC1's
-        // path), glm-5.3-flash → haiku → splash (q8 quant) with relay-Flash
-        // backup (AC2's rule), an unknown model → the terminal catch-all
+        // Resolution through the REAL router code (no condition seams needed
+        // — disabled twins never match; first eligible enabled rule wins),
+        // against the v2.1 all-relay matrix: ALL deliberate work rides
+        // opus-class GLM-5.3 on the relay — the bare glm-5.3 prefix now
+        // classifies .opus (AC1's path) and a sonnet-class name hits the
+        // sonnet row → the same GLM-5.3; haiku-class work (glm-5.3-flash,
+        // the fast background tier) → relay GLM-5.3-Flash as a SINGLE
+        // target (no splash primary, no backup — local qwen is off every
+        // default route); an unknown model → the terminal catch-all
         // (relay GLM-5.3-Flash).
         let client = try #require(config.clients.first { $0.clientName == "Claude Code" })
         let snapshot = RoutingSnapshot(from: config, for: client)
 
-        let sonnet = snapshot.resolve(model: "glm-5.3", originalAPIKey: "")
-        guard case .routed(let sonnetTarget) = sonnet.result else {
+        // v2.1: bare glm-5.3 prefix → .opus → relay GLM-5.3.
+        let opus = snapshot.resolve(model: "glm-5.3", originalAPIKey: "")
+        guard case .routed(let opusTarget) = opus.result else {
             Issue.record("glm-5.3 did not route"); return
         }
-        #expect(sonnetTarget.vendorName == "zcode relay")
-        #expect(sonnetTarget.targetModel == "GLM-5.3-Flash")
+        #expect(opusTarget.vendorName == "zcode relay")
+        #expect(opusTarget.targetModel == "GLM-5.3")
 
+        // Sonnet-class work rides the same opus-class relay model.
+        let sonnet = snapshot.resolve(model: "claude-sonnet-4-5", originalAPIKey: "")
+        guard case .routed(let sonnetTarget) = sonnet.result else {
+            Issue.record("sonnet-class model did not route"); return
+        }
+        #expect(sonnetTarget.vendorName == "zcode relay")
+        #expect(sonnetTarget.targetModel == "GLM-5.3")
+
+        // glm-5.3-flash → haiku → the fast relay tier, one target only.
         let flashTargets = snapshot.targets(for: "glm-5.3-flash") ?? []
-        #expect(flashTargets.count == 2)
-        #expect(flashTargets.first?.vendorName.hasPrefix("splash") == true)
-        #expect(flashTargets.first?.targetModel == "local/qwen3.8-27b-q8")
-        #expect(flashTargets.last?.targetModel == "GLM-5.3-Flash")
+        #expect(flashTargets.count == 1)
+        #expect(flashTargets.first?.vendorName == "zcode relay")
+        #expect(flashTargets.first?.targetModel == "GLM-5.3-Flash")
 
         // "fable" would classify as opus — pick a name no class rule matches.
         let unknown = snapshot.resolve(model: "unknown-model-x", originalAPIKey: "")
@@ -278,90 +315,47 @@ struct E2ESmokeTests {
         #expect(!served.isEmpty)
     }
 
-    // MARK: - AC2 (splash-up half): haiku class goes local
+    // MARK: - AC2: haiku class rides the relay fast tier (v2.1)
 
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["ZGATE_E2E"] == "1"
-        && ProcessInfo.processInfo.environment["ZGATE_E2E_PHASE"]?.uppercased() != "B"
-        && ProcessInfo.processInfo.environment["ZGATE_E2E_SPLASH"] == "1"))
-    func ac2a_haikuWithSplashUpGoesLocal() async throws {
-        try await requireAppUp()
-        let baseline = try readLog()
-        let output = try await runClaude(
-            ["-p", "say OK", "--model", "glm-5.3-flash"], workDir: try freshWorkDir("ac2a"))
-        #expect(output.trimmingCharacters(in: .whitespacesAndNewlines) == "OK")
-
-        // Routed to the splash rule AND served by splash: the vendor that
-        // answered is the request-log's ground truth for "went local".
-        let routed = try await waitForNewLogLines(after: baseline) { appended in
-            appended.filter {
-                $0.contains("POST /v1/messages")
-                    && $0.contains("model=glm-5.3-flash")
-                    && $0.contains("mapped → splash (local)")
-            }
-        }
-        #expect(!routed.isEmpty)
-
-        let ids = routed.compactMap { Self.requestID(of: $0) }
-        let served = try await waitForNewLogLines(after: baseline) { appended in
-            appended.filter { line in
-                line.contains("Response: 200") && line.contains("vendor=splash (local)")
-                    && ids.contains { line.contains("[\($0)]") }
-            }
-        }
-        #expect(!served.isEmpty)
-
-        // Splash's own log should show the exchange too (best-effort: its
-        // format is its own; only note it, the app log above is the AC).
-        if let splashLog = Self.env["ZGATE_E2E_SPLASH_LOG"], let lines = try? String(
-            contentsOfFile: splashLog, encoding: .utf8)
-        {
-            let requests = lines.split(separator: "\n").filter {
-                $0.contains("v1/messages") || $0.contains("POST")
-            }
-            #expect(!requests.isEmpty)
-        }
-    }
-
-    // MARK: - AC2 (splash-down half): fallback to relay GLM-5.3-Flash
-
+    // v2.1 retired the splash round-trip: no default route touches local
+    // qwen, so the old splash-up (ac2a) / splash-down (ac2b) split collapsed
+    // into one truth — glm-5.3-flash maps to relay GLM-5.3-Flash directly
+    // (single target, pinned by the config test above). Kept on PHASE=B so
+    // the driver's existing phase flow still exercises it; splash's state is
+    // irrelevant to the outcome now.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["ZGATE_E2E"] == "1"
         && ProcessInfo.processInfo.environment["ZGATE_E2E_PHASE"]?.uppercased() == "B"))
-    func ac2b_haikuWithSplashDownFallsBackToRelayFlash() async throws {
+    func ac2b_haikuClassRidesRelayFlash() async throws {
         try await requireAppUp()
         let baseline = try readLog()
         let output = try await runClaude(
             ["-p", "say OK", "--model", "glm-5.3-flash"], workDir: try freshWorkDir("ac2b"))
         #expect(output.trimmingCharacters(in: .whitespacesAndNewlines) == "OK")
 
-        let appended = try await waitForNewLogLines(after: baseline, timeout: 20) { $0 }
-
-        // Either the rule fired and the local ladder walked its backup
-        // (splash transport error, then relay served the same requestID),
-        // or splash's health had aged out and the catch-all relay rule
-        // served directly. Both end on the relay — and the persisted token
-        // stats below pin WHICH relay model answered.
-        let flashRequests = appended.filter {
-            $0.contains("POST /v1/messages") && $0.contains("model=glm-5.3-flash")
+        // Two-stage (ac1's pattern): wait for the routed line first, then
+        // wait for its Response — a single snapshot can miss the Response
+        // line when the log flushes it after the first non-empty poll.
+        let flashRequests = try await waitForNewLogLines(after: baseline, timeout: 20) { appended in
+            appended.filter {
+                $0.contains("POST /v1/messages") && $0.contains("model=glm-5.3-flash")
+                    && $0.contains("mapped → zcode relay")
+            }
         }
         #expect(!flashRequests.isEmpty)
 
-        let viaLadder = flashRequests.contains { $0.contains("mapped → splash (local)") }
-            && appended.contains { $0.contains("Local target upstream error for splash (local)") }
-            && appended.contains { $0.contains("Response: 200") && $0.contains("vendor=zcode relay") }
-        let viaCatchAll = flashRequests.contains { $0.contains("mapped → zcode relay") }
-        #expect(viaLadder || viaCatchAll)
-
-        // WHICH relay model served: viaLadder means the haiku rule's only
-        // backup (relay GLM-5.3-Flash — pinned by the config test's
-        // targets(for:) assertion); viaCatchAll means the catch-all whose
-        // target is GLM-5.3-Flash (pinned the same way). The file log does
-        // not print the rewritten model, and token stats cannot prove it
-        // either: a relay response reached through the local ladder streams
-        // via LocalTarget.relayStream, which never fires the usage callback
-        // — a usage-accounting gap recorded as a Task 10 concern (relay
-        // fallback answers meter at 2/3 but vanish from Statistics).
-        // The popover's TrafficLog row ("haiku → GLM-5.3-Flash") is the
-        // visual confirmation; docs/e2e-checklist.md carries the readback.
+        // The request mapped to the relay (not splash) and the relay served
+        // it 200. The route log prints the vendor only — haiku rule vs
+        // catch-all is indistinguishable here, and under v2.1 both targets
+        // are GLM-5.3-Flash anyway; the config test's targets(for:)
+        // assertion pins the haiku rule's single target.
+        let ids = flashRequests.compactMap { Self.requestID(of: $0) }
+        let served = try await waitForNewLogLines(after: baseline, timeout: 20) { appended in
+            appended.filter { line in
+                line.contains("Response: 200") && line.contains("vendor=zcode relay")
+                    && ids.contains { line.contains("[\($0)]") }
+            }
+        }
+        #expect(!served.isEmpty)
     }
 
     // MARK: - AC3: streaming tool-use round-trip

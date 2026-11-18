@@ -325,7 +325,9 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
                 throw QuotaPollError.businessRejection(code: envelope.code, msg: envelope.msg)
             }
             let quota = MonitorQuota.parse(envelope)
-            commit(fraction: Self.remainingFraction(limits: quota.limits))
+            commit(
+                fraction: Self.remainingFraction(limits: quota.limits),
+                windows: Self.windows(limits: quota.limits))
         } catch {
             // Keep the last-known value; mark stale. Typed reasons only —
             // a poll failure never carries a credential or usage value.
@@ -357,13 +359,13 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
         return data
     }
 
-    private func commit(fraction: Double?) {
+    private func commit(fraction: Double?, windows: [QuotaWindow]) {
         let now = configuration.now()
         var levelEvents: [(QuotaLevel, QuotaLevel)] = []
         var committed: Double?
         lock.lock()
         if let fraction {
-            snapshot = QuotaSnapshot(fractionRemaining: fraction, fetchedAt: now)
+            snapshot = QuotaSnapshot(fractionRemaining: fraction, fetchedAt: now, windows: windows)
             stale = false
             committed = fraction
             let level = QuotaLevel.level(forFraction: fraction)
@@ -398,7 +400,43 @@ final class QuotaService: QuotaSnapshotProviding, QuotaRelayCounting, @unchecked
         guard let weekly = limits.first(where: { $0.isWeeklyTokensWindow }),
             let percentage = weekly.percentage
         else { return nil }
-        return min(max((100 - percentage) / 100, 0), 1)
+        return clampedRemaining(percentage: percentage)
+    }
+
+    /// `(100 − percentage) / 100` clamped to 0...1 — the shared math behind
+    /// the weekly fraction and the per-window rows.
+    private static func clampedRemaining(percentage: Double) -> Double {
+        min(max((100 - percentage) / 100, 0), 1)
+    }
+
+    /// Per-window projection for the popover: the three known monitor
+    /// windows in canonical display order (weekly, 5-hour, monthly MCP).
+    /// Unknown row shapes are dropped; so are rows without a percentage —
+    /// no fabricated data. `TIME_LIMIT` is the monthly MCP window whatever
+    /// its unit/number; `TOKENS_LIMIT`+3+5 is the 5-hour window.
+    static func windows(limits: [MonitorLimit]) -> [QuotaWindow] {
+        func fraction(_ limit: MonitorLimit) -> Double? {
+            limit.percentage.map { clampedRemaining(percentage: $0) }
+        }
+        var byKind: [QuotaWindow.Kind: QuotaWindow] = [:]
+        for limit in limits {
+            let kind: QuotaWindow.Kind
+            if limit.isWeeklyTokensWindow {
+                kind = .weeklyTokens
+            } else if limit.type == "TOKENS_LIMIT" && limit.unit == 3 && limit.number == 5 {
+                kind = .fiveHourTokens
+            } else if limit.type == "TIME_LIMIT" {
+                kind = .monthlyMCP
+            } else {
+                continue
+            }
+            guard let fraction = fraction(limit) else { continue }
+            byKind[kind] = QuotaWindow(
+                kind: kind, fractionRemaining: fraction,
+                resetsAt: limit.nextResetTimeMs.map { Date(timeIntervalSince1970: $0 / 1000) })
+        }
+        let order: [QuotaWindow.Kind] = [.weeklyTokens, .fiveHourTokens, .monthlyMCP]
+        return order.compactMap { byKind[$0] }
     }
 
     // MARK: - History

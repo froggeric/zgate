@@ -60,7 +60,7 @@ private struct ClientRowSection: View {
             // Port change banner (DP-002: port change needs manual Stop/Start)
             if portChanged {
                 Text("Port change takes effect after stopping and restarting the proxy.")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.orange)
             }
 
@@ -112,7 +112,7 @@ private struct ClientRowSection: View {
             LabeledContent("Quick start") {
                 HStack(spacing: 6) {
                     Text(envExportCommand)
-                        .font(.system(.caption, design: .monospaced))
+                        .font(.system(.footnote, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)

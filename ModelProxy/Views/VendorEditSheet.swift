@@ -98,7 +98,7 @@ struct VendorEditSheet: View {
                             .frame(width: 46, alignment: .trailing)
                         Color.clear.frame(width: 24)
                     }
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.tertiary)
 
                     ForEach(Array(supportedModels.indices), id: \.self) { index in
@@ -119,7 +119,7 @@ struct VendorEditSheet: View {
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 46)
                             .multilineTextAlignment(.trailing)
-                            .font(.caption.monospacedDigit())
+                            .font(.footnote.monospacedDigit())
                             .labelsHidden()
 
                             TextField(
@@ -132,7 +132,7 @@ struct VendorEditSheet: View {
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 46)
                             .multilineTextAlignment(.trailing)
-                            .font(.caption.monospacedDigit())
+                            .font(.footnote.monospacedDigit())
                             .labelsHidden()
 
                             Button {

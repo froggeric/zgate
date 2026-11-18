@@ -31,7 +31,7 @@ import OSLog
 enum LocalTarget {
 
     // Splash identity (the user's local inference engine).
-    static let defaultBaseURL = "http://127.0.0.1:8000"
+    static let defaultBaseURL = "http://127.0.0.1:8123"
     /// Splash's default model — the value a rule's `targetModel` names
     /// (the splash-m1 GGUF Q8 serve model, owner ruling 2026-11-16).
     static let defaultModel = "local/qwen3.8-27b-q8"
@@ -44,10 +44,11 @@ enum LocalTarget {
         return loopbackHosts.contains(host)
     }
 
-    /// True for the splash-shaped route target: loopback and not the signed
-    /// relay (`vendorKind == .anthropic` per the routing spec).
+    /// True for the splash-shaped route target: loopback, not the signed
+    /// relay, and NOT passthrough — a passthrough route is untouched by
+    /// definition, even when its baseURL happens to be loopback.
     static func isLocalTarget(_ target: RoutingSnapshot.RouteTarget) -> Bool {
-        target.vendorKind != .relay && isLoopbackBaseURL(target.baseURL)
+        !target.isPassthrough && target.vendorKind != .relay && isLoopbackBaseURL(target.baseURL)
     }
 
     // MARK: - Wire request

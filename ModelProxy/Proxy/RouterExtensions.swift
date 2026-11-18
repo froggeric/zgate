@@ -8,8 +8,10 @@ extension ModelClass {
     /// to its class; nil = no class matched (falls through to the terminal
     /// fallback rule). CC env aliases mean the wire names are GLM strings:
     /// opus/sonnet both alias to `glm-5.3` (and `glm-5.3[1m]`), haiku to
-    /// `glm-5.3-flash` — so the flash substring is checked BEFORE the
-    /// glm-5.3 prefix, which maps to sonnet.
+    /// `glm-5.3-flash`. v2.1 (ruling 2026-11-17): ALL deliberate work runs
+    /// opus-class, so the bare `glm-5.3` prefix maps to .opus; the flash
+    /// substring is still checked BEFORE the prefix (fast relay tier = haiku
+    /// class). Local qwen names match nothing here → terminal fallback.
     static func classify(_ model: String?) -> ModelClass? {
         guard let trimmed = model?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty else {
@@ -17,12 +19,12 @@ extension ModelClass {
         }
         let name = trimmed.lowercased()
         if name.contains("haiku") { return .haiku }
-        if name.contains("flash") { return .haiku }  // glm-5.3-flash = CC haiku alias
+        if name.contains("flash") { return .haiku }  // glm-5.3-flash = fast relay tier
         if name.contains("opus") || name.contains("fable") { return .opus }
         if name.contains("sonnet") { return .sonnet }
-        if name.hasPrefix("glm-5.3") { return .sonnet }  // glm-5.3 / glm-5.3[1m]
+        if name.hasPrefix("glm-5.3") { return .opus }  // bare glm-5.3 = main relay model (opus class)
         if name == "default" || name.hasPrefix("auto") { return .auto }
-        return nil  // unknown → terminal fallback rule
+        return nil  // unknown (incl. qwen names) → terminal fallback rule
     }
 }
 
@@ -41,6 +43,27 @@ struct QuotaSnapshot: Sendable, Equatable {
     /// Remaining fraction of the billing-period quota, 0...1.
     var fractionRemaining: Double
     var fetchedAt: Date
+    /// Per-window rows for the popover's quota list (Package A). Empty when
+    /// the poll returned no parseable rows; the weekly row's fraction is the
+    /// `fractionRemaining` above.
+    var windows: [QuotaWindow] = []
+}
+
+/// One quota window the monitor reports (weekly tokens = the binding plan
+/// quota, 5-hour tokens, monthly MCP). A UI-facing projection of the wire's
+/// `limits[]` rows — unknown row shapes never reach this type.
+struct QuotaWindow: Sendable, Equatable {
+    enum Kind: Sendable, Equatable {
+        case weeklyTokens
+        case fiveHourTokens
+        case monthlyMCP
+    }
+
+    var kind: Kind
+    /// Remaining fraction of this window, 0...1.
+    var fractionRemaining: Double
+    /// Next reset instant; nil when the wire row omits it.
+    var resetsAt: Date?
 }
 
 /// Quota seam. Task 8 (QuotaService) provides the real implementation

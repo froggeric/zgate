@@ -90,7 +90,7 @@ private struct MappingRow: View {
             Image(systemName: icon)
                 .imageScale(.small)
         }
-        .font(.caption)
+        .font(.footnote)
         .foregroundStyle(color)
         .accessibilityElement(children: .combine)
     }
@@ -315,7 +315,7 @@ private struct AddMappingRow: View {
             if showBackupFields {
                 Divider()
                 Text("Backup Target")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 VendorMenuField(
                     placeholder: "Backup vendor",

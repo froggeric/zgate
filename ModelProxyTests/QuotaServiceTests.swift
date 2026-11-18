@@ -253,6 +253,57 @@ struct QuotaServiceTests {
         #expect(QuotaService.remainingFraction(limits: []) == nil)
     }
 
+    // MARK: - Per-window rows (Package A)
+
+    @Test func windowsMapAllThreeMonitorRowsInCanonicalOrder() throws {
+        let envelope = try #require(
+            QuotaService.MonitorEnvelope.parse(try Self.fixture("monitor")))
+        let windows = QuotaService.windows(
+            limits: QuotaService.MonitorQuota.parse(envelope).limits)
+        // Canonical display order: weekly (the binding quota), 5-hour, monthly MCP.
+        #expect(windows.map(\.kind) == [.weeklyTokens, .fiveHourTokens, .monthlyMCP])
+        // Fixture percentages used: weekly 25, 5h 40, MCP 1.
+        #expect(windows.map(\.fractionRemaining) == [0.75, 0.60, 0.99])
+        #expect(windows.map(\.resetsAt) == [
+            Date(timeIntervalSince1970: 1_763_691_200),
+            Date(timeIntervalSince1970: 1_763_000_000),
+            Date(timeIntervalSince1970: 1_765_505_600),
+        ])
+    }
+
+    @Test func windowsSkipUnknownShapesAndRowsWithoutPercentage() {
+        let limits: [QuotaService.MonitorLimit] = [
+            // Unrecognized type / identity triples: dropped, whatever the fields.
+            .init(type: "SOMETHING_NEW", unit: 9, number: 9, percentage: 5, nextResetTimeMs: 0),
+            .init(type: "TOKENS_LIMIT", unit: 3, number: 7, percentage: 10, nextResetTimeMs: nil),
+            // Weekly identity but no percentage: no fabricated data.
+            .init(type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: nil, nextResetTimeMs: 1_000),
+            // TIME_LIMIT without a reset time: kept, reset omitted.
+            .init(type: "TIME_LIMIT", unit: 5, number: 1, percentage: 1, nextResetTimeMs: nil),
+        ]
+        let windows = QuotaService.windows(limits: limits)
+        #expect(windows.map(\.kind) == [.monthlyMCP])
+        #expect(windows.first?.resetsAt == nil)
+        #expect(windows.first?.fractionRemaining == 0.99)
+    }
+
+    @Test func pollSnapshotCarriesWindows() async throws {
+        let mock = QuotaMock()
+        installMock(mock)
+        let clock = ManualClock(Self.baseDate)
+        let history = try makeHistoryDirectory()
+        defer { try? FileManager.default.removeItem(at: history) }
+        let service = try makeService(clock: clock, historyDirectory: history)
+
+        await service.pollIfDue()
+        let snapshot = try #require(service.quotaSnapshot())
+        #expect(snapshot.windows.map(\.kind) == [.weeklyTokens, .fiveHourTokens, .monthlyMCP])
+        // The weekly row's fraction is also the snapshot's governing fraction.
+        #expect(
+            snapshot.windows.first(where: { $0.kind == .weeklyTokens })?.fractionRemaining
+                == snapshot.fractionRemaining)
+    }
+
     // MARK: - Poll + cadence
 
     @Test func pollPublishesSnapshotAndHistory() async throws {

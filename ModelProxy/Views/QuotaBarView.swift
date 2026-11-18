@@ -1,5 +1,25 @@
 import SwiftUI
 
+// MARK: - Countdown (Package A, testable)
+
+/// Compact countdown until a quota window reset: "2d 4h", "3h 5m", "12m",
+/// "<1m". Floors each unit; past or absent instants render nothing. A free
+/// enum (not a formatter instance) so tests pin the exact text.
+enum QuotaCountdown {
+    static func text(until date: Date?, now: Date) -> String? {
+        guard let date else { return nil }
+        let remaining = Int(date.timeIntervalSince(now).rounded(.down))
+        guard remaining > 0 else { return nil }
+        let days = remaining / 86_400
+        let hours = (remaining % 86_400) / 3_600
+        let minutes = (remaining % 3_600) / 60
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        if minutes > 0 { return "\(minutes)m" }
+        return "<1m"
+    }
+}
+
 // MARK: - Display state (Task 9, testable)
 
 /// The popover/menu-bar quota readout. Disambiguates the two degraded
@@ -12,23 +32,33 @@ import SwiftUI
 ///   last poll attempt failed, so the bar dims but keeps its value.
 enum QuotaDisplayState: Equatable, Sendable {
     case noData
-    case available(fraction: Double, stale: Bool)
+    case available(fraction: Double, stale: Bool, windows: [QuotaWindow] = [])
 
     /// State selection from the service seams: nil snapshot always wins —
     /// staleness only qualifies data that exists.
     static func make(snapshot: QuotaSnapshot?, stale: Bool) -> QuotaDisplayState {
         guard let snapshot else { return .noData }
-        return .available(fraction: min(max(snapshot.fractionRemaining, 0), 1), stale: stale)
+        return .available(
+            fraction: min(max(snapshot.fractionRemaining, 0), 1),
+            stale: stale,
+            windows: snapshot.windows)
     }
 
     var fraction: Double? {
-        if case let .available(fraction, _) = self { return fraction }
+        if case let .available(fraction, _, _) = self { return fraction }
         return nil
     }
 
     var isStale: Bool {
-        if case let .available(_, stale) = self { return stale }
+        if case let .available(_, stale, _) = self { return stale }
         return false
+    }
+
+    /// The per-window rows for the popover's quota list (Package A); empty
+    /// before the first poll that carried rows.
+    var windows: [QuotaWindow] {
+        if case let .available(_, _, windows) = self { return windows }
+        return []
     }
 
     /// "63%" — whole percents; no-data has no text.
@@ -96,6 +126,9 @@ final class QuotaStatusModel {
     /// Last observed snapshot time (for the "as of" caption); nil = never.
     private(set) var fetchedAt: Date?
     private(set) var state: QuotaDisplayState = .noData
+    /// The snapshot's per-window rows (weekly / 5-hour / MCP) for the
+    /// popover's quota list; empty until a poll carried rows.
+    private(set) var windows: [QuotaWindow] = []
     private var demoState: QuotaDisplayState?
 
     init(
@@ -150,6 +183,7 @@ final class QuotaStatusModel {
         }
         let snapshot = snapshot()
         state = QuotaDisplayState.make(snapshot: snapshot, stale: stale())
+        windows = snapshot?.windows ?? []
         fetchedAt = snapshot?.fetchedAt
     }
 
@@ -185,10 +219,13 @@ final class QuotaStatusModel {
 
 // MARK: - Bar view
 
-/// Quota bar + percent + "as of" caption. The three states are visually
-/// distinct by design: fresh value (colored bar), stale value (dimmed bar,
-/// still the real number), no data (empty track + explanatory caption —
-/// the common path today, so it reads deliberate, not broken).
+/// Quota readout. With per-window rows (the normal path since Package A):
+/// one row per window — Weekly / 5-hour / MCP — each a mini bar + percent +
+/// a compact "resets in" countdown. Without rows (demo seeding, Settings'
+/// compact variant, or a poll that predated rows): the single weekly bar.
+/// The three states are visually distinct by design: fresh value (colored
+/// bar), stale value (dimmed bar, still the real number), no data (empty
+/// track + explanatory caption — reads deliberate, not broken).
 struct QuotaBarView: View {
     let state: QuotaDisplayState
     var fetchedAt: Date?
@@ -199,7 +236,18 @@ struct QuotaBarView: View {
         switch state {
         case .noData:
             noDataView
-        case let .available(fraction, stale):
+        case let .available(fraction, stale, windows) where !windows.isEmpty:
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(windows, id: \.kind) { window in
+                    windowRow(window, stale: stale)
+                }
+                if showsCaption, let fetchedAt {
+                    Text("as of \(Self.timeFormatter.string(from: fetchedAt))")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        case let .available(fraction, stale, _):
             barView(fraction: fraction, stale: stale)
         }
     }
@@ -208,19 +256,19 @@ struct QuotaBarView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: "gauge.with.dots.needle.0percent")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 Text("Quota data unavailable")
-                    .font(.caption)
+                    .font(.footnote)
                     .fontWeight(.medium)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text("routing unaffected")
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.tertiary)
             }
-            Text("The billing endpoint returns no balance for this account yet, so no quota percentage is shown. Proxying and usage-based routing keep working.")
-                .font(.caption2)
+            Text("ZGate polls z.ai's quota monitor with the API key from your Claude settings (~/.claude/settings.json). Until a poll succeeds, no percentage is shown — proxying and usage-based routing keep working.")
+                .font(.caption)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -231,21 +279,73 @@ struct QuotaBarView: View {
         .accessibilityLabel("Quota data unavailable; proxying unaffected")
     }
 
+    // MARK: Per-window rows
+
+    private func windowRow(_ window: QuotaWindow, stale: Bool) -> some View {
+        let tint = QuotaBarTint.tint(forFraction: window.fractionRemaining)
+        let percent = "\(Int((window.fractionRemaining * 100).rounded()))%"
+        let countdown = QuotaCountdown.text(until: window.resetsAt, now: Date())
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(Self.kindLabel(window.kind))
+                    .font(.footnote.weight(.medium))
+                Text(percent)
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(stale ? Color.secondary : tint.color)
+                if stale {
+                    Text("last known")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+                if let countdown {
+                    Text("resets \(countdown)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.secondary.opacity(0.18))
+                    Capsule()
+                        .fill(tint.color)
+                        .opacity(stale ? 0.35 : 1)
+                        .frame(width: max(proxy.size.width * window.fractionRemaining, 4))
+                }
+            }
+            .frame(height: 5)
+            .opacity(stale ? 0.6 : 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "\(Self.kindLabel(window.kind)) quota \(percent)"
+                + (stale ? ", last known, poll failing" : "")
+                + (countdown.map { ", resets in \($0)" } ?? ""))
+    }
+
+    private static func kindLabel(_ kind: QuotaWindow.Kind) -> String {
+        switch kind {
+        case .weeklyTokens: return "Weekly"
+        case .fiveHourTokens: return "5-hour"
+        case .monthlyMCP: return "MCP"
+        }
+    }
+
     private func barView(fraction: Double, stale: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Text(state.percentText ?? "")
-                    .font(.caption.monospacedDigit().weight(.medium))
+                    .font(.footnote.monospacedDigit().weight(.medium))
                     .foregroundStyle(stale ? .secondary : QuotaBarTint.tint(forFraction: fraction).color)
                 if stale {
                     Text("last known")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
                 Spacer()
                 if showsCaption, let fetchedAt {
                     Text("as of \(Self.timeFormatter.string(from: fetchedAt))")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
             }
