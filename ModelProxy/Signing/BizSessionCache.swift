@@ -58,6 +58,14 @@ struct BizSessionCache {
         return try? JSONDecoder().decode(BizSession.self, from: data)
     }
 
+    /// Removes the cache file (best-effort). Called when a cached
+    /// session's mint is an auth-reject — the biz JWT is dead server-side
+    /// even though it is client-"usable", so later builds must start at
+    /// z/login instead of retrying it (item 3, report §A.5).
+    func invalidate() {
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
     /// Writes the session as JSON with owner-only permissions (0600).
     /// The parent directory is created when missing.
     ///

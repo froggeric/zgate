@@ -123,11 +123,14 @@ final class ProxyServer {
         if relayContext == nil, config.vendors.contains(where: { $0.vendorKind == .relay }) {
             // Store base: the persisted `credentialStoreBase` setting, nil =
             // the GUI/CLI shared default (item 2 of the login-flow wave).
+            // Store-as-loader (item 3): no eager snapshot — the loader
+            // re-runs per login attempt, so an external re-login that
+            // rewrites the shared store is picked up by this RUNNING
+            // process on the next chain rebuild.
             let storeBase = CredentialStore.resolveBase(config.credentialStoreBase)
-            let store = try? CredentialStore.loadDefault(base: storeBase)
             let signingClient = makeSigningClient?() ?? {
                 var configuration = SigningClient.Configuration()
-                configuration.store = store
+                configuration.storeLoader = { try CredentialStore.loadDefault(base: storeBase) }
                 return SigningClient(configuration: configuration)
             }()
             // Quota service: polls z.ai's official monitor API with the same

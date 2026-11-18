@@ -104,10 +104,14 @@ actor SigningClient {
     struct Configuration {
         var origin = "https://api.z.ai"
         var session: URLSession = .shared
-        /// Present: the z/login path is available. The store is read only when
-        /// the cached biz session is unusable or a mint auth-reject needs a
-        /// transparent re-login.
-        var store: CredentialStore?
+        /// Store-as-loader (item 3, report §C.3): consulted per attempt, so
+        /// a fresh external login (GUI/CLI re-login rewriting the shared
+        /// store) is picked up by a RUNNING process on the next chain
+        /// rebuild — no relaunch. The default re-runs the default load;
+        /// a failed load reads as "no store" for that attempt.
+        var storeLoader: @Sendable () throws -> CredentialStore? = {
+            try CredentialStore.loadDefault()
+        }
         /// Mint location until a cached biz session or the store's
         /// project-key-location entry supplies one. The mint cannot run
         /// without a location.
@@ -202,6 +206,18 @@ actor SigningClient {
         consecutiveRelayRejects = 0
     }
 
+    /// Hot pickup (item 3, report §C.3): forget the held session so the
+    /// next `ensureSession` rebuilds the chain, consulting the store
+    /// loader fresh. No relayContext/SigningClient re-creation and the
+    /// per-process sessionID is untouched. The biz-session cache
+    /// survives — a still-valid 180 d JWT is reused, a dead one is
+    /// invalidated by the mint auth-reject path below.
+    func dropSession() {
+        session = nil
+        phase = .unsigned
+        consecutiveRelayRejects = 0
+    }
+
     // MARK: - Chain build
 
     private func buildChain() async throws -> SigningSession {
@@ -232,7 +248,7 @@ actor SigningClient {
             // the chain can only end in noLocation, so the login would be
             // wasted network. A malformed store value falls through to nil
             // (mirrors zbridge's readLocation).
-            if location == nil, let store = configuration.store,
+            if location == nil, let store = loadStore(),
                 let stored = try? await store.projectKeyLocation()
             {
                 location = MintLocation(
@@ -248,7 +264,7 @@ actor SigningClient {
         // entry fills the gap — without this lookup a location-less cache
         // would 502 every relay request for the cache's remaining lifetime
         // even though the store could supply the triple.
-        if location == nil, let store = configuration.store,
+        if location == nil, let store = loadStore(),
             let stored = try? await store.projectKeyLocation()
         {
             location = MintLocation(
@@ -265,9 +281,13 @@ actor SigningClient {
         do {
             minted = try await mintProjectToken(bizJwt: bizJwt, location: location)
         } catch let error as SigningClientError {
-            guard cameFromCache, configuration.store != nil,
-                case let .mintFailed(status, code) = error, Self.isAuthReject(status: status, code: code)
+            guard cameFromCache, case let .mintFailed(status, code) = error,
+                Self.isAuthReject(status: status, code: code), loadStore() != nil
             else { throw error }
+            // The cached biz JWT is dead server-side even though it is
+            // client-"usable": remove the cache so later builds start at
+            // z/login instead of retrying the dead JWT first (§A.5 loop).
+            cache.invalidate()
             bizJwt = try await loginViaStore()
             acquiredAtMs = currentMs()
             minted = try await mintProjectToken(bizJwt: bizJwt, location: location)
@@ -301,8 +321,10 @@ actor SigningClient {
 
     /// Store access token → `POST /api/auth/z/login` → biz JWT. Checks the
     /// store token's `exp` first (expired → re-login alert, zero network).
+    /// The store comes from the configured loader — a fresh external login
+    /// on disk is seen here on the very next attempt (hot pickup).
     private func loginViaStore() async throws -> String {
-        guard let store = configuration.store else {
+        guard let store = loadStore() else {
             throw SigningClientError.reloginRequired(.storeUnavailable)
         }
         let accessToken = try await store.accessToken()
@@ -466,6 +488,13 @@ actor SigningClient {
     }
 
     // MARK: - Private helpers
+
+    /// Consults the configured store loader. A load failure (absent,
+    /// unreadable, fingerprint mismatch) reads as "no store" for this
+    /// attempt; the next attempt re-runs the loader.
+    private func loadStore() -> CredentialStore? {
+        do { return try configuration.storeLoader() } catch { return nil }
+    }
 
     private func currentMs() -> Int64 {
         Int64(configuration.now().timeIntervalSince1970 * 1000)
