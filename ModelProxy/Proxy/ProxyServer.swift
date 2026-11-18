@@ -49,6 +49,10 @@ final class ProxyServer {
     /// Polling outlives server stop/start (billing is independent of the
     /// listener), so it is never torn down in `stop()`.
     private var quotaService: QuotaService?
+    /// Proactive renewal loop (item 5): started with the relay context,
+    /// runs for the process. See start() for the test-host exclusion.
+    @ObservationIgnored
+    private var credentialKeeper: CredentialKeeper?
     /// Splash health probe (Task 7): TCP-probes loopback vendors and feeds
     /// the health seam. Built on first start, kept across restarts, and
     /// reconfigured whenever config changes. An explicitly injected
@@ -151,6 +155,20 @@ final class ProxyServer {
                 credentialEvents: credentialEvents,
                 quota: quotaService)
             AppLog.proxy.info("[ProxyServer] Relay signing context ready (relay vendor configured)")
+            // Proactive renewal (item 5, report §C.4): keep the ladder
+            // alive without relayed traffic. Runs for the process (never
+            // torn down on stop/start, same ruling as quota polling) —
+            // but never inside an isolated test host, where background
+            // chain builds would hit the live API from a suite run.
+            if AppPaths.isolatedBase == nil {
+                let events = credentialEvents
+                let keeper = CredentialKeeper(client: signingClient) { event in
+                    Task { @MainActor in events.emit(event) }
+                }
+                keeper.start()
+                credentialKeeper = keeper
+                AppLog.proxy.info("[ProxyServer] Credential keeper running (proactive renewal)")
+            }
         }
         let relayContext = self.relayContext
 

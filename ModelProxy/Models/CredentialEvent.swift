@@ -14,6 +14,13 @@ enum CredentialEvent: Equatable, Sendable {
     /// The in-app OAuth flow completed and a fresh store was written
     /// (item 4: ZaiLoginClient, emitted after the ready-path persist).
     case authorizationComplete
+    /// A proactive background renewal minted a fresh project token
+    /// (item 5: CredentialKeeper).
+    case renewed(expiresAtMs: Int64)
+    /// A proactive renewal attempt failed without demanding re-login
+    /// (item 5: CredentialKeeper) — payload is a typed chain stage and an
+    /// error description (status codes only, never token material).
+    case refreshFailed(stage: String, reason: String)
 }
 
 /// UI channel for credential events (the re-login alert observes this).

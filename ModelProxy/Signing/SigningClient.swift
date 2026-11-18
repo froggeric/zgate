@@ -154,6 +154,38 @@ actor SigningClient {
     /// The events of the most recent chain build (lengths only, no values).
     func lastChainEvents() -> [ChainEvent] { chainEvents }
 
+    /// Read-only ladder snapshot for status UI (item 6): phases and
+    /// timestamps only — no token material anywhere in the type.
+    struct StatusSnapshot: Equatable, Sendable {
+        let phase: Phase
+        let nowMs: Int64
+        /// Held project-token expiry, when a session exists.
+        let sessionExpiresAtMs: Int64?
+        /// True when the held session rides a short server-anchored window
+        /// to its true expiry (renewal scheduling differs).
+        let sessionMarginRelaxed: Bool
+        /// `exp` of the store access token when a store loads, else nil.
+        let storeAccessTokenExpiresAtMs: Int64?
+        /// acquiredAt of the on-disk biz-session cache when present.
+        let cacheAcquiredAtMs: Int64?
+    }
+
+    /// Ladder state for the status row (item 6): phase, session expiry,
+    /// store-token exp when a store loads, cache acquiredAt — enough for
+    /// the UI task to render faces without touching token material.
+    func statusSnapshot() -> StatusSnapshot {
+        let storeTokenExpiryMs: Int64? = loadStore()
+            .flatMap { try? $0.accessTokenExpiry() }
+            .map { Int64($0.timeIntervalSince1970 * 1000) }
+        return StatusSnapshot(
+            phase: phase,
+            nowMs: currentMs(),
+            sessionExpiresAtMs: session?.expiresAtMs,
+            sessionMarginRelaxed: session?.marginRelaxed ?? false,
+            storeAccessTokenExpiresAtMs: storeTokenExpiryMs,
+            cacheAcquiredAtMs: cache.load()?.acquiredAtMs)
+    }
+
     /// Returns a valid signing session, building or refreshing as needed.
     ///
     /// - Valid session → returned directly (until `refreshMargin` before
