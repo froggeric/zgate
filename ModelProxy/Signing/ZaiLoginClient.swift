@@ -41,7 +41,8 @@ enum ZaiLoginError: Error, Equatable {
 /// credential set through the store's envelope write path.
 ///
 /// This type never logs: no token byte ever becomes a string outside the
-/// credentials value itself; events carry durations/booleans only.
+/// credentials value itself; events carry durations/booleans and fixed
+/// typed display copy only.
 actor ZaiLoginClient {
 
     struct Configuration {
@@ -63,8 +64,10 @@ actor ZaiLoginClient {
         /// persistence.
         var storeBase: URL?
         /// Optional event hook (`.awaitingAuthorization` after init,
-        /// `.authorizationComplete` after the ready-path persist) — the
-        /// UI task wires it to the credential event channel.
+        /// `.authorizationComplete` after the ready-path persist, then a
+        /// `.refreshFailed(location)` warning when the written store
+        /// carries no project-key location) — the UI task wires it to the
+        /// credential event channel.
         var onEvent: (@Sendable (CredentialEvent) -> Void)?
 
         init() {}
@@ -88,6 +91,17 @@ actor ZaiLoginClient {
         SymmetricKey(size: .bits256)
             .withUnsafeBytes { Data($0).map { String(format: "%02x", $0) }.joined() }
     }
+
+    /// Stage of the missing-location warning (`.refreshFailed` after a
+    /// ready persist that produced a location-less store).
+    static let missingLocationStage = "location"
+
+    /// Warning copy for that event — fixed display strings, never token
+    /// material: ZGate cannot resolve the project location itself (the
+    /// store entry is the only source), so one GUI/CLI login must
+    /// populate it.
+    static let missingLocationReason =
+        "sign-in succeeded but the store has no project location — complete one login in the ZCode GUI or CLI to populate it, then Reload"
 
     /// The authorize URL once `begin()` succeeded — the UI opens it.
     func authorizeURL() -> URL? {
@@ -118,22 +132,41 @@ actor ZaiLoginClient {
     /// Polls until a terminal status or the overall cap. On `ready` with a
     /// configured `storeBase`, the credentials are persisted through
     /// `CredentialStore.saveZaiLogin` (envelope write path, §A.6 step 4)
-    /// before returning; a persist failure propagates to the caller.
+    /// before returning; a persist failure propagates to the caller. When
+    /// the written store carries no `project-key-location:v1:*` entry, a
+    /// non-fatal `.refreshFailed(location)` warning trails
+    /// `.authorizationComplete` (the login cannot mint a plan token until
+    /// a GUI/CLI login populates the location).
     func pollUntilTerminal() async throws -> ZaiLoginOutcome {
         guard let flow else { throw ZaiLoginError.notStarted }
         let startMs = currentMs()
         while true {
             let (status, json) = try await get(path: "/oauth/cli/poll/\(flow.flowID)")
             if status == 200, let outcome = Self.parsePoll(json) {
+                var missingLocationAfterSave = false
                 if case let .ready(credentials) = outcome, let base = configuration.storeBase {
-                    try CredentialStore.saveZaiLogin(
+                    let saved = try CredentialStore.saveZaiLogin(
                         accessToken: credentials.accessToken,
                         zcodeJwtToken: credentials.zcodeJwtToken,
                         userInfoJSON: credentials.userInfoJSON,
                         base: base)
+                    missingLocationAfterSave = saved.storeLacksProjectLocation
                 }
                 if case .ready = outcome {
                     configuration.onEvent?(.authorizationComplete)
+                    // Honest limitation (fast-follow F3): a store without a
+                    // location entry cannot mint a plan token, and ZGate
+                    // cannot resolve the location itself (the store entry is
+                    // the only source). Emitted AFTER .authorizationComplete
+                    // so the warning is the channel's LAST event — the
+                    // standing face already renders a trailing
+                    // .refreshFailed generically. Non-fatal: the login
+                    // itself succeeded; payload is fixed typed copy.
+                    if missingLocationAfterSave {
+                        configuration.onEvent?(.refreshFailed(
+                            stage: Self.missingLocationStage,
+                            reason: Self.missingLocationReason))
+                    }
                 }
                 return outcome
             }
