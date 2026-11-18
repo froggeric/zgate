@@ -931,7 +931,7 @@ struct SigningClientLiveSmokeTests {
         }
 
         // Build 1 — full path: store → z/login → mint → handshake.
-        let store = try? CredentialStore(scratchHome: scratchHome)
+        let store = try? CredentialStore(base: scratchHome)
         var fullConfiguration = SigningClient.Configuration()
         fullConfiguration.store = store
         fullConfiguration.initialLocation = location

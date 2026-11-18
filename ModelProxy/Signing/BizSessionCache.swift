@@ -44,12 +44,11 @@ struct BizSession: Codable, Equatable, Sendable {
 struct BizSessionCache {
     let fileURL: URL
 
-    static func defaultFileURL(fileManager: FileManager = .default) -> URL {
-        let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
-        return baseURL
-            .appendingPathComponent("ZGate", isDirectory: true)
-            .appendingPathComponent("biz-session.cache", isDirectory: false)
+    /// Default cache location: the app-support dir (`AppPaths`, so an
+    /// isolated test host redirects here too — the cache is production
+    /// state).
+    nonisolated static func defaultFileURL() -> URL {
+        AppPaths.appSupport.appendingPathComponent("biz-session.cache", isDirectory: false)
     }
 
     /// The cached session, or nil when absent, unreadable, or malformed —

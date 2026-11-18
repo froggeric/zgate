@@ -87,6 +87,14 @@ struct CredentialStore {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zcode-scratch-v3")
     }
 
+    /// Data-base directory the default store resolves under (layout
+    /// `<base>/.zcode/v2/credentials.json` + `<base>/secret.txt`). An
+    /// isolated test host redirects to its per-run temp base so suite runs
+    /// never touch the live home store.
+    nonisolated static var defaultBase: URL {
+        AppPaths.isolatedBase ?? defaultScratchHome
+    }
+
     private static let envelopePrefix = "enc:v2:env:"
     private static let fingerprintLength = 24
 
@@ -158,16 +166,16 @@ struct CredentialStore {
         self.values = decrypted
     }
 
-    /// Loads `<scratch-home>/.zcode/v2/credentials.json` + `<scratch-home>/secret.txt`.
-    init(scratchHome: URL) throws {
+    /// Loads `<base>/.zcode/v2/credentials.json` + `<base>/secret.txt`.
+    init(base: URL) throws {
         try self.init(
-            storeURL: scratchHome.appendingPathComponent(".zcode/v2/credentials.json"),
-            secretURL: scratchHome.appendingPathComponent("secret.txt"))
+            storeURL: base.appendingPathComponent(".zcode/v2/credentials.json"),
+            secretURL: base.appendingPathComponent("secret.txt"))
     }
 
-    /// Loads from `CredentialStore.defaultScratchHome`.
+    /// Loads from `CredentialStore.defaultBase`.
     static func loadDefault() throws -> CredentialStore {
-        try CredentialStore(scratchHome: defaultScratchHome)
+        try CredentialStore(base: defaultBase)
     }
 
     // MARK: - Typed accessors
