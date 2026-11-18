@@ -4,7 +4,7 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
-## [Unreleased]
+## [2.6.5] — 2026-11-18
 
 ### 2026-11-18 — TTFT columns, cache-read stats, ZGate data dir
 
