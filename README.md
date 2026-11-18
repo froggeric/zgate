@@ -217,6 +217,27 @@ same quota windows the menu bar polls.
   (external, machine-local:
   `/Volumes/ssd/github/zcode/docs/usage-audit-2026-11-17.md`).
 
+## Release process & signing
+
+Release builds are signed with a **Developer ID Application** certificate
+(team 46BZ85ALNS, hardened runtime on) and **notarized** with Apple — no
+Gatekeeper prompts on any machine.
+
+1. Bump `CURRENT_PROJECT_VERSION` in the ZGate target (Debug + Release).
+2. `xcodebuild -configuration Release build` → BUILD SUCCEEDED.
+3. `scripts/notarize.sh <Release>/ZGate.app` — submits (zips for the notary
+   service), waits, staples the ticket onto the app, and runs a Gatekeeper
+   assessment. One-time setup: `xcrun notarytool store-credentials
+   zgate-notary` (app-specific password).
+4. `scripts/release-swap.sh --dry-run <app>` then the real run (nohup,
+   disowned): SIGTERM the verified prod pid → port free → backup-mv → ditto
+   the new app in → relaunch → health check → automatic rollback on failure.
+   Log: `/tmp/zgate-release-swap.log`.
+5. Version the CHANGELOG (`marketing.build`, e.g. 2.6.4 = 2.6 / build 4),
+   merge `zgate-main` → `main` (`--no-ff`), push, tag `v<marketing.build>`,
+   and publish a GitHub release with the stapled app zipped
+   (`ditto -c -k --keepParent`) as the asset.
+
 ## Verify install
 
 - [ ] `ZGate.app` runs from `/Applications`, **no dock icon**, and the **ZΓ

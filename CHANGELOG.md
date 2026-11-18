@@ -1,10 +1,10 @@
 # Changelog
 
-User-facing changes to ZGate. **Dates below are authoring dates, not release
-dates — no version numbers have been assigned yet**, so everything lives
-under Unreleased, newest first.
+User-facing changes to ZGate. Dates below are authoring dates. Version
+numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
+2.6, CFBundleVersion 4).
 
-## [Unreleased]
+## [2.6.4] — 2026-11-18
 
 ### 2026-11-18 — post-2.6(3) fixes: splash port, qwen levers, signing, UI polish
 
