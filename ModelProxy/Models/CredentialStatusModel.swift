@@ -59,11 +59,14 @@ enum CredentialFace: Equatable, Sendable {
         if snapshot.phase == .handshaking { return .renewing }
         if snapshot.servedUnsigned { return .degraded }
         if case .refreshFailed = events.last {
-            // A pending backoff retry reads as renewal only while some rung
-            // can still build it: a held session (its in-memory biz JWT can
-            // re-mint) or a viable store/cache. With neither — login-less or
-            // unreadable store — the retry can never succeed and must not
-            // mask the derived dead-ladder red below.
+            // A refresh failure reads as renewal while the ladder can still
+            // build (viable store/cache — buildChain rebuilds from those,
+            // never from held-session material) OR was working in-process
+            // recently (a held session, even expired: the failure is then
+            // likely transient server/network trouble rather than missing
+            // credentials). A ladder with neither — login-less or
+            // unreadable store — can never build on retry and falls through
+            // to the derived dead-ladder red below.
             if snapshot.sessionExpiresAtMs != nil || storeOrCacheViable(snapshot) {
                 return .renewing
             }
