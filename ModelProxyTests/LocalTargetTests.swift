@@ -1076,7 +1076,7 @@ import Testing
         let channel = EmbeddedChannel()
         await LocalTarget.relayStream(
             upstreamResponse: response, to: channel, requestID: "t-sse-usage"
-        ) { input, output in
+        ) { input, output, _ in
             recorder.record(input, output)
         }
         #expect(recorder.calls.count == 1)

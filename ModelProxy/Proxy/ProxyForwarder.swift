@@ -523,19 +523,21 @@ enum ProxyForwarder {
             ? .passthrough
             : .mapped(targetModel: usedTarget.targetModel ?? model)
 
-        // Capture output tokens for TPS display in traffic log.
-        // Safe: callback fires during `await relay()` below, read happens after relay returns.
+        // Capture output tokens + first-body-byte time for TTFT/TPS display
+        // in the traffic log. Safe: both fire during `await relay()` below,
+        // reads happen after relay returns.
         nonisolated(unsafe) var capturedOutputTokens: Int?
+        nonisolated(unsafe) var capturedFirstByteAt: Date?
 
         let sourceModelForStats: String? = usedTarget.isPassthrough ? nil : model
         let toolCallGuard = Self.toolCallGuard(for: usedTarget, catalog: toolCatalog)
 
         let vendorID = usedTarget.vendorID
-        let onUsage: ResponseRelay.UsageCallback = { [tokenStatsStore] input, output in
+        let onUsage: ResponseRelay.UsageCallback = { [tokenStatsStore] input, output, cacheRead in
             capturedOutputTokens = output
             if let vendorID {
                 Task { @MainActor in
-                    tokenStatsStore.add(vendorID: vendorID, model: statsModel, input: input, output: output, sourceModel: sourceModelForStats)
+                    tokenStatsStore.add(vendorID: vendorID, model: statsModel, input: input, output: output, cacheRead: cacheRead, sourceModel: sourceModelForStats)
                 }
             }
         }
@@ -556,16 +558,20 @@ enum ProxyForwarder {
         // `onUsage` is keyed to the target that actually served, so a relay
         // answer reached via the splash rule's backup ladder meters correctly.
         let relayStreamTask = Task { () -> ReplayableBranchResponse? in
+            let onFirstBodyByte: @Sendable () -> Void = {
+                if capturedFirstByteAt == nil { capturedFirstByteAt = Date.now }
+            }
             if streamsViaLocalRelay {
                 await LocalTarget.relayStream(
                     upstreamResponse: upstreamResponse, to: channel, requestID: requestID,
-                    onUsage: onUsage)
+                    onUsage: onUsage, onFirstBodyByte: onFirstBodyByte)
                 return nil
             }
             return await ResponseRelay.relay(
                 upstreamResponse: upstreamResponse,
                 to: channel,
                 onUsage: onUsage,
+                onFirstBodyByte: onFirstBodyByte,
                 requestID: requestID,
                 branchContext: preparedRequest.context,
                 branchLease: branchLease,
@@ -589,6 +595,7 @@ enum ProxyForwarder {
             requestKind: requestKind,
             httpStatus: statusCode,
             duration: duration,
+            ttft: capturedFirstByteAt.map { $0.timeIntervalSince(startTime) },
             outputTokens: capturedOutputTokens
         )
         await MainActor.run { trafficLog.append(entry.with(requestClass: requestClass)) }

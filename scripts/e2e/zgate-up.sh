@@ -18,7 +18,7 @@ set -euo pipefail
 E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$E2E_DIR" rev-parse --show-toplevel)"
 ROOT="${ZGATE_E2E_ROOT:-${TMPDIR%/}/zgate-e2e}"
-APP_SUPPORT="$HOME/Library/Application Support/ModelProxy"
+APP_SUPPORT="$HOME/Library/Application Support/ZGate"
 SCRATCH_CACHE="$HOME/.zcode-scratch-v3/biz-session.cache"
 PORT="${ZGATE_E2E_PORT:-8787}"
 CODEX_PORT="${ZGATE_E2E_CODEX_PORT:-8789}"   # 8788 belongs to zbridge — never touched

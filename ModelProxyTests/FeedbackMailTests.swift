@@ -7,7 +7,7 @@ struct FeedbackMailTests {
     @Test func mailtoURLTargetsPublishedSupportAddress() throws {
         let url = try #require(FeedbackMail.mailtoURL(version: "2.4", build: "2", osVersion: "Version 15.0"))
         #expect(url.scheme == "mailto")
-        #expect(url.absoluteString.hasPrefix("mailto:norvynzhang@gmail.com?"))
+        #expect(url.absoluteString.hasPrefix("mailto:frederic@guigand.com?"))  // fork owner (2026-11-18)
     }
 
     /// `&` and `+` in the prefilled text must be percent-encoded, otherwise the

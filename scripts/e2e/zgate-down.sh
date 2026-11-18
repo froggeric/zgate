@@ -6,7 +6,7 @@ set -euo pipefail
 
 E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ZGATE_E2E_ROOT:-${TMPDIR%/}/zgate-e2e}"
-APP_SUPPORT="$HOME/Library/Application Support/ModelProxy"
+APP_SUPPORT="$HOME/Library/Application Support/ZGate"
 MARKER="$ROOT/.zgate-e2e-owns-appsupport"
 
 if [ -f "$ROOT/app.pid" ]; then

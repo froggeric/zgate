@@ -156,15 +156,16 @@ server's last 500 output lines.
 
 ## Configuration
 
-- **Config file:** `~/Library/Application Support/ModelProxy/config.json`
-  (directory name kept from upstream model-proxy). Token stats and quota
+- **Config file:** `~/Library/Application Support/ZGate/config.json`
+  (renamed from upstream's ModelProxy dir on 2026-11-18 — the app moves it
+  once at launch; a pre-rename app re-seeds defaults). Token stats and quota
   history live alongside it. Hand-editing works, but the Settings editor is
   the supported path.
 - **Defaults apply on first launch only.** The default matrix above is
   written when ZGate starts with no config.json. An existing install keeps
   its saved config forever — upgrading ZGate never rewrites your rules.
 - **Reset to defaults:** quit ZGate (popover → Quit), delete
-  `~/Library/Application Support/ModelProxy/config.json`, relaunch. This
+  `~/Library/Application Support/ZGate/config.json`, relaunch. This
   discards rule edits (not your login — credentials live in the scratch
   store).
 - **Settings editor:** Settings → Rules gives full CRUD on the rule table —
@@ -280,12 +281,13 @@ Gatekeeper prompts on any machine.
   the z.ai API). The next poll (within 30 min, or popover → Refresh) picks
   it up with no restart; routing is never blocked by an empty bar.
 - **Logs:** same Application Support directory as the config
-  (`~/Library/Application Support/ModelProxy/`) when file logging is enabled
+  (`~/Library/Application Support/ZGate/`) when file logging is enabled
   (Settings → Debug). Logs never contain request/response bodies or
   credential values.
 
 ## About / attribution
 
+- **ZGate (this fork)** — github.com/froggeric/zgate.
 - **model-proxy** by norvyn — MIT; this fork's `LICENSE` is upstream's.
   Original README: [`README.upstream.md`](README.upstream.md).
 - **Splash** (`splash-m1`) — the local Anthropic-protocol inference server

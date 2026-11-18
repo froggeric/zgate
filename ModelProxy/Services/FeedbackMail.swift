@@ -6,8 +6,8 @@ import Foundation
 /// vendor names, API keys, and any request/response data are deliberately excluded —
 /// see the project constraint on not storing or transmitting API traffic.
 enum FeedbackMail {
-    /// Support address published in `docs/10-app-store-connect/Support-Page.md`.
-    static let recipient = "norvynzhang@gmail.com"
+    /// Fork owner's support address (upstream's was norvynzhang@gmail.com).
+    static let recipient = "frederic@guigand.com"
 
     /// Unreserved characters per RFC 3986. Everything else is percent-encoded, so
     /// `&` and `+` inside subject/body cannot truncate or corrupt the query.

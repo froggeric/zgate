@@ -19,7 +19,7 @@ else
     src="$REPO_ROOT"
 fi
 
-# Network entitlements only: without the sandbox, config and logs live in ~/Library/Application Support/ModelProxy.
+# Network entitlements only: without the sandbox, config and logs live in ~/Library/Application Support/ZGate.
 entitlements="$E2E_ROOT/e2e.entitlements"
 cat > "$entitlements" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>

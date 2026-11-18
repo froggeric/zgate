@@ -156,30 +156,40 @@ struct MenuBarUITests {
         #expect(log.entries.last?.model == "m599")
     }
 
-    @Test("log row columns: class → target, ms, tokens")
+    @Test("log row columns: class → target, ttft, tok/s")
     func logRowFormatting() {
         let entry = TrafficEntry(
             model: "glm-5.3-flash", routeType: .mapped(targetModel: "Qwen3.8-27B-4bit"),
-            requestKind: .generation, httpStatus: 200, duration: 2.4, outputTokens: 1870)
+            requestKind: .generation, httpStatus: 200, duration: 2.4, ttft: 0.4, outputTokens: 1870)
             .with(requestClass: .subagent)
         #expect(entry.classTargetDisplayLabel == "subagent → Qwen3.8-27B-4bit")
-        #expect(entry.msDisplayText == "2400ms")
+        #expect(entry.ttftDisplayText == "0.4s")
+        // Decode window: (2.4 - 0.4) s → 1870 / 2.0 ≈ 935 tok/s.
+        #expect(entry.tokensPerSecondDisplayText == "935/s")
         #expect(entry.tokensDisplayText == "1.9K")
+
+        // Rounded-to-seconds TTFT above 1 s; tok/s without TTFT falls back
+        // to the whole duration.
+        let slow = TrafficEntry(
+            model: "glm-5.3", routeType: .mapped(targetModel: "GLM-5.3"),
+            requestKind: .generation, httpStatus: 200, duration: 12.6, ttft: 3.4, outputTokens: 1000)
+        #expect(slow.ttftDisplayText == "3s")
+        #expect(slow.tokensPerSecondDisplayText == "109/s")  // 1000 / (12.6 - 3.4) = 108.7 → 109
 
         // Class falls back to model classification without a gateway hint.
         let unhinted = TrafficEntry(
             model: "claude-opus-4-6", routeType: .mapped(targetModel: "GLM-5.3"),
             requestKind: .generation, httpStatus: 200, duration: 0.04, outputTokens: nil)
         #expect(unhinted.classTargetDisplayLabel == "opus → GLM-5.3")
-        #expect(unhinted.msDisplayText == "40ms")
-        #expect(unhinted.tokensDisplayText == "—")
+        #expect(unhinted.ttftDisplayText == "—")
+        #expect(unhinted.tokensPerSecondDisplayText == "—")
 
         // Blocked: no duration → em dash, blocked target label.
         let blocked = TrafficEntry(
             model: "claude-haiku-4-5", routeType: .blocked, requestKind: .blocked,
             httpStatus: 403)
         #expect(blocked.classTargetDisplayLabel == "haiku → blocked")
-        #expect(blocked.msDisplayText == "—")
+        #expect(blocked.ttftDisplayText == "—")
 
         // Time column shape HH:mm:ss.
         let formatter = DateFormatter()
