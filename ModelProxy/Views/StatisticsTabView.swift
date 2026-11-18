@@ -71,10 +71,14 @@ struct StatisticsTabView: View {
                 HStack {
                     Text("Model")
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Input")
-                        .frame(width: 60, alignment: .trailing)
-                    Text("Output")
-                        .frame(width: 60, alignment: .trailing)
+                    // Fresh input (uncached) — the cache column carries the
+                    // re-read context share; both bill as input (DP-003).
+                    Text("In new")
+                        .frame(width: 56, alignment: .trailing)
+                    Text("Cache")
+                        .frame(width: 56, alignment: .trailing)
+                    Text("Out")
+                        .frame(width: 56, alignment: .trailing)
                     Text("Total")
                         .frame(width: 60, alignment: .trailing)
                     Text("Cost")
@@ -117,12 +121,16 @@ struct StatisticsTabView: View {
                                 .truncationMode(.middle)
                         }
 
-                        Text(row.record.inputTokens.compactTokenString)
+                        Text(row.record.freshInputTokens.compactTokenString)
                             .font(.body.monospacedDigit())
-                            .frame(width: 60, alignment: .trailing)
+                            .frame(width: 56, alignment: .trailing)
+                        Text(row.record.cacheReadTokens.compactTokenString)
+                            .font(.body.monospacedDigit())
+                            .frame(width: 56, alignment: .trailing)
+                            .foregroundStyle(.secondary)
                         Text(row.record.outputTokens.compactTokenString)
                             .font(.body.monospacedDigit())
-                            .frame(width: 60, alignment: .trailing)
+                            .frame(width: 56, alignment: .trailing)
                         Text((row.record.inputTokens + row.record.outputTokens).compactTokenString)
                             .font(.body.monospacedDigit())
                             .frame(width: 60, alignment: .trailing)
@@ -133,7 +141,7 @@ struct StatisticsTabView: View {
                     .padding(.vertical, 5)
                     .padding(.horizontal, 4)
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(sourceModel.map { "\($0) to " } ?? "")\(row.model): \(row.record.inputTokens.compactTokenString) input, \(row.record.outputTokens.compactTokenString) output, cost \(costText(cost))")
+                    .accessibilityLabel("\(row.model): fresh input \(row.record.freshInputTokens), cache read \(row.record.cacheReadTokens), output \(row.record.outputTokens), total \(row.record.inputTokens + row.record.outputTokens) tokens")
 
                     Divider()
                 }

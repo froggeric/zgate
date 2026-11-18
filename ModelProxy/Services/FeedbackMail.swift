@@ -6,8 +6,8 @@ import Foundation
 /// vendor names, API keys, and any request/response data are deliberately excluded —
 /// see the project constraint on not storing or transmitting API traffic.
 enum FeedbackMail {
-    /// Support address published in `docs/10-app-store-connect/Support-Page.md`.
-    static let recipient = "norvynzhang@gmail.com"
+    /// Fork owner's support address (upstream's was norvynzhang@gmail.com).
+    static let recipient = "frederic@guigand.com"
 
     /// Unreserved characters per RFC 3986. Everything else is percent-encoded, so
     /// `&` and `+` inside subject/body cannot truncate or corrupt the query.
@@ -33,7 +33,7 @@ enum FeedbackMail {
     }
 
     static func subject(version: String, build: String) -> String {
-        "ModelProxy Feedback - \(version) (\(build))"
+        "ZGate Feedback - \(version) (\(build))"
     }
 
     static func body(version: String, build: String, osVersion: String) -> String {
@@ -42,7 +42,7 @@ enum FeedbackMail {
 
 
         ---
-        ModelProxy \(version) (\(build))
+        ZGate \(version) (\(build))
         macOS \(osVersion)
         """
     }

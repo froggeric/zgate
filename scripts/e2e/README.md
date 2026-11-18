@@ -63,7 +63,7 @@ NoThinking". See `gen_config.py`.
 
 ## Rules
 
-1. **Never test against the installed app.** The E2E build uses bundle ID `com.90percent.ModelProxy.e2e`, runs without the App Sandbox and listens on 19090 / 19092. The installed copy keeps its own container and port 9090. Without the sandbox, config and logs live in `~/Library/Application Support/ModelProxy`. `up.sh` creates that folder with a marker file and refuses to touch one it did not create.
+1. **Never test against the installed app.** The E2E build uses bundle ID `com.90percent.ModelProxy.e2e`, runs without the App Sandbox and listens on 19090 / 19092. The installed copy keeps its own container and port 9090. Without the sandbox, config and logs live in `~/Library/Application Support/ZGate`. `up.sh` creates that folder with a marker file and refuses to touch one it did not create.
 2. **Never mix with your own Claude Code.** `cc.sh` starts from an empty environment (`env -i`) with its own `CLAUDE_CONFIG_DIR`, workspace and dummy API key. Do not run Claude Code against the E2E ports with your normal settings.
 3. **Run `down.sh` when finished.** `config.json` holds the keys in plaintext, and `capture/` holds full prompts.
 4. **Web search spends real quota.** Google Custom Search's free tier is 100 queries a day. Before the bridge fix, one failing run retried 12+ times and used it all up. Keep `--websearch` opt-in, run it once, and trust the watchdog.

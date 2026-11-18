@@ -709,15 +709,46 @@ struct ModelProxyTests {
         let allocator = ByteBufferAllocator()
         var buf1 = allocator.buffer(capacity: messageStart.utf8.count)
         buf1.writeString(messageStart)
-        let (input1, output1) = ResponseRelay.extractUsageFromSSEChunk(buf1)
+        let (input1, output1, _) = ResponseRelay.extractUsageFromSSEChunk(buf1)
         #expect(input1 == 150)
         #expect(output1 == 0)
 
         var buf2 = allocator.buffer(capacity: messageDelta.utf8.count)
         buf2.writeString(messageDelta)
-        let (input2, output2) = ResponseRelay.extractUsageFromSSEChunk(buf2)
+        let (input2, output2, _) = ResponseRelay.extractUsageFromSSEChunk(buf2)
         #expect(input2 == 0)
         #expect(output2 == 42)
+    }
+
+    // MARK: - ResponseRelay: cache-read split (2026-11-18)
+
+    @Test func parseUsageDictCarriesCacheReadSplit() throws {
+        // Anthropic: folded input keeps DP-003 billing semantics; the third
+        // tuple element carries the cache-read share for the stats split.
+        let anthropic: [String: Any] = [
+            "input_tokens": 100, "output_tokens": 7, "cache_read_input_tokens": 900]
+        let parsed = try #require(ResponseRelay.parseUsageDict(anthropic))
+        #expect(parsed.0 == 1000)
+        #expect(parsed.1 == 7)
+        #expect(parsed.2 == 900)
+
+        // OpenAI responses have no Anthropic cache split — third element 0.
+        let openai: [String: Any] = ["prompt_tokens": 200, "completion_tokens": 80]
+        let openaiParsed = try #require(ResponseRelay.parseUsageDict(openai))
+        #expect(openaiParsed.0 == 200 && openaiParsed.1 == 80 && openaiParsed.2 == 0)
+
+        // Legacy stats records without the new key decode with zero cache.
+        let legacy = """
+        {"inputTokens":50,"outputTokens":5}
+        """
+        let record = try JSONDecoder().decode(ModelTokenRecord.self, from: Data(legacy.utf8))
+        #expect(record.inputTokens == 50 && record.cacheReadTokens == 0 && record.freshInputTokens == 50)
+
+        // Store accumulates the split alongside the folded totals.
+        var stats = TokenStats()
+        stats.add(vendorID: UUID(), modelID: "GLM-5.3", input: 1000, output: 7, cacheRead: 900)
+        #expect(stats.totalInputTokens() == 1000)
+        #expect(stats.totalCacheReadTokens() == 900)
     }
 
     // MARK: - ResponseRelay: OpenAI streaming usage extraction
@@ -730,7 +761,7 @@ struct ModelProxyTests {
         let allocator = ByteBufferAllocator()
         var buf = allocator.buffer(capacity: chunk.utf8.count)
         buf.writeString(chunk)
-        let (input, output) = ResponseRelay.extractUsageFromSSEChunk(buf)
+        let (input, output, _) = ResponseRelay.extractUsageFromSSEChunk(buf)
         #expect(input == 200)
         #expect(output == 80)
     }
@@ -777,7 +808,7 @@ struct ModelProxyTests {
         let allocator = ByteBufferAllocator()
         var buf = allocator.buffer(capacity: chunk.utf8.count)
         buf.writeString(chunk)
-        let (input, output) = ResponseRelay.extractUsageFromSSEChunk(buf)
+        let (input, output, _) = ResponseRelay.extractUsageFromSSEChunk(buf)
         #expect(input == 0)
         #expect(output == 0)
     }
@@ -787,7 +818,7 @@ struct ModelProxyTests {
         let allocator = ByteBufferAllocator()
         var buf = allocator.buffer(capacity: chunk.utf8.count)
         buf.writeString(chunk)
-        let (input, output) = ResponseRelay.extractUsageFromSSEChunk(buf)
+        let (input, output, _) = ResponseRelay.extractUsageFromSSEChunk(buf)
         #expect(input == 0)
         #expect(output == 0)
     }

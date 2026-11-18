@@ -1,15 +1,32 @@
 import Foundation
 
-/// Per-model token usage record (input + output).
-/// Cache read tokens are folded into inputTokens (per DP-003 arch note in Phase 6).
+/// Per-model token usage record.
+/// `inputTokens` stays the FOLDED billing input (fresh + cache reads,
+/// DP-003: cache reads bill at full input price); `cacheReadTokens` carries
+/// the split so the Statistics tab can show what is fresh vs re-read context.
 struct ModelTokenRecord: Codable, Equatable, Sendable {
     var inputTokens: Int
     var outputTokens: Int
+    var cacheReadTokens: Int
 
-    init(inputTokens: Int = 0, outputTokens: Int = 0) {
+    init(inputTokens: Int = 0, outputTokens: Int = 0, cacheReadTokens: Int = 0) {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case inputTokens, outputTokens, cacheReadTokens
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        inputTokens = (try? c.decode(Int.self, forKey: .inputTokens)) ?? 0
+        outputTokens = (try? c.decode(Int.self, forKey: .outputTokens)) ?? 0
+        cacheReadTokens = (try? c.decode(Int.self, forKey: .cacheReadTokens)) ?? 0
+    }
+
+    /// Fresh (uncached) input: the folded total minus cache reads.
+    var freshInputTokens: Int { inputTokens - cacheReadTokens }
 }
 
 /// Daily token usage snapshot persisted to disk.
@@ -48,12 +65,14 @@ struct TokenStats: Sendable {
     /// Token usage keyed by source model name (pre-mapping). Only mapped routes contribute.
     private(set) var sourceModelRecords: [String: ModelTokenRecord] = [:]
 
-    mutating func add(vendorID: UUID, modelID: String, input: Int, output: Int, sourceModel: String? = nil) {
+    mutating func add(vendorID: UUID, modelID: String, input: Int, output: Int, cacheRead: Int = 0, sourceModel: String? = nil) {
         records[vendorID, default: [:]][modelID, default: ModelTokenRecord()].inputTokens += input
         records[vendorID, default: [:]][modelID, default: ModelTokenRecord()].outputTokens += output
+        records[vendorID, default: [:]][modelID, default: ModelTokenRecord()].cacheReadTokens += cacheRead
         if let sourceModel {
             sourceModelRecords[sourceModel, default: ModelTokenRecord()].inputTokens += input
             sourceModelRecords[sourceModel, default: ModelTokenRecord()].outputTokens += output
+            sourceModelRecords[sourceModel, default: ModelTokenRecord()].cacheReadTokens += cacheRead
         }
     }
 
@@ -62,6 +81,7 @@ struct TokenStats: Sendable {
         for (model, record) in records {
             sourceModelRecords[model, default: ModelTokenRecord()].inputTokens += record.inputTokens
             sourceModelRecords[model, default: ModelTokenRecord()].outputTokens += record.outputTokens
+            sourceModelRecords[model, default: ModelTokenRecord()].cacheReadTokens += record.cacheReadTokens
         }
     }
 
@@ -71,5 +91,9 @@ struct TokenStats: Sendable {
 
     func totalOutputTokens() -> Int {
         records.values.flatMap(\.values).map(\.outputTokens).reduce(0, +)
+    }
+
+    func totalCacheReadTokens() -> Int {
+        records.values.flatMap(\.values).map(\.cacheReadTokens).reduce(0, +)
     }
 }

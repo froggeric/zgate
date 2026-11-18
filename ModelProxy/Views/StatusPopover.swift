@@ -455,10 +455,10 @@ struct StatusPopover: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("ms")
-                    .frame(width: 42, alignment: .trailing)
-                Text("tok")
-                    .frame(width: 34, alignment: .trailing)
+                Text("ttft")
+                    .frame(width: 40, alignment: .trailing)
+                Text("tok/s")
+                    .frame(width: 44, alignment: .trailing)
                 Text("code")
                     .frame(width: 28, alignment: .trailing)
             }
@@ -483,6 +483,7 @@ struct StatusPopover: View {
                         }
                     }
                     .frame(height: 220)
+                    .scrollIndicators(.hidden)   // overlay scrollbar was shifting the columns off their headers
                     .onChange(of: trafficLog.entries.last?.id) { _, _ in
                         if let last = trafficLog.entries.last {
                             withAnimation(.easeOut(duration: 0.2)) {
@@ -522,15 +523,15 @@ private struct TrafficRowView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(entry.msDisplayText)
+            Text(entry.ttftDisplayText)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
-                .frame(width: 42, alignment: .trailing)
+                .frame(width: 40, alignment: .trailing)
 
-            Text(entry.tokensDisplayText)
+            Text(entry.tokensPerSecondDisplayText)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
-                .frame(width: 34, alignment: .trailing)
+                .frame(width: 44, alignment: .trailing)
 
             Text("\(entry.httpStatus)")
                 .font(.caption.monospacedDigit())
@@ -553,7 +554,7 @@ private struct TrafficRowView: View {
     }
 
     private var accessibilitySummary: String {
-        "\(entry.timeDisplayText), \(entry.displayModelLabel), \(entry.classTargetDisplayLabel), HTTP \(entry.httpStatus), \(entry.msDisplayText), \(entry.tokensDisplayText) tokens"
+        "\(entry.timeDisplayText), \(entry.displayModelLabel), \(entry.classTargetDisplayLabel), HTTP \(entry.httpStatus), TTFT \(entry.ttftDisplayText), \(entry.tokensPerSecondDisplayText)"
     }
 
 }

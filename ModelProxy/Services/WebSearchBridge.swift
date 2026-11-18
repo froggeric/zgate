@@ -190,7 +190,7 @@ enum WebSearchBridge {
                 throw WebSearchBridgeError.upstreamFailure(statusCode: response.statusCode, bodyPreview: preview)
             }
 
-            if let (input, output) = ResponseRelay.extractUsageFromJSONBody(response.bodyData) {
+            if let (input, output, _) = ResponseRelay.extractUsageFromJSONBody(response.bodyData) {
                 accumulatedInputTokens += input
                 accumulatedOutputTokens += output
             }

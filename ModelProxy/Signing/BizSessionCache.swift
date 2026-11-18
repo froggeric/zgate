@@ -48,7 +48,7 @@ struct BizSessionCache {
         let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
         return baseURL
-            .appendingPathComponent("ModelProxy", isDirectory: true)
+            .appendingPathComponent("ZGate", isDirectory: true)
             .appendingPathComponent("biz-session.cache", isDirectory: false)
     }
 

@@ -9,7 +9,8 @@ enum ResponseRelay {
     static let maxReplayBodyBytes = 1 * 1024 * 1024
 
     /// Token usage callback: (inputTokens, outputTokens).
-    typealias UsageCallback = @Sendable (Int, Int) -> Void
+    /// (folded input incl. cache reads, output, cache-read tokens).
+    typealias UsageCallback = @Sendable (Int, Int, Int) -> Void
 
     /// Relay an AsyncHTTPClient response (headers + body) back to a NIO client channel.
     /// Writes each body chunk immediately as it arrives — no buffering for SSE.
@@ -19,6 +20,7 @@ enum ResponseRelay {
         upstreamResponse: HTTPClientResponse,
         to channel: any Channel,
         onUsage: UsageCallback? = nil,
+        onFirstBodyByte: (@Sendable () -> Void)? = nil,
         requestID: String,
         branchContext: PreparedBranchContext? = nil,
         branchLease: BranchRequestLease? = nil,
@@ -62,6 +64,7 @@ enum ResponseRelay {
                 // Anthropic splits input_tokens (message_start) and output_tokens (message_delta).
                 var accumulatedInput = 0
                 var accumulatedOutput = 0
+                var accumulatedCacheRead = 0
                 var errorAccumulator = Data()
                 let streamNormalizer = shouldTransformBody
                     ? (portableNormalizer ?? PortableContentNormalizer()).makeSSEStreamNormalizer(
@@ -69,7 +72,12 @@ enum ResponseRelay {
                         toolCallGuard: shouldGuardToolCalls ? toolCallGuard : nil
                     )
                     : nil
+                var firstBodyByteFired = false
                 for try await chunk in upstreamResponse.body {
+                    if !firstBodyByteFired {
+                        firstBodyByteFired = true
+                        onFirstBodyByte?()
+                    }
                     if let streamNormalizer {
                         let normalizedEvents = try streamNormalizer.push(chunk: chunk)
                         for eventData in normalizedEvents {
@@ -105,9 +113,10 @@ enum ResponseRelay {
 
                     // Scan chunk for usage data, accumulate across events.
                     if onUsage != nil {
-                        let (input, output) = extractUsageFromSSEChunk(chunk)
+                        let (input, output, cacheRead) = extractUsageFromSSEChunk(chunk)
                         accumulatedInput += input
                         accumulatedOutput += output
+                        accumulatedCacheRead += cacheRead
                     }
                     if isError, let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
                         errorAccumulator.append(bytes)
@@ -115,7 +124,7 @@ enum ResponseRelay {
                 }
                 // Report accumulated totals at stream end.
                 if let callback = onUsage, (accumulatedInput > 0 || accumulatedOutput > 0) {
-                    callback(accumulatedInput, accumulatedOutput)
+                    callback(accumulatedInput, accumulatedOutput, accumulatedCacheRead)
                 }
                 if isError, !errorAccumulator.isEmpty {
                     let preview = String(data: errorAccumulator.prefix(2048), encoding: .utf8) ?? "<non-UTF8, \(errorAccumulator.count)B>"
@@ -151,7 +160,12 @@ enum ResponseRelay {
                 var bodyAccumulator = Data()
                 let shouldAccumulate = onUsage != nil || isError || shouldTransformBody
 
+                var firstBodyByteFired = false
                 for try await chunk in upstreamResponse.body {
+                    if !firstBodyByteFired {
+                        firstBodyByteFired = true
+                        onFirstBodyByte?()
+                    }
                     if shouldAccumulate {
                         if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
                             bodyAccumulator.append(bytes)
@@ -176,8 +190,8 @@ enum ResponseRelay {
 
                 // Parse usage from full body after all chunks forwarded.
                 if let callback = onUsage, !bodyAccumulator.isEmpty {
-                    if let (input, output) = extractUsageFromJSONBody(bodyAccumulator) {
-                        callback(input, output)
+                    if let (input, output, cacheRead) = extractUsageFromJSONBody(bodyAccumulator) {
+                        callback(input, output, cacheRead)
                     }
                 }
                 if isError, !bodyAccumulator.isEmpty {
@@ -299,7 +313,7 @@ enum ResponseRelay {
     /// Extract token usage from a non-streaming JSON response body.
     /// Handles both Anthropic format (`input_tokens`, `output_tokens`, `cache_read_input_tokens`)
     /// and OpenAI format (`prompt_tokens`, `completion_tokens`).
-    static func extractUsageFromJSONBody(_ data: Data) -> (Int, Int)? {
+    static func extractUsageFromJSONBody(_ data: Data) -> (Int, Int, Int)? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let usage = json["usage"] as? [String: Any] else {
             return nil
@@ -311,12 +325,13 @@ enum ResponseRelay {
     /// Checks both top-level `usage` and nested `message.usage` paths to handle
     /// Anthropic streaming (input_tokens in message_start, output_tokens in message_delta).
     /// Returns (0, 0) if no usage found in this chunk.
-    static func extractUsageFromSSEChunk(_ buffer: ByteBuffer) -> (Int, Int) {
+    static func extractUsageFromSSEChunk(_ buffer: ByteBuffer) -> (Int, Int, Int) {
         guard let text = buffer.getString(at: buffer.readerIndex, length: buffer.readableBytes) else {
-            return (0, 0)
+            return (0, 0, 0)
         }
         var chunkInput = 0
         var chunkOutput = 0
+        var chunkCacheRead = 0
         for line in text.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("data:") else { continue }
@@ -328,27 +343,31 @@ enum ResponseRelay {
             }
             // Check top-level usage (Anthropic message_delta, OpenAI final chunk).
             if let usage = json["usage"] as? [String: Any],
-               let (input, output) = parseUsageDict(usage) {
+               let (input, output, cacheRead) = parseUsageDict(usage) {
                 chunkInput += input
                 chunkOutput += output
+                chunkCacheRead += cacheRead
             }
             // Check nested message.usage (Anthropic message_start contains input_tokens here).
             if let message = json["message"] as? [String: Any],
                let usage = message["usage"] as? [String: Any],
-               let (input, _) = parseUsageDict(usage) {
+               let (input, _, cacheRead) = parseUsageDict(usage) {
                 chunkInput += input
+                chunkCacheRead += cacheRead
             }
         }
-        return (chunkInput, chunkOutput)
+        return (chunkInput, chunkOutput, chunkCacheRead)
     }
 
-    /// Parse a `usage` dictionary into (inputTokens, outputTokens).
-    /// Supports Anthropic keys (`input_tokens`, `output_tokens`, `cache_read_input_tokens`)
-    /// and OpenAI keys (`prompt_tokens`, `completion_tokens`).
+    /// Parse a `usage` dictionary into (foldedInput, output, cacheRead).
+    /// Supports Anthropic keys (`input_tokens`, `output_tokens`,
+    /// `cache_read_input_tokens`) and OpenAI keys (`prompt_tokens`,
+    /// `completion_tokens`). The folded input keeps DP-003 billing
+    /// semantics (cache reads bill as input); cacheRead carries the split.
     /// Returns nil only if no recognized token field is found.
-    static func parseUsageDict(_ usage: [String: Any]) -> (Int, Int)? {
-        let anthropicInput = (usage["input_tokens"] as? Int ?? 0)
-            + (usage["cache_read_input_tokens"] as? Int ?? 0)
+    static func parseUsageDict(_ usage: [String: Any]) -> (Int, Int, Int)? {
+        let cacheRead = usage["cache_read_input_tokens"] as? Int ?? 0
+        let anthropicInput = (usage["input_tokens"] as? Int ?? 0) + cacheRead
         let anthropicOutput = usage["output_tokens"] as? Int ?? 0
         let openaiInput = usage["prompt_tokens"] as? Int ?? 0
         let openaiOutput = usage["completion_tokens"] as? Int ?? 0
@@ -357,7 +376,9 @@ enum ResponseRelay {
         let output = max(anthropicOutput, openaiOutput)
 
         guard input > 0 || output > 0 else { return nil }
-        return (input, output)
+        // OpenAI responses carry no Anthropic cache split.
+        let split = openaiInput > anthropicInput ? 0 : cacheRead
+        return (input, output, split)
     }
 
     private static func recordReplayChunk(

@@ -53,12 +53,12 @@ Deployment target: `MACOSX_DEPLOYMENT_TARGET = 15.6` on all targets (15.7 at pro
 1. **Signing is ad-hoc.** Upstream shipped `DEVELOPMENT_TEAM = 2JXYA862GQ` + automatic signing; this machine has none of their identities, so the build failed. All configs now carry `CODE_SIGN_STYLE = Manual`, `CODE_SIGN_IDENTITY = "-"`, `DEVELOPMENT_TEAM = ""` — same recipe as upstream's own e2e `build.sh`. Sandbox entitlements + hardened runtime still work locally. If a real signing identity is ever added, revert these three.
 2. **Test imports** updated `@testable import ModelProxy` → `@testable import ZGate` (11 files in `ModelProxyTests/`) — mechanical consequence of the module rename; no test logic touched.
 3. **`ModelProxyTests/ModelProxyTests.swift` `hostAppBundleHasExpectedIdentity`** now expects `local.zgate.mac` / `ZGate.app` / executable `ZGate` — this test pins product identity, so it must track the fork identity.
-4. **e2e harness** (`scripts/e2e/`) project-identity references updated: `build.sh` (xcodeproj path, scheme, product path), `up.sh`/`down.sh` (executable match strings), `env.sh` (e2e bundle id). Source-derived strings unchanged (app-support dir `~/Library/Application Support/ModelProxy`, `.modelproxy-e2e` marker, `modelproxy-*.log` names — these come from app code and stay ModelProxy).
+4. **e2e harness** (`scripts/e2e/`) project-identity references updated: `build.sh` (xcodeproj path, scheme, product path), `up.sh`/`down.sh` (executable match strings), `env.sh` (e2e bundle id). Source-derived strings unchanged where still upstream-flavored (`.modelproxy-e2e` marker, `modelproxy-*.log` names). The app-support DIR itself was renamed to `~/Library/Application Support/ZGate` on 2026-11-18 (one-time move at launch).
 
 ## Upstream context worth knowing
 
 - Upstream docs tree (`docs/00-AI-CONTEXT.md` is their index); App-Store history in `docs/10-app-store-connect/` (not relevant to the local-only fork).
-- Upstream hard constraints (from their CLAUDE.md): proxy must stay pure SwiftNIO, no request/response body logging, localhost-only listeners, SSE chunks forwarded immediately, config in `~/Library/Application Support/ModelProxy/config.json`.
+- Upstream hard constraints (from their CLAUDE.md): proxy must stay pure SwiftNIO, no request/response body logging, localhost-only listeners, SSE chunks forwarded immediately, config in `~/Library/Application Support/ZGate/config.json`.
 - Pre-existing build warnings: `ResponseRelay.swift` deprecation warnings for NIO `writeAndFlush` — upstream code, not touched.
 
 ## Task 4 — SigningClient live smoke (2026-11-15T20:25Z, executor-run)
@@ -489,7 +489,7 @@ when the popover opens, macOS 26.2 ignores System Events clicks, `click_status_i
 reads the item frame via System Events then posts a real CGEvent). The tests drive the
 real `claude` CLI (fresh `CLAUDE_CONFIG_DIR`, dummy key, `env -i` shape) and assert on
 the app's file log + persisted artifacts. `zgate-up.sh` moves the live
-`~/Library/Application Support/ModelProxy` aside (marker file) and `zgate-down.sh`
+`~/Library/Application Support/ZGate` aside (marker file) and `zgate-down.sh`
 restores it — never deletes.
 
 **All three executable ACs passed live** (evidence verbatim in
@@ -641,7 +641,7 @@ Semantics to remember (now documented in-code next to
 `ConfigStore.loadOrCreateDefault` on FIRST LAUNCH with no config.json.
 Existing installs keep their saved matrix; the README's Configuration
 section documents the reset (quit, delete
-`~/Library/Application Support/ModelProxy/config.json`, relaunch).
+`~/Library/Application Support/ZGate/config.json`, relaunch).
 
 Consistency residuals — initially flagged as out of scope, then fixed in the
 same change on controller instruction (touch list extended):

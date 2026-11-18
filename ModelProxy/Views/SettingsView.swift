@@ -897,6 +897,13 @@ struct AboutTabView: View {
 
             Section("Credits") {
                 VStack(alignment: .leading, spacing: 6) {
+                    Text("ZGate — this fork")
+                    if let url = URL(string: "https://github.com/froggeric/zgate") {
+                        Link("github.com/froggeric/zgate", destination: url)
+                            .font(.footnote)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 6) {
                     Text("Built on model-proxy (MIT)")
                     if let url = URL(string: "https://github.com/n0rvyn/model-proxy") {
                         Link("github.com/n0rvyn/model-proxy", destination: url)

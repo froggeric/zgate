@@ -70,6 +70,9 @@ struct TrafficEntry: Identifiable, Sendable {
     let timestamp: Date
     /// Total request duration in seconds; nil for blocked requests (no upstream call).
     let duration: TimeInterval?
+    /// Time to FIRST body byte in seconds (perceived responsiveness); nil
+    /// when no body chunk was relayed (blocked, errored, non-streamed).
+    let ttft: TimeInterval?
     /// Output tokens from this request; nil when unavailable (blocked, replay, or no usage data).
     let outputTokens: Int?
     /// Claude Code request class; nil when the client sent no hint.
@@ -81,6 +84,7 @@ struct TrafficEntry: Identifiable, Sendable {
         requestKind: RequestKind,
         httpStatus: Int,
         duration: TimeInterval? = nil,
+        ttft: TimeInterval? = nil,
         outputTokens: Int? = nil,
         timestamp: Date = .now
     ) {
@@ -90,6 +94,7 @@ struct TrafficEntry: Identifiable, Sendable {
         self.requestKind = requestKind
         self.httpStatus = httpStatus
         self.duration = duration
+        self.ttft = ttft
         self.outputTokens = outputTokens
         self.timestamp = timestamp
     }
@@ -147,11 +152,25 @@ struct TrafficEntry: Identifiable, Sendable {
         return "\(className) → \(routeDisplayLabel)"
     }
 
-    /// "1200ms" — duration in whole milliseconds; "—" when there was no
-    /// upstream call (blocked).
-    var msDisplayText: String {
-        guard let duration else { return "—" }
-        return "\(Int((duration * 1000).rounded()))ms"
+    /// TTFT rounded to seconds (one decimal under 1 s so fast relays stay
+    /// distinguishable); "—" when unmeasured.
+    var ttftDisplayText: String {
+        guard let ttft else { return "—" }
+        return ttft < 1 ? String(format: "%.1fs", ttft) : "\(Int(ttft.rounded()))s"
+    }
+
+    /// Decode speed: output tokens over the streaming window (duration
+    /// minus TTFT). "—" when not derivable — including NON-STREAMED
+    /// responses, where the first body byte arrives with the complete body
+    /// (ttft ~ duration) and a "speed" would be fiction.
+    var tokensPerSecondDisplayText: String {
+        guard requestKind.shouldDisplayTPS,
+              let outputTokens, outputTokens > 0,
+              let duration,
+              let ttft,
+              ttft < 0.9 * duration else { return "—" }
+        let streamSeconds = max(duration - ttft, 0.05)
+        return "\(Int((Double(outputTokens) / streamSeconds).rounded()))/s"
     }
 
     /// Compact output-token count ("1.2k"); "—" when unavailable.

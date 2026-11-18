@@ -282,7 +282,8 @@ enum LocalTarget {
         upstreamResponse: HTTPClientResponse,
         to channel: any Channel,
         requestID: String,
-        onUsage: ResponseRelay.UsageCallback? = nil
+        onUsage: ResponseRelay.UsageCallback? = nil,
+        onFirstBodyByte: (@Sendable () -> Void)? = nil
     ) async {
         var responseHead = HTTPResponseHead(
             version: .http1_1,
@@ -309,15 +310,22 @@ enum LocalTarget {
         // stream end. ResponseRelay's extractors, same accumulation rules.
         var accumulatedInput = 0
         var accumulatedOutput = 0
+        var accumulatedCacheRead = 0
         var bodyAccumulator = Data()
 
         do {
+            var firstBodyByteFired = false
             for try await chunk in upstreamResponse.body {
+                if !firstBodyByteFired {
+                    firstBodyByteFired = true
+                    onFirstBodyByte?()
+                }
                 if onUsage != nil {
                     if isSSE {
-                        let (input, output) = ResponseRelay.extractUsageFromSSEChunk(chunk)
+                        let (input, output, cacheRead) = ResponseRelay.extractUsageFromSSEChunk(chunk)
                         accumulatedInput += input
                         accumulatedOutput += output
+                        accumulatedCacheRead += cacheRead
                     } else if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
                         bodyAccumulator.append(bytes)
                     }
@@ -329,12 +337,12 @@ enum LocalTarget {
             if let onUsage {
                 if isSSE {
                     if accumulatedInput > 0 || accumulatedOutput > 0 {
-                        onUsage(accumulatedInput, accumulatedOutput)
+                        onUsage(accumulatedInput, accumulatedOutput, accumulatedCacheRead)
                     }
                 } else if !bodyAccumulator.isEmpty,
-                    let (input, output) = ResponseRelay.extractUsageFromJSONBody(bodyAccumulator)
+                    let (input, output, cacheRead) = ResponseRelay.extractUsageFromJSONBody(bodyAccumulator)
                 {
-                    onUsage(input, output)
+                    onUsage(input, output, cacheRead)
                 }
             }
         } catch {

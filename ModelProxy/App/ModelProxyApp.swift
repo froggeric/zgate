@@ -10,6 +10,7 @@ struct ModelProxyApp: App {
     @State private var splashManager: SplashManager
 
     init() {
+        AppPaths.migrateLegacyDirIfNeeded()   // 2026-11-18: ModelProxy → ZGate, before any store reads
         let store = TokenStatsStore()
         _tokenStatsStore = State(initialValue: store)
         let configStore = ConfigStore()

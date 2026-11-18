@@ -141,7 +141,7 @@ final class SplashManager {
     /// constant so binary resolution works from any isolation.
     private static let fallbackBinDir = FileManager.default
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-        .first!.appendingPathComponent("ModelProxy", isDirectory: true)
+        .first!.appendingPathComponent("ZGate", isDirectory: true)
 
     /// Binary resolution (spec §3.1): override → /opt/homebrew/bin/splash-m1
     /// → app-support fallback dir. Override pointing at a missing file is
