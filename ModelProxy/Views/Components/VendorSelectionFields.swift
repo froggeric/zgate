@@ -36,6 +36,9 @@ struct VendorModelField: View {
             .autocorrectionDisabled()
             .focused($isFocused)
             .overlay(alignment: .trailing) {
+                // Preset menu: typing stays legitimate for model IDs; the
+                // menu only offers the vendor's known models. The hit zone
+                // is a full-height 24x24 target, not a bare caption glyph.
                 Menu {
                     if let emptySelectionTitle {
                         Button(emptySelectionTitle) {
@@ -58,64 +61,43 @@ struct VendorModelField: View {
                     }
 
                     Divider()
-                    Button("Custom...") {
+                    Button("Custom…") {
                         text = ""
                         isFocused = true
                     }
                 } label: {
                     Image(systemName: "chevron.down")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
-                        .frame(width: vendorSelectionMenuIconWidth)
+                        .frame(width: vendorSelectionMenuIconWidth, height: 24)
                         .contentShape(Rectangle())
                 }
                 .menuIndicator(.hidden)
                 .menuStyle(.borderlessButton)
-                .accessibilityLabel(placeholder)
+                .accessibilityLabel("\(placeholder) presets")
                 .padding(.trailing, 4)
             }
     }
 }
 
+/// Vendor selection as a native pop-up button: full-width hit area,
+/// system chevron, keyboard and VoiceOver support (HIG entering-data.md —
+/// offer choices instead of requiring text entry).
 struct VendorMenuField: View {
     let placeholder: String
     @Binding var selection: UUID?
     let vendors: [Vendor]
     let clients: [ClientConfig]
 
-    private var displayName: String {
-        guard let vendorID = selection,
-              let vendor = vendors.first(where: { $0.id == vendorID }) else {
-            return ""
-        }
-        return vendor.name
-    }
-
     var body: some View {
-        TextField(placeholder, text: .constant(displayName))
-            .textFieldStyle(.roundedBorder)
-            .allowsHitTesting(false)
-            .overlay(alignment: .trailing) {
-                Menu {
-                    Button("Select...") { selection = nil }
-                    Divider()
-                    ForEach(vendors) { vendor in
-                        Button(vendorPickerLabel(vendor: vendor, clients: clients)) {
-                            selection = vendor.id
-                        }
-                    }
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: vendorSelectionMenuIconWidth)
-                        .contentShape(Rectangle())
-                }
-                .menuIndicator(.hidden)
-                .menuStyle(.borderlessButton)
-                .accessibilityLabel(placeholder)
-                .padding(.trailing, 4)
+        Picker(placeholder, selection: $selection) {
+            Text("None").tag(UUID?.none)
+            ForEach(vendors) { vendor in
+                Text(vendorPickerLabel(vendor: vendor, clients: clients))
+                    .tag(UUID?.some(vendor.id))
             }
+        }
+        .pickerStyle(.menu)
     }
 }
 

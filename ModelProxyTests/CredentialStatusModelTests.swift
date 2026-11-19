@@ -685,28 +685,35 @@ struct CredentialStatusModelTests {
 
     // MARK: - Menu-bar badge (item 2) + alert redesign (item 3)
 
-    @Test("menu-bar symbol: exclamation badge while actionNeeded, pure in state")
+    @Test("menu-bar symbol: fault states outrank the quota ring, healthy returns nil")
     func menuBarSymbolGainsBadgeWhileActionNeeded() {
+        // Not running, no error, not deliberately stopped → launching.
         #expect(
             ProxyServer.menuBarSymbol(
-                isRunning: false, hasError: false, credentialActionNeeded: false)
-            == "xmark.circle")
+                isRunning: false, hasError: false, credentialActionNeeded: false, isStopped: false)
+            == "hourglass")
+        // Deliberate pause is distinct from a fault.
         #expect(
             ProxyServer.menuBarSymbol(
-                isRunning: false, hasError: true, credentialActionNeeded: true)
-            == "xmark.circle")  // not running wins
+                isRunning: false, hasError: false, credentialActionNeeded: false, isStopped: true)
+            == "pause.circle")
         #expect(
             ProxyServer.menuBarSymbol(
-                isRunning: true, hasError: false, credentialActionNeeded: true)
+                isRunning: false, hasError: true, credentialActionNeeded: true, isStopped: false)
+            == "exclamationmark.circle")  // not running wins over credentials
+        #expect(
+            ProxyServer.menuBarSymbol(
+                isRunning: true, hasError: false, credentialActionNeeded: true, isStopped: false)
             == "exclamationmark.triangle")
         #expect(
             ProxyServer.menuBarSymbol(
-                isRunning: true, hasError: true, credentialActionNeeded: false)
+                isRunning: true, hasError: true, credentialActionNeeded: false, isStopped: false)
             == "exclamationmark.circle")
+        // Healthy running state: nil = draw the quota ring.
         #expect(
             ProxyServer.menuBarSymbol(
-                isRunning: true, hasError: false, credentialActionNeeded: false)
-            == "arrow.triangle.branch")
+                isRunning: true, hasError: false, credentialActionNeeded: false, isStopped: false)
+            == nil)
     }
 
     @Test("alert copy is accurate: pickup without restart; Sign In… is primary, Copy Command secondary")
@@ -715,7 +722,10 @@ struct CredentialStatusModelTests {
         #expect(ReloginAlertContent.copyCommandActionTitle == "Copy Command")
         let message = ReloginAlertContent.message(for: "token expired")
         #expect(message.contains("token expired"))
-        #expect(message.contains(ReloginAlertContent.command))
+        // Short message (HIG alerts.md): the command lives behind Copy
+        // Command / Settings → Advanced, never as unselectable alert text.
+        #expect(!message.contains(ReloginAlertContent.command))
+        #expect(message.contains("Copy Command"))
         #expect(message.lowercased().contains("browser"))
         // The fixed false claim is gone: pickup now needs no restart.
         #expect(!message.contains("picks up the refreshed session on the next request"))

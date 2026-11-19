@@ -45,34 +45,34 @@ final class CredentialAlertPresenter {
 /// `CredentialEventChannel`'s `.expired` events. Primary action is the
 /// in-app browser login (login-flow UI item 3); the exact terminal command
 /// from the Task 5 surface stays as the copyable fallback — the recovery
-/// path if the browser flow ever breaks. The alert carries the command and
-/// neutral instructions only, never a token, key, or signature value.
+/// path if the browser flow ever breaks. The message stays short (HIG
+/// alerts.md): the command is one click away via Copy Command and also
+/// lives in Settings → Advanced; alert text is not selectable, so it never
+/// carries material someone must transcribe. Never a token, key, or
+/// signature value.
 enum ReloginAlertContent: Sendable {
     /// The exact command (single line; wrapped only by display).
     static let command =
         "ZCODE_DATA_BASE_DIR=$HOME/.zcode-scratch-v3 ZCODE_CREDENTIAL_SECRET_FILE=$HOME/.zcode-scratch-v3/secret.txt node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai"
 
     /// Alert title.
-    static let title = "ZCode login required"
+    static let title = "ZCode Login Required"
 
     /// Primary action: runs the in-app browser OAuth flow.
     static let signInActionTitle = "Sign In…"
 
-    /// Secondary action: terminal fallback (copies the command below).
+    /// Secondary action: terminal fallback (copies the command; the same
+    /// line is shown in Settings → Advanced).
     static let copyCommandActionTitle = "Copy Command"
 
-    /// Alert message: the service reason, the command to run, and the
+    /// Alert message: the service reason, the recovery path, and the
     /// pickup note. With the store loader this is true for a RUNNING app —
     /// after the in-app login or an external one, no restart needed.
     static func message(for reason: String) -> String {
         """
         The relay rejected the stored credentials (\(reason)).
 
-        Run this command in a terminal to re-login:
-
-        \(command)
-
-        It opens a browser for OAuth. After signing in, ZGate picks up the new session automatically — no restart needed.
+        Choose Sign In… to open the browser and sign in again — ZGate picks up the new session automatically, no restart needed. The terminal fallback is one click away with Copy Command, and also in Settings → Advanced.
         """
     }
 }
@@ -103,6 +103,27 @@ enum EnvExportLine: Sendable {
     /// advertise.
     static func claudeLine(boundPorts: [String: Int], clients: [ClientConfig]) -> String? {
         claudePort(boundPorts: boundPorts, clients: clients).map { baseURLLine(port: $0) }
+    }
+
+    /// Quick-start command for a Clients-tab row: the same env export
+    /// (actual bound port, 127.0.0.1 host — identical semantics to
+    /// `claudeLine`) plus the tool launch. One formatter so the popover
+    /// env line and the tab's command can never disagree.
+    static func quickStartCommand(client: ClientConfig, boundPort: Int?) -> String {
+        let port = boundPort ?? client.port
+        let tool: String
+        let name = client.clientName.lowercased()
+        if name.contains("claude") {
+            tool = "claude"
+        } else if name.contains("codex") {
+            tool = "codex"
+        } else {
+            tool = name
+        }
+        // Gateway hint headers let the traffic list label subagent,
+        // compaction and auxiliary requests.
+        let hints = tool == "claude" ? " CLAUDE_CODE_GATEWAY_HINT_HEADERS=1" : ""
+        return baseURLLine(port: port) + hints + " && \(tool)"
     }
 }
 
@@ -148,10 +169,13 @@ enum RulesSummary: Sendable {
 
 /// Popover face for the manager's process state (spec §5). The router's
 /// health seam keeps its own truth in `LocalHealthMonitor` — this chip is
-/// lifecycle, not reachability.
+/// lifecycle, not reachability. State is shape + text (filled / half /
+/// dashed / alert symbol), never color alone; gray faces use `.secondary`
+/// so they dim correctly in both appearances.
 enum SplashLifecycleChip: Equatable, Sendable {
 
     struct Face: Equatable, Sendable {
+        let symbolName: String
         let text: String
         let color: Color
     }
@@ -160,23 +184,24 @@ enum SplashLifecycleChip: Equatable, Sendable {
         switch state {
         case .running(let profile, _, let adopted):
             return .init(
-                text: "● splash · \(profile)" + (adopted ? " · external" : ""),
+                symbolName: "circle.fill",
+                text: "splash · \(profile)" + (adopted ? " · external" : ""),
                 color: .green)
         case .starting:
-            return .init(text: "◐ splash · starting", color: .gray)
+            return .init(symbolName: "circle.lefthalf.filled", text: "splash · starting", color: .secondary)
         case .crashed(_, _, let nextRetry):
-            var text = "● splash"
+            var text = "splash"
             if let next = nextRetry {
                 text += " · retry in \(max(0, Int(next.timeIntervalSince(now)))) s"
             } else {
                 // No retry scheduled (spawn failure / readiness timeout).
                 text += " · crashed"
             }
-            return .init(text: text, color: .orange)
+            return .init(symbolName: "exclamationmark.circle.fill", text: text, color: .orange)
         case .stopping:
-            return .init(text: "◐ splash · stopping", color: .gray)
+            return .init(symbolName: "circle.lefthalf.filled", text: "splash · stopping", color: .secondary)
         case .stopped:
-            return .init(text: "○ splash · off", color: .gray)
+            return .init(symbolName: "circle.dashed", text: "splash · off", color: .secondary)
         }
     }
 }

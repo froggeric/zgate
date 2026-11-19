@@ -111,8 +111,10 @@ automatically (see [Credentials & login status](#credentials--login-status)).
 ### 3. Launch ZGate
 
 `open /Applications/ZGate.app` — the **ZΓ** status item appears in the menu
-bar (no dock icon). Listeners start at launch. Optional: Settings → General
-→ **Launch at Login** (SMAppService registers/unregisters the login item).
+bar (no dock icon). Its icon is a **quota ring**: the arc is your remaining
+weekly quota, clockwise from 12 o'clock. Listeners start at launch.
+Optional: Settings → General → **Launch at Login** (SMAppService
+registers/unregisters the login item).
 
 ### 4. Point Claude Code at ZGate
 
@@ -263,8 +265,10 @@ Gatekeeper prompts on any machine.
 ## Verify install
 
 - [ ] `ZGate.app` runs from `/Applications`, **no dock icon**, and the **ZΓ
-      status item is in the menu bar** (branching-arrows symbol while the
-      proxy serves; circled ✕ while stopped)
+      status item is in the menu bar** — quota ring while the proxy serves
+      (arc = weekly remaining; dashed ring before the first successful
+      poll), pause symbol while paused, hourglass while launching, ⚠ on
+      error or when a login is needed
 - [ ] The popover's env line shows `http://127.0.0.1:<port>` and the Copy
       button puts `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` on the
       clipboard
@@ -275,6 +279,7 @@ Gatekeeper prompts on any machine.
 - [ ] The menu bar shows `ZΓ <N>%` within a minute of launch (your weekly
       quota remaining, polled from z.ai's monitor API — needs the API key in
       your `~/.claude/settings.json`, which Claude Code itself put there)
+      and the ring arc fills to match
 - [ ] Quitting from the popover leaves no listeners behind
       (`lsof -nP -iTCP:<port>` is empty)
 

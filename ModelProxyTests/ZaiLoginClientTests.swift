@@ -163,7 +163,8 @@ struct ZaiLoginClientTests {
         clock: VirtualClock,
         pollToken: String = ZaiLoginClientTests.pollToken,
         storeBase: URL? = nil,
-        overallTimeout: TimeInterval = 300
+        overallTimeout: TimeInterval = 300,
+        onEvent: (@Sendable (CredentialEvent) -> Void)? = nil
     ) -> ZaiLoginClient.Configuration {
         var configuration = ZaiLoginClient.Configuration()
         let urlSessionConfiguration = URLSessionConfiguration.ephemeral
@@ -174,6 +175,7 @@ struct ZaiLoginClientTests {
         configuration.sleep = { try await clock.sleep(seconds: $0) }
         configuration.storeBase = storeBase
         configuration.overallTimeout = overallTimeout
+        configuration.onEvent = onEvent
         return configuration
     }
 
@@ -343,6 +345,88 @@ struct ZaiLoginClientTests {
         #expect(try store.zcodeJwtToken() == Wire.identityToken)
         #expect(try store.value(for: CredentialStore.userInfoField).contains("synthetic-user"))
         #expect(try store.value(for: CredentialStore.activeProviderField) == "zai")
+    }
+
+    // MARK: - Ready → missing-location warning (fast-follow F3)
+
+    /// Fresh temp base for a client-driven store write, with cleanup.
+    private func makeStoreBase() throws -> URL {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zgate-loginclient-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
+
+    @Test func readyWithoutStoreLocationWarnsAfterComplete() async throws {
+        let mock = LoginMock()
+        mock.pollResponses = [(200, ["data": readyBody()])]
+        ZaiLoginURLProtocol.mock = mock
+        let clock = VirtualClock(Self.baseDate)
+        let base = try makeStoreBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let lock = NSLock()
+        var events: [CredentialEvent] = []
+        let client = ZaiLoginClient(configuration: makeConfiguration(
+            clock: clock, storeBase: base,
+            onEvent: { event in lock.withLock { events.append(event) } }))
+        try await client.begin()
+        let outcome = try await client.pollUntilTerminal()
+        guard case .ready = outcome else {
+            Issue.record("expected ready, got \(outcome)")
+            return
+        }
+
+        // The warning trails .authorizationComplete so it is the channel's
+        // LAST event (the standing face reads events.last); its payload is
+        // fixed typed copy, never token material.
+        #expect(lock.withLock { events } == [
+            .awaitingAuthorization,
+            .authorizationComplete,
+            .refreshFailed(
+                stage: "location", reason: ZaiLoginClient.missingLocationReason),
+        ])
+    }
+
+    @Test func readyWithPreservedLocationEmitsNoLocationWarning() async throws {
+        let mock = LoginMock()
+        mock.pollResponses = [(200, ["data": readyBody()])]
+        ZaiLoginURLProtocol.mock = mock
+        let clock = VirtualClock(Self.baseDate)
+        // Seed the base with the committed synthetic store + secret so the
+        // ready persist preserves a `project-key-location:v1:*` entry —
+        // then the login IS fully working and must not warn.
+        let base = try makeStoreBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let v2 = base.appendingPathComponent(".zcode/v2", isDirectory: true)
+        try FileManager.default.createDirectory(at: v2, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: CredentialStoreTests.fixtureDirectory.appendingPathComponent("credentials.json"),
+            to: v2.appendingPathComponent("credentials.json"))
+        try FileManager.default.copyItem(
+            at: CredentialStoreTests.fixtureDirectory.appendingPathComponent("secret.txt"),
+            to: base.appendingPathComponent("secret.txt"))
+
+        let lock = NSLock()
+        var events: [CredentialEvent] = []
+        let client = ZaiLoginClient(configuration: makeConfiguration(
+            clock: clock, storeBase: base,
+            onEvent: { event in lock.withLock { events.append(event) } }))
+        try await client.begin()
+        let outcome = try await client.pollUntilTerminal()
+        guard case .ready = outcome else {
+            Issue.record("expected ready, got \(outcome)")
+            return
+        }
+
+        #expect(lock.withLock { events } == [
+            .awaitingAuthorization,
+            .authorizationComplete,
+        ])
+        // The preserved location survived the write.
+        let store = try CredentialStore(base: base)
+        #expect(try store.projectKeyLocation() != nil)
+        #expect(try store.accessToken() == Wire.accessToken)
     }
 
     // MARK: - Lifecycle guards

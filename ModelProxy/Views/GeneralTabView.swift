@@ -83,13 +83,13 @@ struct GeneralTabView: View {
                     Button("Cancel") {
                         credentialModel.cancelSignIn()
                     }
-                    .buttonStyle(.mpInline)
+                    .buttonStyle(.link)
                     .accessibilityLabel("Cancel sign-in")
                 } else {
                     Button("Sign In…") {
                         credentialModel.startSignIn()
                     }
-                    .buttonStyle(.mpInline)
+                    .buttonStyle(.link)
                     .accessibilityLabel("Sign in to ZCode")
                     .accessibilityHint("Opens the browser for the ZCode login flow.")
                 }
@@ -99,7 +99,7 @@ struct GeneralTabView: View {
                 Button("Reload credentials") {
                     Task { await credentialModel.reloadCredentials() }
                 }
-                .buttonStyle(.mpInline)
+                .buttonStyle(.link)
                 .accessibilityLabel("Reload credentials")
                 .accessibilityHint("Adopts an external login (GUI or CLI) without a restart.")
                 Spacer()
@@ -182,10 +182,10 @@ struct GeneralTabView: View {
 
                 Spacer()
 
-                Button("Send Feedback") {
+                Button("Send Feedback…") {
                     sendFeedback()
                 }
-                .buttonStyle(.mpInline)
+                .buttonStyle(.link)
                 .accessibilityLabel("Send Feedback")
                 .accessibilityHint("Opens a prefilled email to \(FeedbackMail.recipient).")
             }
@@ -230,7 +230,7 @@ struct GeneralTabView: View {
             Button(showAPIKey ? "Hide" : "Reveal") {
                 showAPIKey.toggle()
             }
-            .buttonStyle(.mpInline)
+            .buttonStyle(.link)
             .accessibilityLabel(showAPIKey ? "Hide API Key" : "Reveal API Key")
         }
     }

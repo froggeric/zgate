@@ -8,8 +8,8 @@ struct StatusPopover: View {
     @Environment(QuotaStatusModel.self) private var quotaModel
     @Environment(SplashManager.self) private var splashManager
     @Environment(CredentialStatusModel.self) private var credentialModel
-    @Environment(\.openSettings) private var openSettings
-    @State private var showingCorruptAlert: Bool = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showCorruptBanner: Bool = false
     @State private var showingReloginAlert: Bool = false
     @State private var reloginMessage: String = ""
     @State private var copiedEnvLine: Bool = false
@@ -64,7 +64,7 @@ struct StatusPopover: View {
         .frame(width: 400)
         .onAppear {
             if configStore.didResetFromCorrupt {
-                showingCorruptAlert = true
+                showCorruptBanner = true
                 configStore.clearCorruptFlag()
             }
             presentLatestCredentialEvent()
@@ -82,11 +82,6 @@ struct StatusPopover: View {
         .onChange(of: proxyServer.quotaEvents.events.count) { _, _ in
             quotaModel.recompute()
         }
-        .alert("Config Reset", isPresented: $showingCorruptAlert) {
-            Button("OK") { }
-        } message: {
-            Text("config.json was corrupt and has been reset to defaults. Your previous settings were not recoverable.")
-        }
         .alert(ReloginAlertContent.title, isPresented: $showingReloginAlert) {
             Button(ReloginAlertContent.signInActionTitle) {
                 credentialModel.startSignIn()
@@ -94,7 +89,7 @@ struct StatusPopover: View {
             Button(ReloginAlertContent.copyCommandActionTitle) {
                 copyToClipboard(ReloginAlertContent.command)
             }
-            Button("OK", role: .cancel) { }
+            Button("Not Now", role: .cancel) { }
         } message: {
             Text(reloginMessage)
         }
@@ -109,7 +104,7 @@ struct StatusPopover: View {
     }
 
     private var bannerIsVisible: Bool {
-        proxyServer.lastError != nil
+        proxyServer.lastError != nil || showCorruptBanner
     }
 
     // MARK: - Banner
@@ -117,35 +112,42 @@ struct StatusPopover: View {
     @ViewBuilder
     private var bannerSection: some View {
         if !proxyServer.isRunning, let error = proxyServer.lastError {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(.red)
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.leading)
-            }
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.red.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .accessibilityLabel("Error: \(error)")
+            banner(
+                icon: "exclamationmark.circle.fill", tint: .red, text: error,
+                accessibilityPrefix: "Error")
         } else if proxyServer.isRunning, let error = proxyServer.lastError {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.leading)
-            }
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.orange.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .accessibilityLabel("Warning: \(error)")
+            banner(
+                icon: "exclamationmark.triangle.fill", tint: .orange, text: error,
+                accessibilityPrefix: "Warning")
+        } else if showCorruptBanner {
+            // Informational, already-happened event: a session banner, not
+            // a launch-time modal (HIG alerts.md — no alerts on start, none
+            // for pure information).
+            banner(
+                icon: "exclamationmark.triangle.fill", tint: .orange,
+                text: "config.json was corrupt — settings were reset to defaults. Previous settings were not recoverable.",
+                accessibilityPrefix: "Warning")
         }
+    }
 
+    /// Tinted banner: color lives on the icon and capsule background; the
+    /// message itself stays primary for contrast (HIG color.md — don't
+    /// paint sentences in status colors).
+    private func banner(icon: String, tint: Color, text: String, accessibilityPrefix: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
+            Text(text)
+                .font(.footnote)
+                .multilineTextAlignment(.leading)
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(accessibilityPrefix): \(text)")
     }
 
     // MARK: - Client Header
@@ -192,10 +194,15 @@ struct StatusPopover: View {
                 Button {
                     Task { await quotaModel.refreshNow() }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption)
+                    if quotaModel.isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
                 }
                 .buttonStyle(.bordered)
+                .disabled(quotaModel.isRefreshing)
                 .accessibilityLabel("Refresh quota now")
                 .accessibilityHint("Polls the quota monitor immediately.")
             }
@@ -231,7 +238,7 @@ struct StatusPopover: View {
                     .accessibilityLabel("Cancel sign-in")
                     .accessibilityHint("Aborts the browser login flow.")
                 } else if credentialModel.face.isActionNeeded {
-                    Button("Sign In") {
+                    Button("Sign In…") {
                         credentialModel.startSignIn()
                     }
                     .buttonStyle(.link)
@@ -259,6 +266,8 @@ struct StatusPopover: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .truncationMode(.middle)
+                        .help(summary)
+                        .textSelection(.enabled)
                 } else {
                     Text("No rules enabled — unmatched models pass through")
                         .font(.footnote)
@@ -273,12 +282,19 @@ struct StatusPopover: View {
 
     /// Lifecycle chip driven by the manager's process state (spec §5); the
     /// slow tick keeps the crashed-retry countdown live between transitions.
+    /// Shape carries the state (filled / half / dashed-outline / alert) so
+    /// color is never the only signal.
     private func splashChip(_ state: SplashState) -> some View {
         let face = SplashLifecycleChip.face(for: state, now: tick)
-        return Text(face.text)
-            .font(.caption)
-            .foregroundStyle(face.color)
-            .help("Splash lifecycle managed by ZGate (Settings → Splash)")
+        return HStack(spacing: 4) {
+            Image(systemName: face.symbolName)
+                .font(.caption2)
+                .foregroundStyle(face.color)
+            Text(face.text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .help("Splash lifecycle managed by ZGate (Settings → Splash)")
     }
 
     // MARK: - Env line
@@ -305,7 +321,7 @@ struct StatusPopover: View {
                     }
                 } label: {
                     Text(copiedEnvLine ? "Copied" : "Copy")
-                        .font(.footnote)
+                        .font(.caption)
                 }
                 .buttonStyle(.link)
                 .accessibilityLabel("Copy environment line")
@@ -346,22 +362,7 @@ struct StatusPopover: View {
                     .accessibilityHint("Starts the local proxy server on configured ports.")
                 }
 
-                Button {
-                    openSettings()
-                    Task { @MainActor in
-                        NSApp.setActivationPolicy(.regular)
-                        try? await Task.sleep(for: .milliseconds(100))
-                        NSApp.activate()
-                        if let w = NSApp.windows.first(where: {
-                            $0.identifier?.rawValue == "com.apple.SwiftUI.Settings"
-                                || ($0.isVisible && $0.styleMask.contains(.titled)
-                                    && $0.title.localizedCaseInsensitiveContains("settings"))
-                        }) {
-                            w.makeKeyAndOrderFront(nil)
-                            w.orderFrontRegardless()
-                        }
-                    }
-                } label: {
+                SettingsLink {
                     Image(systemName: "gear")
                 }
                 .buttonStyle(.bordered)
@@ -471,24 +472,30 @@ struct StatusPopover: View {
     private var statusIndicator: some View {
         Group {
             if proxyServer.isRunning {
-                HStack(spacing: 5) {
-                    Circle().fill(.green).frame(width: 7, height: 7)
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.green)
                     Text("Running").font(.footnote).fontWeight(.medium)
                 }
             } else if proxyServer.lastError != nil {
-                HStack(spacing: 5) {
-                    Circle().fill(.red).frame(width: 7, height: 7)
-                    Text("Error").font(.footnote).fontWeight(.medium).foregroundStyle(.red)
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                    Text("Error").font(.footnote).fontWeight(.medium)
                 }
             } else if proxyServer.isStopped {
-                HStack(spacing: 5) {
-                    Circle().fill(.secondary).frame(width: 7, height: 7)
-                    Text("Paused").font(.footnote).fontWeight(.medium).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Image(systemName: "pause.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("Paused").font(.footnote).fontWeight(.medium)
                 }
             } else {
-                HStack(spacing: 5) {
-                    ProgressView().scaleEffect(0.55).frame(width: 7, height: 7)
-                    Text("Starting...").font(.footnote).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Starting…").font(.footnote)
                 }
             }
         }
@@ -521,7 +528,7 @@ struct StatusPopover: View {
                     .frame(width: 28, alignment: .trailing)
             }
             .font(.caption)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.secondary)
             .padding(.horizontal, 4)
 
             if trafficLog.entries.isEmpty {
@@ -544,8 +551,12 @@ struct StatusPopover: View {
                     .scrollIndicators(.hidden)   // overlay scrollbar was shifting the columns off their headers
                     .onChange(of: trafficLog.entries.last?.id) { _, _ in
                         if let last = trafficLog.entries.last {
-                            withAnimation(.easeOut(duration: 0.2)) {
+                            if reduceMotion {
                                 proxy.scrollTo(last.id, anchor: .bottom)
+                            } else {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo(last.id, anchor: .bottom)
+                                }
                             }
                         }
                     }
@@ -598,14 +609,15 @@ private struct TrafficRowView: View {
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 3)
-        .opacity(entry.isAuxiliaryTraffic ? 0.82 : 1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilitySummary)
     }
 
+    /// Errors keep color; success is the default reading and needs none —
+    /// green stays reserved for process-up status and the quota scale.
     private var statusColor: Color {
         switch entry.httpStatus {
-        case 200..<300: return .green
+        case 200..<300: return .secondary
         case 400..<500: return .orange
         default: return .red
         }

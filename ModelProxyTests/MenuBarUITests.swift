@@ -50,6 +50,45 @@ struct MenuBarUITests {
         #expect(state.menuBarTitle == "ZΓ 63%")
     }
 
+    // MARK: - Menu-bar ring (weekly fraction + sweep geometry)
+
+    @Test("weekly fraction prefers the weekly window row, clamped; nil only for no-data")
+    func weeklyFractionForMenuBarRing() {
+        // No data → nil (the dashed ring).
+        #expect(QuotaDisplayState.make(snapshot: nil, stale: false).weeklyFraction == nil)
+
+        // Weekly window row wins over the legacy top-level fraction.
+        let snapshot = QuotaSnapshot(fractionRemaining: 0.42, fetchedAt: Date(), windows: [
+            QuotaWindow(kind: .weeklyTokens, fractionRemaining: 0.30, resetsAt: nil),
+            QuotaWindow(kind: .fiveHourTokens, fractionRemaining: 0.9, resetsAt: nil),
+        ])
+        #expect(QuotaDisplayState.make(snapshot: snapshot, stale: false).weeklyFraction == 0.30)
+
+        // No rows → legacy fraction.
+        let legacy = QuotaDisplayState.make(
+            snapshot: QuotaSnapshot(fractionRemaining: 0.63, fetchedAt: Date()), stale: false)
+        #expect(legacy.weeklyFraction == 0.63)
+
+        // Out-of-range window values clamp into 0...1.
+        let over = QuotaSnapshot(fractionRemaining: 0.5, fetchedAt: Date(), windows: [
+            QuotaWindow(kind: .weeklyTokens, fractionRemaining: 1.7, resetsAt: nil),
+        ])
+        #expect(QuotaDisplayState.make(snapshot: over, stale: false).weeklyFraction == 1)
+    }
+
+    @Test("ring sweep clamps, inks a minimum dot at 0, draws a full circle at 1")
+    func ringSweepClamping() {
+        #expect(QuotaRingSpec.sweepDegrees(forFraction: 0) == QuotaRingSpec.minimumSweepDegrees)
+        #expect(QuotaRingSpec.sweepDegrees(forFraction: -0.2) == QuotaRingSpec.minimumSweepDegrees)
+        #expect(QuotaRingSpec.sweepDegrees(forFraction: 1) == 360)
+        #expect(QuotaRingSpec.sweepDegrees(forFraction: 1.7) == 360)
+        // ≥ 0.999 counts as full so the round caps never overlap a hairline gap.
+        #expect(QuotaRingSpec.sweepDegrees(forFraction: 0.999) == 360)
+        #expect(QuotaRingSpec.sweepDegrees(forFraction: 0.99) < 360)
+        #expect(abs(QuotaRingSpec.sweepDegrees(forFraction: 0.5) - 180) < 0.001)
+        #expect(abs(QuotaRingSpec.sweepDegrees(forFraction: 0.63) - 226.8) < 0.01)
+    }
+
     // MARK: - Per-window rows + countdown (Package A)
 
     @Test("display state carries the snapshot's per-window rows")
@@ -250,36 +289,36 @@ struct MenuBarUITests {
 
     // MARK: - Splash lifecycle chip (Package C)
 
-    @Test("lifecycle chip faces: running/adopted/starting/stopping/crashed-countdown/stopped")
+    @Test("lifecycle chip faces: symbol + text, distinct shapes per state")
     func lifecycleChipFaces() {
         let t0 = Date(timeIntervalSince1970: 1_700_000_000)
         #expect(SplashLifecycleChip.face(
             for: .running(profile: "p", since: t0, adopted: false), now: t0)
-            == .init(text: "● splash · p", color: .green))
+            == .init(symbolName: "circle.fill", text: "splash · p", color: .green))
         #expect(SplashLifecycleChip.face(
             for: .running(profile: "p", since: t0, adopted: true), now: t0)
-            == .init(text: "● splash · p · external", color: .green))
+            == .init(symbolName: "circle.fill", text: "splash · p · external", color: .green))
         #expect(SplashLifecycleChip.face(
             for: .starting(profile: "p"), now: t0)
-            == .init(text: "◐ splash · starting", color: .gray))
+            == .init(symbolName: "circle.lefthalf.filled", text: "splash · starting", color: .secondary))
         #expect(SplashLifecycleChip.face(
             for: .stopping, now: t0)
-            == .init(text: "◐ splash · stopping", color: .gray))
+            == .init(symbolName: "circle.lefthalf.filled", text: "splash · stopping", color: .secondary))
         #expect(SplashLifecycleChip.face(
             for: .crashed(profile: "p", lastExit: 1, nextRetry: t0.addingTimeInterval(12)), now: t0)
-            == .init(text: "● splash · retry in 12 s", color: .orange))
+            == .init(symbolName: "exclamationmark.circle.fill", text: "splash · retry in 12 s", color: .orange))
         // nil nextRetry = NO retry scheduled (spawn failure / readiness
         // timeout) — truthful text, never "retry pending".
         #expect(SplashLifecycleChip.face(
             for: .crashed(profile: "p", lastExit: 1, nextRetry: nil), now: t0)
-            == .init(text: "● splash · crashed", color: .orange))
+            == .init(symbolName: "exclamationmark.circle.fill", text: "splash · crashed", color: .orange))
         // Pre-flip render must clamp, not count up backwards.
         #expect(SplashLifecycleChip.face(
             for: .crashed(profile: "p", lastExit: 1, nextRetry: t0.addingTimeInterval(-5)), now: t0)
-            == .init(text: "● splash · retry in 0 s", color: .orange))
+            == .init(symbolName: "exclamationmark.circle.fill", text: "splash · retry in 0 s", color: .orange))
         #expect(SplashLifecycleChip.face(
             for: .stopped, now: t0)
-            == .init(text: "○ splash · off", color: .gray))
+            == .init(symbolName: "circle.dashed", text: "splash · off", color: .secondary))
     }
 
     // MARK: - Env line
@@ -312,6 +351,24 @@ struct MenuBarUITests {
         #expect(EnvExportLine.claudeLine(boundPorts: [:], clients: []) == nil)
     }
 
+    @Test("quick start command shares the env line's host and bound-port semantics")
+    func quickStartCommandFormation() {
+        let claude = ClientConfig(clientName: "Claude Code", port: 8080, defaultUpstream: "https://api.anthropic.com")
+        // Bound (auto-advanced) port wins over the configured one.
+        #expect(
+            EnvExportLine.quickStartCommand(client: claude, boundPort: 8093)
+                == "export ANTHROPIC_BASE_URL=http://127.0.0.1:8093 CLAUDE_CODE_GATEWAY_HINT_HEADERS=1 && claude")
+        // Not running → configured port.
+        #expect(
+            EnvExportLine.quickStartCommand(client: claude, boundPort: nil)
+                == "export ANTHROPIC_BASE_URL=http://127.0.0.1:8080 CLAUDE_CODE_GATEWAY_HINT_HEADERS=1 && claude")
+        // Non-claude tools: no hint headers, tool name from the client.
+        let codex = ClientConfig(clientName: "Codex", port: 8081, defaultUpstream: "https://api.openai.com")
+        #expect(
+            EnvExportLine.quickStartCommand(client: codex, boundPort: nil)
+                == "export ANTHROPIC_BASE_URL=http://127.0.0.1:8081 && codex")
+    }
+
     // MARK: - Credential re-login alert
 
     @Test("re-login command is the exact Task 5 surface line")
@@ -321,13 +378,17 @@ struct MenuBarUITests {
                 == "ZCODE_DATA_BASE_DIR=$HOME/.zcode-scratch-v3 ZCODE_CREDENTIAL_SECRET_FILE=$HOME/.zcode-scratch-v3/secret.txt node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai")
     }
 
-    @Test("alert message carries reason, command, and the browser note — no secret material")
+    @Test("alert message carries reason and the browser path — short, nothing to transcribe")
     func reloginMessage() {
         let message = ReloginAlertContent.message(for: "token expired")
         #expect(message.contains("token expired"))
-        #expect(message.contains(ReloginAlertContent.command))
+        // HIG alerts.md: keep the message short. The command is one click
+        // away via Copy Command (and in Settings → Advanced); alert text is
+        // not selectable, so it must never carry material to transcribe.
+        #expect(!message.contains(ReloginAlertContent.command))
+        #expect(message.contains("Sign In"))
         #expect(message.lowercased().contains("browser"))
-        #expect(ReloginAlertContent.title == "ZCode login required")
+        #expect(ReloginAlertContent.title == "ZCode Login Required")
     }
 
     @Test("credential alert content: the expired event maps to the alert, others do not")

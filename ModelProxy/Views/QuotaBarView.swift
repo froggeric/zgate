@@ -72,9 +72,19 @@ enum QuotaDisplayState: Equatable, Sendable {
         guard let percentText else { return "ZΓ" }
         return "ZΓ \(percentText)"
     }
+
+    /// Remaining weekly fraction for the menu-bar ring: the weekly window
+    /// row when the snapshot carried one, clamped into 0...1; the legacy
+    /// top-level fraction otherwise. nil only in the no-data state.
+    var weeklyFraction: Double? {
+        guard fraction != nil else { return nil }
+        let raw = windows.first(where: { $0.kind == .weeklyTokens })?.fractionRemaining
+            ?? fraction
+        return min(max(raw ?? 0, 0), 1)
+    }
 }
 
-/// Bar tint token derived from the Task 8 level bands (gold ≤ 25%,
+/// Bar tint token derived from the Task 8 level bands (yellow ≤ 25%,
 /// red ≤ 10%). A token, not a `Color`, so the mapping is unit-testable
 /// without Color equality; the view resolves the token to a tint.
 enum QuotaBarTint: Equatable, Sendable {
@@ -126,6 +136,9 @@ final class QuotaStatusModel {
     /// Last observed snapshot time (for the "as of" caption); nil = never.
     private(set) var fetchedAt: Date?
     private(set) var state: QuotaDisplayState = .noData
+    /// True while a manual `refreshNow` poll is in flight — the refresh
+    /// affordances show a spinner and disable re-taps.
+    private(set) var isRefreshing = false
     /// The snapshot's per-window rows (weekly / 5-hour / MCP) for the
     /// popover's quota list; empty until a poll carried rows.
     private(set) var windows: [QuotaWindow] = []
@@ -189,6 +202,8 @@ final class QuotaStatusModel {
 
     /// Manual refresh button: poll now, then re-read.
     func refreshNow() async {
+        isRefreshing = true
+        defer { isRefreshing = false }
         await refreshService?()
         recompute()
     }
@@ -255,7 +270,7 @@ struct QuotaBarView: View {
     private var noDataView: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: "gauge.with.dots.needle.0percent")
+                Image(systemName: "circle.dashed")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Text("Quota data unavailable")
@@ -285,13 +300,15 @@ struct QuotaBarView: View {
         let tint = QuotaBarTint.tint(forFraction: window.fractionRemaining)
         let percent = "\(Int((window.fractionRemaining * 100).rounded()))%"
         let countdown = QuotaCountdown.text(until: window.resetsAt, now: Date())
-        return VStack(alignment: .leading, spacing: 3) {
+        return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text(Self.kindLabel(window.kind))
                     .font(.footnote.weight(.medium))
                 Text(percent)
-                    .font(.footnote.monospacedDigit())
-                    .foregroundStyle(stale ? Color.secondary : tint.color)
+                    .font(.footnote.monospacedDigit().weight(.medium))
+                    // Digits stay primary/secondary for contrast at 10pt;
+                    // the level tint lives on the capsule below.
+                    .foregroundStyle(stale ? Color.secondary : Color.primary)
                 if stale {
                     Text("last known")
                         .font(.caption)
@@ -299,7 +316,7 @@ struct QuotaBarView: View {
                 }
                 Spacer()
                 if let countdown {
-                    Text("resets \(countdown)")
+                    Text("resets in \(countdown)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
@@ -336,7 +353,9 @@ struct QuotaBarView: View {
             HStack(spacing: 6) {
                 Text(state.percentText ?? "")
                     .font(.footnote.monospacedDigit().weight(.medium))
-                    .foregroundStyle(stale ? .secondary : QuotaBarTint.tint(forFraction: fraction).color)
+                    // Digits stay primary/secondary for contrast at 10pt;
+                    // the level tint lives on the capsule below.
+                    .foregroundStyle(stale ? Color.secondary : Color.primary)
                 if stale {
                     Text("last known")
                         .font(.caption)

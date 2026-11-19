@@ -1,6 +1,6 @@
 import Foundation
 
-/// Preset Anthropic model IDs shown in the RoutingTabView source model picker.
+/// Preset Anthropic model IDs shown in the rule editor's source model picker.
 /// Users can also type custom model IDs not in this list.
 enum KnownAnthropicModels {
     static let current: [String] = [

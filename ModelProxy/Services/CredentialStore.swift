@@ -344,6 +344,17 @@ enum CredentialWriteError: Error, Equatable {
     case revisionConflict(expected: Int64, found: Int64)
 }
 
+/// Outcome of `saveZaiLogin` — typed flags only, never credential bytes.
+struct ZaiLoginSaveResult: Equatable {
+    /// The written store carries no `project-key-location:v1:*` entry:
+    /// identity persists, but the signing chain cannot mint a plan token
+    /// until a location exists (one GUI/CLI login populates it).
+    var storeLacksProjectLocation: Bool
+    /// The previous store file existed without its secret — permanently
+    /// unreadable — and was quarantined aside before a clean rewrite.
+    var quarantinedUnreadableStore: Bool
+}
+
 extension CredentialStore {
 
     /// Seals `value` exactly as the read path expects — the inverse of the
@@ -375,22 +386,51 @@ extension CredentialStore {
     /// A store that does not exist yet gets a freshly generated 32-byte
     /// secret; an existing secret is reused (and must agree with the
     /// existing envelopes — a mismatch surfaces as the read path's
-    /// `fingerprintMismatch`, never a blind overwrite). Writes are 0600
-    /// from the first byte and atomic (temp + rename, mirroring
-    /// BizSessionCache.save).
+    /// `fingerprintMismatch`, never a blind overwrite). A store whose
+    /// secret file is MISSING is permanently unreadable (its envelopes
+    /// were sealed under a lost key): the write quarantines that file
+    /// aside as `credentials.json.unreadable-store` (replaced on each
+    /// occurrence) and writes a fresh virgin store instead of preserving
+    /// dead entries. Writes are 0600 from the first byte and atomic
+    /// (temp + rename, mirroring BizSessionCache.save). The returned
+    /// `ZaiLoginSaveResult` flags the quarantine and whether the
+    /// resulting store carries no location entry (the honest-gap warning
+    /// fast-follow F3).
+    @discardableResult
     static func saveZaiLogin(
         accessToken: String,
         zcodeJwtToken: String,
         userInfoJSON: String,
         base: URL,
         expectedRevision: Int64? = nil
-    ) throws {
+    ) throws -> ZaiLoginSaveResult {
         let fileManager = FileManager.default
         let storeURL = base.appendingPathComponent(".zcode/v2/credentials.json")
         let secretURL = base.appendingPathComponent("secret.txt")
 
-        // Secret: reuse the existing file, or generate one for a new store.
+        // Poisoned precondition (review F3): the store exists but its
+        // secret does not. The stored envelopes were sealed under the old
+        // secret's key, so they are cryptographically dead — nothing can
+        // be preserved and there is no migration path. Quarantine the
+        // unreadable file aside (deterministic name, replaced on a later
+        // occurrence — a user who recovers the old secret can restore)
+        // and continue as a virgin store. Without this, the CAS decrypt
+        // below throws notFound(secret) forever and wedges every login.
+        let storeExisted = fileManager.fileExists(atPath: storeURL.path)
         let secretExisted = fileManager.fileExists(atPath: secretURL.path)
+        if storeExisted && !secretExisted {
+            let quarantineURL = storeURL.deletingLastPathComponent()
+                .appendingPathComponent(Self.unreadableStoreQuarantineName)
+            if rename(storeURL.path, quarantineURL.path) != 0 {
+                let errorCode = errno
+                throw NSError(
+                    domain: NSPOSIXErrorDomain, code: Int(errorCode),
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "could not quarantine unreadable store: \(String(cString: strerror(errorCode)))"])
+            }
+        }
+
+        // Secret: reuse the existing file, or generate one for a new store.
         let secretData: Data
         if secretExisted {
             secretData = try Data(contentsOf: secretURL)
@@ -447,7 +487,17 @@ extension CredentialStore {
         if !secretExisted {
             try Self.writeAtomically0600(secretData, to: secretURL)
         }
+        return ZaiLoginSaveResult(
+            storeLacksProjectLocation: !fields.keys.contains {
+                $0.hasPrefix(projectKeyLocationFieldPrefix)
+            },
+            quarantinedUnreadableStore: storeExisted && !secretExisted)
     }
+
+    /// Quarantine name for a store written aside because its secret file
+    /// is gone (the envelopes are undecryptable). Deterministic so a later
+    /// occurrence replaces the earlier copy instead of accumulating files.
+    static let unreadableStoreQuarantineName = "credentials.json.unreadable-store"
 
     /// 32 random bytes for a new store's secret file (SystemRandomNumberGenerator).
     private static func generateSecret() -> Data {

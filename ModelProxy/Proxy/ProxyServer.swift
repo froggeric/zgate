@@ -329,24 +329,30 @@ final class ProxyServer {
         AppLog.proxy.info("[ProxyServer] Stopped.")
     }
 
-    /// SF Symbol name for the menu bar icon. Adapts to light/dark via template rendering.
-    /// States in priority order: not running → xmark.circle, credentials need action →
-    /// exclamationmark.triangle, partial error → exclamationmark.circle,
-    /// normal → arrow.triangle.branch.
+    /// SF Symbol name for the menu bar icon, or nil when the healthy
+    /// running state should draw the quota ring instead (the ring arc is
+    /// the remaining weekly quota; see QuotaMenuBarIcon). Template
+    /// rendering adapts every case to light/dark. Priority order: fault
+    /// states outrank telemetry — a stopped proxy or a needed login is
+    /// more urgent than any percentage.
     nonisolated static func menuBarSymbol(
-        isRunning: Bool, hasError: Bool, credentialActionNeeded: Bool
-    ) -> String {
-        guard isRunning else { return "xmark.circle" }
+        isRunning: Bool, hasError: Bool, credentialActionNeeded: Bool, isStopped: Bool
+    ) -> String? {
+        guard isRunning else {
+            if hasError { return "exclamationmark.circle" }
+            return isStopped ? "pause.circle" : "hourglass"
+        }
         if credentialActionNeeded { return "exclamationmark.triangle" }
         if hasError { return "exclamationmark.circle" }
-        return "arrow.triangle.branch"
+        return nil
     }
 
-    var menuBarSymbol: String {
+    var menuBarSymbol: String? {
         Self.menuBarSymbol(
             isRunning: isRunning,
             hasError: lastError != nil,
-            credentialActionNeeded: credentialActionNeeded)
+            credentialActionNeeded: credentialActionNeeded,
+            isStopped: isStopped)
     }
 
     // MARK: - Hot Reload
