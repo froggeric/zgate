@@ -112,13 +112,14 @@ nonisolated extension SplashInstalledVersionReader {
 // MARK: - UpdateCenter
 
 /// Observable update-check service (spec §3.4): splash installed vs the
-/// chip repo's latest tag, ZGate tag triple vs the public repo, launch +
-/// daily cadence, per-tag dismissal that expires on a newer tag, and the
-/// splash AUTO-APPLY (locked decision 2) driven through two SplashManager
-/// hooks — apply when stopped, defer while owned-running, banner only when
+/// chip repo's latest tag, ZGate tag triple vs the public repo (delegated
+/// to AppUpdateService — one fetcher, no duplication), launch + daily
+/// cadence, per-tag dismissal that expires on a newer tag, and the splash
+/// AUTO-APPLY (locked decision 2) driven through two SplashManager hooks
+/// — apply when stopped, defer while owned-running, banner only when
 /// adopted. Every check failure degrades to a non-alerting state — a
 /// failed check never alerts, never crashes; a failed apply never blocks
-/// a splash start. The ZGate stage/swap verbs arrive with their own task.
+/// a splash start. The ZGate stage/swap verbs are AppUpdateService's.
 @MainActor @Observable
 final class UpdateCenter {
     enum SplashUpdateState: Equatable {
@@ -153,10 +154,10 @@ final class UpdateCenter {
         return false
     }
 
-    /// Public repo (locked decision 4): anonymous releases/latest; 404,
-    /// rate-limit or network failure degrades to `cannotCheck`.
-    static let zgateReleasesURL = URL(
-        string: "https://api.github.com/repos/froggeric/zgate/releases/latest")!
+    /// Public repo (locked decision 4): anonymous releases/latest. The
+    /// fetcher/decoder now live in AppUpdateService; this alias keeps the
+    /// check URL addressable here (same constant, no second source).
+    static let zgateReleasesURL = AppUpdateService.releasesURL
 
     struct Deps: Sendable {
         var fetch: @Sendable (URL) async throws -> Data = { url in
@@ -205,6 +206,10 @@ final class UpdateCenter {
     @ObservationIgnored private var repeatTask: Task<Void, Never>?
     /// Shared installer (rides the injected fetch seam) for check + apply.
     private let installer: SplashInstaller
+    /// ZGate-check delegation (spec §3.5): the check — and the explicit-
+    /// click stage/swap verbs the UI calls directly — live in one service
+    /// riding the same fetch seam.
+    @ObservationIgnored private let appUpdate: AppUpdateService
     /// Weak: the manager owns the lifecycle; the center only observes it.
     @ObservationIgnored private weak var manager: SplashManager?
     /// One apply at a time (spec §3.4); also the re-entrancy break for
@@ -219,6 +224,7 @@ final class UpdateCenter {
     init(deps: Deps = Deps()) {
         self.deps = deps
         self.installer = SplashInstaller(deps: SplashInstallerDeps(fetch: deps.fetch))
+        self.appUpdate = AppUpdateService(deps: AppUpdateService.Deps(fetch: deps.fetch))
     }
 
     deinit { repeatTask?.cancel() }
@@ -392,15 +398,6 @@ final class UpdateCenter {
     }
 
     private func checkZGate() async {
-        guard let data = try? await deps.fetch(Self.zgateReleasesURL),
-              let release = try? JSONDecoder().decode(ZGateRelease.self, from: data),
-              release.zipAsset != nil,
-              let latest = ZGateVersion.parse(tag: release.tag_name)
-        else {
-            zgateState = .cannotCheck  // repo unreachable/private, no verifiable asset
-            return
-        }
-        settings.lastZGateTag = release.tag_name
         guard let current = deps.currentZGateVersion() else {
             // Running version unreadable — availability is unknowable, so
             // degrade honestly instead of fabricating an update (a failed
@@ -408,10 +405,10 @@ final class UpdateCenter {
             zgateState = .cannotCheck
             return
         }
-        if ZGateVersion.isNewer(latest, than: current) {
-            zgateState = .available(tag: release.tag_name, current: "\(current.0).\(current.1).\(current.2)")
-        } else {
-            zgateState = .upToDate
+        // One fetcher, one decoder (spec §3.5): the service owns the check.
+        zgateState = await appUpdate.checkState(current: current)
+        if let release = appUpdate.lastCheckedRelease {
+            settings.lastZGateTag = release.tag_name
         }
     }
 

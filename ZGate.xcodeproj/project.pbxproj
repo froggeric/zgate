@@ -12,6 +12,7 @@
 		993E6A182F5A8E2300B382DB /* NIOHTTP1 in Frameworks */ = {isa = PBXBuildFile; productRef = 993E6A172F5A8E2300B382DB /* NIOHTTP1 */; };
 		993E6A1A2F5A8E2300B382DB /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = 993E6A192F5A8E2300B382DB /* NIOPosix */; };
 		993E6A1D2F5A8E8600B382DB /* AsyncHTTPClient in Frameworks */ = {isa = PBXBuildFile; productRef = 993E6A1C2F5A8E8600B382DB /* AsyncHTTPClient */; };
+		4B6CCDC19D172D090E8EF09D /* release-swap.sh in Resources */ = {isa = PBXBuildFile; fileRef = B21D0245D4DC1C1E6624728D /* release-swap.sh */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -35,6 +36,7 @@
 		993E69E62F5A71A800B382DB /* ZGate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZGate.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		993E69F52F5A71AC00B382DB /* ZGateTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZGateTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		993E69FF2F5A71AC00B382DB /* ZGateUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZGateUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B21D0245D4DC1C1E6624728D /* release-swap.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.zsh; path = release-swap.sh; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -104,8 +106,17 @@
 				993E69E82F5A71A800B382DB /* ModelProxy */,
 				993E69F82F5A71AC00B382DB /* ModelProxyTests */,
 				993E6A022F5A71AC00B382DB /* ModelProxyUITests */,
+				810EEC7B7441F1C0EDB0B566 /* scripts */,
 				993E69E72F5A71A800B382DB /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		810EEC7B7441F1C0EDB0B566 /* scripts */ = {
+			isa = PBXGroup;
+			children = (
+				B21D0245D4DC1C1E6624728D /* release-swap.sh */,
+			);
+			path = scripts;
 			sourceTree = "<group>";
 		};
 		993E69E72F5A71A800B382DB /* Products */ = {
@@ -247,6 +258,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4B6CCDC19D172D090E8EF09D /* release-swap.sh in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
