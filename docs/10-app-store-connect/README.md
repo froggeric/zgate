@@ -31,9 +31,6 @@ the top of this README covers privacy / support / terms only. Decide at the next
 author a `modelproxy-market` companion page on norvyn.com, or clear `marketingUrl` (it is an
 optional field). Until one of those happens, the Notion Market page must stay published.
 
-Also due at that submission: re-run the keyword ranking audit with
-`private/asc/scripts/masaso.py`.
-
 **The Notion pages were cleaned in place on 2026-08-28**, so the URLs currently under review no
 longer name OpenAI. Seven blocks were patched across three pages, verified by read-back
 (block counts unchanged, zero occurrences of `openai` / `ChatGPT` / `DashScope` remaining):
@@ -63,8 +60,8 @@ support `AqFbI-kVlRaJV1oyxRwV0`. Publishing triggers a static rebuild; the publi
 a short window before it lands, so verify by fetching the URL, not by trusting the 200.
 
 Store metadata itself (app name, subtitle, keywords, description, promotional text, What's New,
-screenshots) is not in this folder. It lives in `private/asc/`, which is gitignored because this
-repo is public.
+screenshots) is not in this folder — it belongs to the upstream model-proxy development
+process and is not tracked here.
 
 ## Standing compliance constraint
 
@@ -103,5 +100,3 @@ So the enforced scope is narrower than the field list above: the four text field
 the artwork was not, and the submission passed a Guideline 5 human re-review. Keep the constraint
 as written for anything newly authored — but a defensive re-render of existing approved artwork
 buys nothing that was actually asked for.
-
-Detail, evidence, and the outcome: `private/asc/2026-08-27-guideline-5-china-rejection.md` §7.

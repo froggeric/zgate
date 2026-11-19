@@ -32,8 +32,5 @@ Packages/
 .claude/
 .plan/
 
-# ASC / ASO working material (keyword allocation, competitive research) —
-# repo is public; this stays local. See private/asc/.
-private/
 __pycache__/
 default.profraw

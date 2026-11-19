@@ -1,12 +1,14 @@
-# ModelProxy
+# ZGate
 
 macOS menu bar app - transparent local API proxy for multi-vendor model routing.
 
-> **App Store 2.5 已过审并发布**（2026-08-29T01:13:31Z，中国区仍在架）。Guideline 5 / 中国区
-> 那次被拒的完整记录与结论在 `private/asc/2026-08-27-guideline-5-china-rejection.md`（§7 是结果）；
-> 常驻合规约束在 `docs/10-app-store-connect/README.md`。⛔ 下次发布前必做两件事，清单在同一份
-> README：三个 ASC URL 切 norvyn.com、跑 `private/asc/scripts/masaso.py` 复检关键词。
-> （`private/` 是 gitignored 的 —— 本机有，clone 出来的没有。历史交接见 `private/asc/HANDOFF-*.md`。）
+> **App identity（2026-11-18 改名 ModelProxy → ZGate）：** bundle `local.zgate.mac`，
+> 项目 `ZGate.xcodeproj`。源码目录 `ModelProxy/`、os_log subsystem `com.modelproxy.app`、
+> 日志文件名仍是旧名 —— 同一个 app，不是两个。
+>
+> **App Store 2.5 已过审并发布**（2026-08-29T01:13:31Z，中国区仍在架）。合规约束与发布清单在
+> `docs/10-app-store-connect/README.md`。⛔ 下次发布前必做：三个 ASC URL 切 norvyn.com
+> （清单在同一份 README；ASC store metadata 属上游 model-proxy 开发流程，不在本仓库）。
 
 ## Document Truth Source
 
@@ -20,7 +22,6 @@ All project documents use `docs/00-AI-CONTEXT.md` as the single source of truth.
 | Project research | `docs/01-discovery/` |
 | Architecture | `docs/02-architecture/` |
 | Decision rationale | `docs/03-decisions/` |
-| Implementation details | `docs/04-implementation/` |
 | Feature behavior | `docs/05-features/` |
 | Dev guide / plans | `docs/06-plans/` |
 | Change history | `docs/07-changelog/` |
@@ -51,13 +52,13 @@ Required:
 - All network I/O through SwiftNIO (not URLSession for the proxy server side)
 - Streaming (SSE) response relay must forward chunks immediately, no buffering
 - SSE response transforms must commit the same guarded/repaired content that is relayed to the client; add regression tests for both relay output and stored lineage data
-- API keys stored in ~/Library/Application Support/ModelProxy/config.json, not Keychain (simplicity for personal tool)
-- macOS 15.6+ (Sequoia) minimum deployment target (`MACOSX_DEPLOYMENT_TARGET = 15.6`)
+- API keys stored in ~/Library/Application Support/ZGate/config.json, not Keychain (simplicity for personal tool)
+- macOS 15.7+ (Sequoia) minimum deployment target (`MACOSX_DEPLOYMENT_TARGET = 15.7`)
 ```
 
 ## Tech Stack
 
-- macOS 15.6+, Swift 6, SwiftUI
+- macOS 15.7+, Swift 6, SwiftUI
 - SwiftNIO + NIOHTTP1 for HTTP proxy server
 - AsyncHTTPClient or URLSession for upstream requests
 - UserDefaults + JSON for config persistence
@@ -82,20 +83,22 @@ See `~/.claude/CLAUDE.md` for general rules.
 
 ## Runtime Inspection
 
-The app is **sandboxed** (`com.90percent.ModelProxy`). At runtime, `AppPaths.appSupport`
-resolves into the container, NOT the bare `~/Library/Application Support/...`:
+The app is **NOT sandboxed** (`ENABLE_APP_SANDBOX = NO`, bundle `local.zgate.mac`).
+`AppPaths.appSupport` is plain `~/Library/Application Support/ZGate/` — the shell can
+read it directly with `ls`/`head` (verified 2026-11-19):
 
 ```
-~/Library/Containers/com.90percent.ModelProxy/Data/Library/Application Support/ModelProxy/
+~/Library/Application Support/ZGate/
   ├── logs/modelproxy-YYYY-MM-DD.log   (daily log; NO request/response bodies, by policy)
   ├── config.json                      (vendors, keys)
-  └── lineages.json                    (branch/lineage cache)
+  ├── lineages.json                    (branch/lineage cache)
+  ├── quota-history-*.json / token-stats-*.json
+  └── bin/
 ```
 
-- **These files are TCC-locked.** Claude's shell gets `Operation not permitted` on
-  `head`/`cp`/`ls` even though perms are `-rw-r--r--` — it's macOS TCC, not Unix perms.
-  Read them via the app's log panel, a user-run `sudo`, or terminal Full Disk Access.
-  Don't burn turns retrying file reads.
+- **2026-11-18 rename migration:** one-time move of the legacy
+  `.../Application Support/ModelProxy/` dir happens in `ModelProxy/App/AppPaths.swift`
+  (legacy dir is only touched for that move; if both exist the new one wins).
 - **os_log is empty.** Subsystem `com.modelproxy.app` persists nothing
   (`log show --predicate 'subsystem == "com.modelproxy.app"'`). Not a debugging source.
 - **Determine a model's route by probing the live proxy, not by guessing:**
