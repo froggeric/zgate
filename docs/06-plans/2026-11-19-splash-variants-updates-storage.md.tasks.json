@@ -44,7 +44,7 @@
     {
       "id": 6,
       "subject": "Task 7: AppUpdateService staging + swap",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [4],
       "description": "**Goal:** Explicit-click self-updater: anonymous check vs public repo, SHA-256 + TeamID verified staging, swap delegated to bundled release-swap.sh spawned detached (spec §3.5).\n\n**Files:**\n- Create: ModelProxy/Services/AppUpdateService.swift\n- Modify: ZGate.xcodeproj/project.pbxproj (bundle scripts/release-swap.sh as resource)\n- Modify: ModelProxy/Services/UpdateCenter.swift (delegate zgate check)\n- Test: ModelProxyTests/AppUpdateServiceTests.swift (new)\n\n**Acceptance Criteria:**\n- latestRelease decodes tag + ZGate-<tag>.zip with sha256 digest; failure → cannotCheck-equivalent\n- stage: download → digest verify → ≥500MB free → ditto -x -k → staged app exists → TeamID equals running app's\n- swap only from /Applications/ZGate.app; /bin/zsh <script> <staged> DETACHED, never awaited\n- tests never execute the real script (injected script-path seam records argv)\n- Debug build contains Contents/Resources/release-swap.sh\n\n**Verify:** xcodebuild test … -only-testing:ZGateTests/AppUpdateServiceTests; then ls of built Resources/release-swap.sh\n\n```json:metadata\n{\"files\": [\"ModelProxy/Services/AppUpdateService.swift\", \"ZGate.xcodeproj/project.pbxproj\", \"ModelProxyTests/AppUpdateServiceTests.swift\"], \"verifyCommand\": \"xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ZGateTests/AppUpdateServiceTests\", \"acceptanceCriteria\": [\"digest+TeamID staging\", \"detached swap composition\", \"script bundled in Resources\"], \"modelTier\": \"frontier\"}\n```"
     },
