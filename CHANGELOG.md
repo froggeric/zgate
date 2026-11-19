@@ -4,6 +4,62 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
+## Unreleased
+
+### 2026-11-19 — per-chip splash, update center, self-update, storage management
+
+- **Splash support is per-chip.** M1/M2 machines track the paperniuk
+  fork (binary `splash-m1`), M3+ machines the official Inco release via
+  brew — binary resolution, latest-version checks, and install/update
+  all follow the detected chip (previously everything assumed the fork:
+  a brew-installed official `splash` could never even run, and the
+  "available" tag always came from the fork repo). The fork Install
+  button is alive again: the old single-binary download had died against
+  current releases (the asset picker now sees two candidates and errors;
+  even past it, the old code chmod'ed the tarball itself as a binary).
+  Its replacement is a real tarball installer — release tarball +
+  `.sha256` sidecar downloaded together, SHA-256 verified before
+  unpack, versioned dirs under `~/Library/Application Support/Splash-M1`
+  behind an atomically swapped `current` symlink (previous version
+  kept), shim at `/opt/homebrew/bin/splash-m1` or `~/.local/bin`
+  (a legacy plain binary is backed up first). Below macOS 26.4 (both
+  repos' floor) the actions disable with an explanation.
+- **Update center.** ZGate checks the splash repo and its own GitHub
+  releases (anonymous) at launch when the last check is over 6 h old,
+  then every 24 h; a failed check never alerts. An available update
+  puts a badge dot on the menu-bar ring and a dismissible banner in the
+  popover; dismissing a tag silences it until a newer tag appears.
+  Splash updates auto-apply when the server is stopped (running and
+  owned → pending, applied on stop or just before the next start;
+  adopted → banner only), toggleable in General; the post-apply
+  version is re-read and a mismatch surfaces as a failure with the log
+  tail.
+- **ZGate self-update — explicit click only, never automatic.** About →
+  Check for Updates compares against GitHub Releases; Install downloads
+  the zip, verifies its SHA-256 against the API digest, stages via
+  ditto, and requires the staged app's codesign TeamIdentifier to equal
+  the running app's before anything else happens. The swap runs the
+  bundled `release-swap.sh`: SIGTERM → wait for exit → wait for the
+  port → mv-aside + ditto swap → reopen → health check, restoring the
+  previous app on failure. Offered only when running from
+  `/Applications/ZGate.app`; otherwise the banner links to the Releases
+  page.
+- **Storage & cache settings (Splash tab).** Model-cache location —
+  passed to splash as `HF_HUB_CACHE` — with a verified move (ditto +
+  size check; the old location is kept until explicitly deleted),
+  reveal, and clear; persistent prefix cache with cache dir, disk quota
+  (Auto/Off/Custom, K/M/G) and a write-budget field; live disk usage
+  from splash's `/status` while running; Clear prefix cache removes only
+  splash's 32-hex-digit directories. A one-shot migration lifts
+  recognized cache flags from the active profile's extraArgs into the
+  new settings (extraArgs keep their documented last-word override).
+- **About → Credits** names both splash engines — the Inco original and
+  the paperniuk M1/M2 port (both Apache-2.0), linked to their repos.
+- **Fixed: splash vendor port desync.** The vendor baseURL used by
+  routing derives from the configured splash port instead of a
+  hardcoded 8123, so changing the port no longer aims splash-model
+  traffic at a dead target.
+
 ## [2.8.9] — 2026-11-19
 
 ### 2026-11-19 — Fresh-install login: the ready payload parses, the setup state is honest
