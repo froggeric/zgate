@@ -78,4 +78,61 @@ struct UpdateAlertUITests {
         center.dismissZGate(tag: "v2.9.0")
         #expect(!center.splashAlert && !center.zgateAlert && !center.hasActiveAlert)
     }
+
+    // MARK: - About Updates row (Task 11)
+
+    @Test("About updates state line maps every ZGate verdict")
+    func aboutUpdatesStateLine() {
+        #expect(AboutTabView.updatesStateLine(.unknown) == "not checked yet")
+        #expect(AboutTabView.updatesStateLine(.upToDate) == "up to date")
+        #expect(AboutTabView.updatesStateLine(.available(tag: "v2.9.0", current: "2.8.9")) == "v2.9.0 available")
+        #expect(AboutTabView.updatesStateLine(.cannotCheck) == "cannot check — repo unreachable or private")
+        #expect(AboutTabView.updatesStateLine(.failed("staging")) == "update failed — staging")
+    }
+
+    /// The shared install helper behind the popover banner and the About
+    /// row: request presents the tag, a stale/absent release degrades to
+    /// the error line (no stage attempt, no busy flip), and the next
+    /// request clears the failure. No network — stage/swap never runs
+    /// without a matching lastCheckedRelease.
+    @Test("install flow: request presents; stale release degrades to the error line")
+    @MainActor
+    func installFlowRequestAndStaleRelease() {
+        let flow = ZGateInstallFlow()
+        let service = AppUpdateService()   // lastCheckedRelease == nil
+        flow.request(tag: "v2.9.0")
+        #expect(flow.confirmTag == "v2.9.0" && flow.error == nil)
+        flow.confirmInstall(appUpdate: service)
+        #expect(flow.confirmTag == nil)
+        #expect(flow.error == "release details unavailable — check again later")
+        #expect(!flow.busy)
+        flow.request(tag: "v2.9.1")
+        #expect(flow.error == nil)
+        flow.cancel()
+        #expect(flow.confirmTag == nil)
+    }
+
+    /// Two-writer sync (General tab ↔ center): after adoptSettings the
+    /// center's next persist round-trips the USER's toggle, not the
+    /// stale pre-toggle copy — pinned through configWrite end to end.
+    @Test("toggle sync: adopted settings survive the center's next persist")
+    @MainActor
+    func toggleSyncAdoptedSettingsSurvivePersist() async {
+        let center = UpdateCenter(deps: UpdateCenter.Deps(
+            fetch: { _ in throw URLError(.notConnectedToInternet) },
+            installedSplashVersion: { _ in nil },
+            currentZGateVersion: { (2, 8, 9) }))
+        var persisted: UpdateSettings? = UpdateSettings(autoCheck: true)
+        center.attach(
+            configLoad: { persisted },
+            configWrite: { persisted = $0 })
+
+        // User flips the General toggle off (configStore-side write)…
+        persisted?.autoCheck = false
+        // …and the tab syncs the center's copy (adoptSettings).
+        center.adoptSettings(persisted)
+
+        await center.checkNow(splash: false)   // bumps lastCheckAt → persist
+        #expect(persisted?.autoCheck == false)
+    }
 }

@@ -244,6 +244,18 @@ final class UpdateCenter {
         self.configWrite = configWrite
     }
 
+    /// Two-writer sync (Task 11): the General tab edits `config.update`
+    /// through ConfigStore while the center holds its own copy from
+    /// attach() — without re-adopting the persisted copy here, the
+    /// center's next persist() (every check bumps `lastCheckAt`) would
+    /// round-trip its stale struct over the user's toggle. No timer
+    /// action: `start()` honors `autoCheck` at launch and the repeat
+    /// task is cadence-driven, so persisting the toggle is enough for
+    /// the next cycle (Task 11 ruling: no live timer restart).
+    func adoptSettings(_ settings: UpdateSettings?) {
+        self.settings = settings ?? UpdateSettings()
+    }
+
     /// SplashManager wiring (spec §3.4 apply side): the start gate applies
     /// a pending update before the next spawn — and returns true whatever
     /// happened, so a failed apply never blocks the start; the stop hook

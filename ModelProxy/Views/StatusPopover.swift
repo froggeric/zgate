@@ -15,12 +15,10 @@ struct StatusPopover: View {
     @State private var showingReloginAlert: Bool = false
     @State private var reloginMessage: String = ""
     @State private var copiedEnvLine: Bool = false
-    /// ZGate install flow (spec §3.5 via §5): the tag awaiting the
-    /// proxy-down confirmation, the staging/restart transient, and the
-    /// surfaced failure line.
-    @State private var zGateConfirmTag: String?
-    @State private var zGateBusy: Bool = false
-    @State private var zGateError: String?
+    /// ZGate install flow (spec §3.5 via §5): the shared
+    /// confirm-to-stage-swap helper — the About Updates row runs the
+    /// same object type, so the two surfaces cannot drift.
+    @State private var zGateInstall = ZGateInstallFlow()
     /// View-local mirror of the in-flight splash apply — enough to
     /// disable its button (UpdateCenter's applying flag is deliberately
     /// non-observable).
@@ -111,17 +109,16 @@ struct StatusPopover: View {
             Text(reloginMessage)
         }
         .confirmationDialog(
-            "Install ZGate \(zGateConfirmTag ?? "")?",
+            "Install ZGate \(zGateInstall.confirmTag ?? "")?",
             isPresented: Binding(
-                get: { zGateConfirmTag != nil },
-                set: { if !$0 { zGateConfirmTag = nil } }),
+                get: { zGateInstall.confirmTag != nil },
+                set: { if !$0 { zGateInstall.cancel() } }),
             titleVisibility: .visible
         ) {
             Button("Install and Restart") {
-                if let tag = zGateConfirmTag { performZGateInstall(tag: tag) }
-                zGateConfirmTag = nil
+                zGateInstall.confirmInstall(appUpdate: appUpdate)
             }
-            Button("Cancel", role: .cancel) { zGateConfirmTag = nil }
+            Button("Cancel", role: .cancel) { zGateInstall.cancel() }
         } message: {
             // The swap script quits this app by design — the proxy is down
             // for the seconds the restart takes (spec §3.5).
@@ -152,15 +149,19 @@ struct StatusPopover: View {
     @ViewBuilder
     private var updateBannerSection: some View {
         if updateCenter.zgateAlert, case .available(let tag, _) = updateCenter.zgateState {
-            let line = zGateError.map { "ZGate \(tag) available — \($0)" }
+            let line = zGateInstall.error.map { "ZGate \(tag) available — \($0)" }
                 ?? "ZGate \(tag) available"
             actionBanner(
                 icon: "arrow.down.circle.fill", tint: .orange,
                 text: line,
-                primaryTitle: zGateBusy ? "Restarting…" : (prodInstall ? "Install…" : "View…"),
-                primaryDisabled: zGateBusy,
+                primaryTitle: zGateInstall.busy ? "Restarting…" : (ZGateInstallFlow.prodInstall(appUpdate) ? "Install…" : "View…"),
+                primaryDisabled: zGateInstall.busy,
                 primary: {
-                    if prodInstall { zGateConfirmTag = tag } else { openReleases() }
+                    if ZGateInstallFlow.prodInstall(appUpdate) {
+                        zGateInstall.request(tag: tag)
+                    } else {
+                        ZGateInstallFlow.openReleases()
+                    }
                 },
                 dismissLabel: "Dismiss ZGate update banner",
                 dismiss: { updateCenter.dismissZGate(tag: tag) })
@@ -220,42 +221,6 @@ struct StatusPopover: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(tint.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-
-    /// The swap script only ever replaces exactly /Applications/ZGate.app;
-    /// running anywhere else, the banner offers the Releases page instead.
-    private var prodInstall: Bool {
-        appUpdate.deps.currentBundlePath() == AppUpdateService.prodAppPath
-    }
-
-    private func openReleases() {
-        NSWorkspace.shared.open(URL(string: "https://github.com/froggeric/zgate/releases")!)
-    }
-
-    /// Confirmed install (spec §3.5): stage (download → digest + TeamID
-    /// verify) then the detached swap whose script quits this app. The
-    /// "Restarting…" transient covers the staging gap; a thrown failure
-    /// surfaces its error string in the banner line.
-    private func performZGateInstall(tag: String) {
-        guard let release = appUpdate.lastCheckedRelease, release.tag_name == tag else {
-            zGateError = "release details unavailable — check again later"
-            return
-        }
-        zGateError = nil
-        zGateBusy = true
-        Task {
-            do {
-                let staged = try await appUpdate.stage(release)
-                try await appUpdate.swap(staged: staged)
-                // swap() spawns the script detached and it SIGTERMs this
-                // app moments later; landing here only means the spawn
-                // itself returned.
-                zGateBusy = false
-            } catch {
-                zGateBusy = false
-                zGateError = String(describing: error)
-            }
-        }
     }
 
     // MARK: - Banner

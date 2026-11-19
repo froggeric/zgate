@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -187,5 +188,77 @@ nonisolated extension AppUpdateService {
             if !raw.isEmpty && raw != "not set" { return raw }
         }
         return nil
+    }
+}
+
+// MARK: - Install flow (shared UI helper, spec §3.5 via §5)
+
+/// The confirm-to-stage-swap flow behind every explicit ZGate install —
+/// the popover banner and the About Updates row (Task 11) run the SAME
+/// logic through this object instead of divergent copies: the tag
+/// awaiting the proxy-down confirmation, the staging/restart transient,
+/// and the surfaced failure line. View-owned (one instance per surface)
+/// so the popover and Settings scenes never share transient state; the
+/// stage/swap verbs ride the shared AppUpdateService each surface gets
+/// from the environment (its `lastCheckedRelease` is the release
+/// stage() needs).
+@MainActor @Observable
+final class ZGateInstallFlow {
+    /// Non-nil presents the proxy-down confirmation dialog.
+    var confirmTag: String?
+    /// Covers the staging gap: "Restarting…" titles + disabled buttons.
+    private(set) var busy = false
+    /// Last stage/swap failure, surfaced in the calling surface's line;
+    /// cleared by the next request.
+    private(set) var error: String?
+
+    /// Present the confirmation for this tag (an Install… click).
+    func request(tag: String) {
+        error = nil
+        confirmTag = tag
+    }
+
+    func cancel() {
+        confirmTag = nil
+    }
+
+    /// Confirmed install (spec §3.5): stage (download → digest + TeamID
+    /// verify) then the detached swap whose script quits this app. The
+    /// busy transient covers the staging gap; a thrown failure surfaces
+    /// its error string in the calling surface's line.
+    func confirmInstall(appUpdate: AppUpdateService) {
+        guard let tag = confirmTag else { return }
+        confirmTag = nil
+        guard let release = appUpdate.lastCheckedRelease, release.tag_name == tag else {
+            error = "release details unavailable — check again later"
+            return
+        }
+        busy = true
+        Task {
+            do {
+                let staged = try await appUpdate.stage(release)
+                try await appUpdate.swap(staged: staged)
+                // swap() spawns the script detached and it SIGTERMs this
+                // app moments later; landing here only means the spawn
+                // itself returned.
+                busy = false
+            } catch {
+                busy = false
+                // self.error: the property name would otherwise resolve to
+                // the catch block's implicit (get-only) error constant.
+                self.error = String(describing: error)
+            }
+        }
+    }
+
+    /// The swap script only ever replaces exactly /Applications/ZGate.app;
+    /// running anywhere else, the UI offers the Releases page instead.
+    static func prodInstall(_ appUpdate: AppUpdateService) -> Bool {
+        appUpdate.deps.currentBundlePath() == AppUpdateService.prodAppPath
+    }
+
+    /// Non-prod fallback (popover banner + About row): the Releases page.
+    static func openReleases() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/froggeric/zgate/releases")!)
     }
 }

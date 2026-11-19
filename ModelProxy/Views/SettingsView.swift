@@ -51,6 +51,9 @@ struct SettingsView: View {
 #Preview {
     let statsStore = TokenStatsStore()
     let server = ProxyServer(tokenStatsStore: statsStore)
+    // UpdateCenter/AppUpdateService: AboutTabView reads both (Task 11) —
+    // one shared service, mirroring the app scene's wiring.
+    let appUpdate = AppUpdateService()
     SettingsView()
         .environment(ConfigStore())
         .environment(server)
@@ -58,6 +61,8 @@ struct SettingsView: View {
         .environment(LoginItemService())
         .environment(QuotaStatusModel.live(server))
         .environment(CredentialStatusModel())
+        .environment(UpdateCenter(appUpdate: appUpdate))
+        .environment(appUpdate)
 }
 
 // MARK: - Rules tab (spec §2/§6 editor for the Task 6 rule schema)
@@ -933,6 +938,12 @@ private struct CopyableLineView: View {
 
 struct AboutTabView: View {
     @Environment(ConfigStore.self) private var configStore
+    @Environment(UpdateCenter.self) private var updateCenter
+    @Environment(AppUpdateService.self) private var appUpdate
+    /// This surface's install flow — the SAME confirm-to-stage-swap
+    /// helper the popover banner runs (ZGateInstallFlow), so the two
+    /// explicit-install surfaces cannot drift apart.
+    @State private var installFlow = ZGateInstallFlow()
 
     var body: some View {
         Form {
@@ -958,11 +969,58 @@ struct AboutTabView: View {
                             .font(.callout)
                     }
                 }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Splash local target")
-                    Text("Anthropic-protocol local server (splash). Port is configured on the Splash tab (default 8123); the disabled qwen rules under Rules route here once enabled.")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Splash — local inference engine by Inco (Apache-2.0)")
+                    if let url = URL(string: "https://github.com/incoai/splash") {
+                        Link("github.com/incoai/splash", destination: url)
+                            .font(.callout)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Splash M1/M2 port by paperniuk & contributors (Apache-2.0)")
+                    if let url = URL(string: "https://github.com/paperniuk/splash") {
+                        Link("github.com/paperniuk/splash", destination: url)
+                            .font(.callout)
+                    }
+                }
+                // The former "Splash local target" block keeps its
+                // explanatory line as a third row under the two splash
+                // credit rows (Task 11).
+                Text("Anthropic-protocol local server (splash). Port is configured on the Splash tab (default 8123); the disabled qwen rules under Rules route here once enabled.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Updates") {
+                row("Updates", value: Self.updatesStateLine(updateCenter.zgateState))
+                if let error = installFlow.error {
+                    Text(error)
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("Check Now…") {
+                        Task { await updateCenter.checkNow() }
+                    }
+                    .disabled(installFlow.busy)
+                    .accessibilityHint("Checks both splash and ZGate releases immediately.")
+                    Spacer()
+                    if updateCenter.zgateAlert, case .available(let tag, _) = updateCenter.zgateState {
+                        if ZGateInstallFlow.prodInstall(appUpdate) {
+                            Button(installFlow.busy ? "Restarting…" : "Install…") {
+                                installFlow.request(tag: tag)
+                            }
+                            .disabled(installFlow.busy)
+                            .accessibilityHint("Downloads ZGate \(tag) and restarts the app.")
+                        } else {
+                            // Non-prod installs can't self-swap (the script
+                            // only replaces /Applications/ZGate.app) — the
+                            // Releases page is the fallback.
+                            Button("View…") {
+                                ZGateInstallFlow.openReleases()
+                            }
+                        }
+                    }
                 }
             }
 
@@ -976,6 +1034,22 @@ struct AboutTabView: View {
         }
         .formStyle(.grouped)
         .padding()
+        // Same proxy-down confirmation the popover presents (spec §3.5):
+        // the swap script quits this app by design.
+        .confirmationDialog(
+            "Install ZGate \(installFlow.confirmTag ?? "")?",
+            isPresented: Binding(
+                get: { installFlow.confirmTag != nil },
+                set: { if !$0 { installFlow.cancel() } }),
+            titleVisibility: .visible
+        ) {
+            Button("Install and Restart") {
+                installFlow.confirmInstall(appUpdate: appUpdate)
+            }
+            Button("Cancel", role: .cancel) { installFlow.cancel() }
+        } message: {
+            Text("ZGate will quit and restart — the proxy is down for a few seconds. Continue?")
+        }
     }
 
     private func row(_ label: String, value: String) -> some View {
@@ -984,6 +1058,20 @@ struct AboutTabView: View {
             Spacer()
             Text(value)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Pure, tested form of the Updates state line (spec §5): idle →
+    /// checked verdicts. `.failed` never comes from a check — it is the
+    /// stage/swap surface, whose message the install-flow error line
+    /// carries instead.
+    nonisolated static func updatesStateLine(_ state: UpdateCenter.ZGateUpdateState) -> String {
+        switch state {
+        case .unknown: return "not checked yet"
+        case .upToDate: return "up to date"
+        case .available(let tag, _): return "\(tag) available"
+        case .cannotCheck: return "cannot check — repo unreachable or private"
+        case .failed(let reason): return "update failed — \(reason)"
         }
     }
 }

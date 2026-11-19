@@ -6,6 +6,8 @@ struct GeneralTabView: View {
     @Environment(ConfigStore.self) private var configStore
     @Environment(ProxyServer.self) private var proxyServer
     @Environment(CredentialStatusModel.self) private var credentialModel
+    /// Update-preference toggles sync the center's settings copy (Task 11).
+    @Environment(UpdateCenter.self) private var updateCenter
 
     @State private var showAPIKey = false
     @State private var showMailFallback = false
@@ -172,6 +174,14 @@ struct GeneralTabView: View {
         Section("About") {
             LabeledContent("Version", value: FeedbackMail.versionDisplay)
 
+            Toggle("Check for updates automatically", isOn: Binding(
+                get: { configStore.config.update?.autoCheck ?? true },
+                set: { enabled in updateSettings { $0.autoCheck = enabled } }))
+
+            Toggle("Update splash automatically when stopped", isOn: Binding(
+                get: { configStore.config.update?.splashAutoApply ?? true },
+                set: { enabled in updateSettings { $0.splashAutoApply = enabled } }))
+
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Feedback & Support")
@@ -190,6 +200,30 @@ struct GeneralTabView: View {
                 .accessibilityHint("Opens a prefilled email to \(FeedbackMail.recipient).")
             }
         }
+    }
+
+    /// Creates the update-preferences struct on first toggle (pre-update
+    /// configs carry no `update` key; `UpdateSettings` defaults apply),
+    /// applies the mutation, and persists — the brief's
+    /// `ensureUpdateSettings()` pattern folded into one inout pass (a
+    /// returned struct copy could not be mutated in place).
+    private func updateSettings(_ mutate: (inout UpdateSettings) -> Void) {
+        var settings = configStore.config.update ?? UpdateSettings()
+        mutate(&settings)
+        configStore.config.update = settings
+        configStore.save()
+        syncUpdateCenter()
+    }
+
+    /// Two-writer sync (UpdateCenter.adoptSettings carries the detail):
+    /// this tab persists through ConfigStore while the center holds its
+    /// own copy — without re-adoption the center's next check would
+    /// round-trip a stale struct over the toggle. The toggle's live
+    /// effect needs nothing else: `UpdateCenter.start` honors
+    /// `autoCheck`, so persisting is enough for the next cycle (Task 11
+    /// ruling: a setAutoCheck-style live timer restart is NOT required).
+    private func syncUpdateCenter() {
+        updateCenter.adoptSettings(configStore.config.update)
     }
 
     private func sendFeedback() {
@@ -252,4 +286,5 @@ struct GeneralTabView: View {
         .environment(ConfigStore())
         .environment(ProxyServer(tokenStatsStore: TokenStatsStore()))
         .environment(CredentialStatusModel())
+        .environment(UpdateCenter())
 }
