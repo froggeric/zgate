@@ -4,6 +4,44 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
+## [2.8.9] — 2026-11-19
+
+### 2026-11-19 — Fresh-install login: the ready payload parses, the setup state is honest
+
+- **The in-app login completed in the browser but could never finish in
+  the app.** The ready answer from the OAuth poll nests the access token
+  under the provider key (`data.zai.access_token` — the CLI's own parser
+  shape, re-verified against the shipped `ZCode.app` bundle), which
+  ZGate's parser never read: every genuine "ready" was treated as "keep
+  polling", so the chip sat on "authorizing…" for the full 300 s window
+  and fell back to the sign-in state even though the browser
+  authorization had succeeded. Machines with an existing login never run
+  the flow — only fresh installs hit it. The parser now reads the
+  provider-nested token (both key spellings, CLI parity), and the test
+  fixture — a self-consistent synthetic pair that passed CI while
+  production login could not succeed — now pins the real wire shape.
+- **Expired sign-in windows fail fast instead of burning in silence.**
+  Once a login flow passes its server-side expiry (300 s), the poll
+  endpoint answers 400 `invalid_flow` (live-verified); the loop tolerated
+  every non-200, so a slow first-browser-login — a fresh machine whose
+  browser has no z.ai session yet — hung to the cap with no explanation.
+  A permanent 4xx now aborts immediately: "Sign-in window expired —
+  retry" for the expired flow, a typed poll error otherwise. 408/429/5xx
+  stay tolerated.
+- **A successful fresh login now reads "● finish setup in ZCode, then
+  Reload" instead of "renewing" forever.** The store the login writes
+  carries no project-key location (only a ZCode GUI/CLI login can
+  populate it), and the signing chain fails before any network call
+  while it's missing — so "renewing" was a promise retrying could never
+  keep: the keeper re-seated it every ≤5 min, and after an app restart
+  the same machine read green "signed in" until the first keeper
+  failure. The face is now derived from the snapshot: a live
+  location-less store is action-needed with dedicated copy, and it
+  self-clears the moment a GUI/CLI login writes the location — no event,
+  no restart. Transient refresh failures over a held session or usable
+  cache still read "renewing"; an expired store keeps the expired-login
+  red.
+
 ## [2.8.8] — 2026-11-19
 
 ### 2026-11-19 — Fresh-install login fix, icon-only menu bar, accessible text scale
