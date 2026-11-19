@@ -58,7 +58,7 @@
     {
       "id": 8,
       "subject": "Task 9: install row upgrade + macOS gate",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [2, 4],
       "description": "**Goal:** Install row tells the truth per chip (repo, real isOlder verdict, macOS gate) and buttons drive managed paths (spec §5).\n\n**Files:**\n- Modify: ModelProxy/Views/SplashTabView.swift (installSection :347-358, refreshInstallLine :364-378, runInstall, SplashTabModel.installLine :135-140)\n- Test: ModelProxyTests/SplashTabModelTests.swift (additions)\n\n**Acceptance Criteria:**\n- row: <brand> · <variant> · <repo slug> · installed/available · 'update available' verdict\n- below macOS 26.4: explanatory line + disabled button\n- button Install when no binary answers else Update; per-chip latestRelease; fork→tarball, official→brew\n- pure derivations tested; full suite green\n\n**Verify:** xcodebuild test … -only-testing:ZGateTests/SplashTabModelTests\n\n```json:metadata\n{\"files\": [\"ModelProxy/Views/SplashTabView.swift\", \"ModelProxyTests/SplashTabModelTests.swift\"], \"verifyCommand\": \"xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ZGateTests/SplashTabModelTests\", \"acceptanceCriteria\": [\"truthful install line + verdict\", \"macOS gate behavior\"], \"modelTier\": \"standard\"}\n```"
     },
