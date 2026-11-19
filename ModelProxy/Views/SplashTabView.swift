@@ -371,7 +371,7 @@ struct SplashTabView: View {
             let binary = SplashManager.resolvedBinaryPath(override: model?.binaryPathOverride)
             let installed = await SplashInstaller.installedVersion(binaryPath: binary)
                 .flatMap(Self.versionToken)
-            let latest = await SplashInstaller().latestForkRelease()?.tag_name
+            let latest = await SplashInstaller().latestRelease(for: chipKind)?.tag_name
             installLine = SplashTabModel.installLine(
                 chip: brand, variant: variant, installed: installed, latest: latest)
         }
@@ -394,19 +394,12 @@ struct SplashTabView: View {
         // Homebrew formula on M3+ — same variant the install row shows.
         switch SplashTabModel.installVariant(chipKind: chipKind) {
         case .fork:
-            guard let release = await SplashInstaller().latestForkRelease(),
-                  let asset = SplashAssetPicker.binaryURL(from: release) else {
-                installLine += " · no unambiguous binary asset"
+            guard let release = await SplashInstaller().latestRelease(for: chipKind) else {
+                installLine += " · no release info"
                 return
             }
             do {
-                let outcome = try await SplashInstaller().installForkBinary(from: release)
-                if case .installedAt(let path, let fallback) = outcome, fallback,
-                   let m = model {
-                    m.binaryPathOverride = path
-                    await m.saveAndApply()
-                }
-                _ = asset   // selection is re-derived inside installForkBinary
+                _ = try await SplashTarballInstaller().install(release: release)
                 refreshInstallLine()
             } catch {
                 installLine += " · install failed"

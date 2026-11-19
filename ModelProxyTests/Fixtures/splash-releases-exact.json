@@ -1,5 +1,0 @@
-{"tag_name": "v1.6.2", "assets": [
-  {"name": "splash-m1", "browser_download_url": "https://example.com/splash-m1"},
-  {"name": "Splash-1.6.2.dmg", "browser_download_url": "https://example.com/dmg"},
-  {"name": "install-m1.sh", "browser_download_url": "https://example.com/sh"},
-  {"name": "checksums.txt", "browser_download_url": "https://example.com/txt"}]}
