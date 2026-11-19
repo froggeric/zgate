@@ -79,7 +79,7 @@
     {
       "id": 11,
       "subject": "Task 12: integration verification + docs",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [7, 8, 9, 10],
       "description": "**Goal:** Whole-feature verification and documentation conventions.\n\n**Files:**\n- Modify: CHANGELOG.md (Unreleased section)\n- Create: docs/05-features/splash-variants-updates-storage.md (ASK USER FIRST per project CLAUDE.md)\n\n**Acceptance Criteria:**\n- full suite green; Debug build contains Resources/release-swap.sh\n- real swap script --dry-run smoke against staged dummy exits 0 (read-only steps A–B)\n- curl anonymous releases/latest returns v2.8.9-class tag\n- manual smoke checklist on M2 Max (About credits, install row truth, storage section with migrated values)\n- CHANGELOG entry; feature doc after user OK\n\n**Verify:** xcodebuild test full suite green + dry-run exit 0 + curl tag\n\n```json:metadata\n{\"files\": [\"CHANGELOG.md\", \"docs/05-features/splash-variants-updates-storage.md\"], \"verifyCommand\": \"xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS'\", \"acceptanceCriteria\": [\"suite green\", \"dry-run smoke exit 0\", \"docs written\"], \"modelTier\": \"standard\"}\n```"
     }
