@@ -180,11 +180,39 @@ its own). The server is a ZGate child process: quitting ZGate stops it.
 Model profiles carry the full `splash serve` command line — switching the
 active profile restarts the server onto it; a new model (qwen4, say) is a
 new profile, no code change. The Binary row detects the chip (fork
-`splash-m1` for M1/M2, Homebrew `incoai/tap/splash` for M3+) and
-installs/updates — M1/M2 downloads the release binary directly (never the
-install script); a permission error at `/opt/homebrew/bin` falls back to
-ZGate's app-support dir and records the override. The Log section tails the
+`splash-m1` for M1/M2, Homebrew `incoai/tap/splash` for M3+), checks the
+right repo for updates, and installs/updates accordingly — M1/M2 downloads
+the release tarball plus its `.sha256` sidecar, verifies the checksum
+before unpacking, and installs under
+`~/Library/Application Support/Splash-M1/<version>` behind an atomically
+swapped `current` symlink (previous version kept; the remote install
+script is never executed). Both repos require macOS 26.4+ — below that
+the actions disable with an explanation. The Log section tails the
 server's last 500 output lines.
+
+Available splash updates badge the menu-bar icon; with **Update splash
+automatically when stopped** on (General tab) they apply whenever the
+server isn't running — owned servers update on their next stop/start,
+adopted external instances are never touched.
+
+**Storage** (same tab) manages the two disk surfaces: the model cache
+(`HF_HUB_CACHE` — the multi-GB model downloads; relocate with Move, which
+copies + verifies and leaves a deletable backup) and the prefix cache
+(`--persistent-cache`, `--cache-dir`, quota, daily write budget, live
+usage from `/status`). A one-time migration lifts cache flags from the
+seeded profile's extraArgs into these settings; profile extraArgs still
+override per-profile.
+
+## Updates (ZGate itself)
+
+ZGate checks its own GitHub releases (anonymously) at launch and daily. An
+available update badges the menu-bar icon and offers **Install…** in the
+popover and Settings → About — explicit click only, never silent (the
+proxy serves the very session that might drive it). Installing downloads
+the release zip, verifies its SHA-256 digest and the developer Team ID,
+then runs the bundled swap script: the app quits, `/Applications/ZGate.app`
+is replaced with a backup kept, the new version reopens and health-checks
+(rolling back on failure). Automatic checks can be turned off in General.
 
 ## Configuration
 
@@ -327,8 +355,10 @@ Gatekeeper prompts on any machine.
 - **ZGate (this fork)** — github.com/froggeric/zgate.
 - **model-proxy** by norvyn — MIT; this fork's `LICENSE` is upstream's.
   Original README: [`README.upstream.md`](README.upstream.md).
-- **Splash** (`splash-m1`) — the local Anthropic-protocol inference server
-  on `127.0.0.1` (default port 8123), managed from Settings → Splash.
+- **Splash** — local Anthropic-protocol inference server by Inco
+  (github.com/incoai/splash, Apache-2.0); M1/M2 port by paperniuk &
+  contributors (github.com/paperniuk/splash, Apache-2.0). Managed from
+  Settings → Splash (default port 8123).
 - End-to-end proof against the live signed relay:
   [`docs/e2e-checklist.md`](docs/e2e-checklist.md).
 - Working notes for the fork: [`docs/zgate-notes.md`](docs/zgate-notes.md).
