@@ -389,13 +389,24 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         m.applySettings(settings)
         try await m.start(profile: settings.activeProfile!)
 
-        // Bounded real wait for the dump (the stub writes it before looping).
+        // Bounded real wait for the dump's CONTENT, not its mere existence
+        // (Task 10 companion fix): the stub's `env > dump` redirect creates
+        // the file before flushing, so reading right after `fileExists`
+        // races the write and intermittently saw a partial dump. Both
+        // markers present = the stub finished writing; keep polling until
+        // then and let the expectations below fail loudly on timeout.
         let deadline = Date().addingTimeInterval(10)
-        while !FileManager.default.fileExists(atPath: dump), Date() < deadline {
+        var lines: [String] = []
+        while Date() < deadline {
+            if let text = try? String(contentsOfFile: dump, encoding: .utf8) {
+                lines = text.split(separator: "\n").map(String.init)
+                if lines.contains(where: { $0.hasPrefix("PATH=") }),
+                   lines.contains("HF_HUB_CACHE=/v/hub") {
+                    break
+                }
+            }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        let lines = try String(contentsOfFile: dump, encoding: .utf8)
-            .split(separator: "\n").map(String.init)
         #expect(lines.contains("HF_HUB_CACHE=/v/hub"))
         #expect(lines.contains { $0.hasPrefix("PATH=") })   // inherited env survives
 

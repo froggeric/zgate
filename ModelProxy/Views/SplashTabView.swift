@@ -213,6 +213,7 @@ struct SplashTabView: View {
         Form {
             statusSection
             profilesSection
+            storageSection
             installSection
             logSection
         }
@@ -376,6 +377,14 @@ struct SplashTabView: View {
                     editingProfile = SplashProfile(name: "New profile", model: "")
                 }
             }
+        }
+    }
+
+    /// Storage & cache settings (spec §3.6) — machine-level, so it sits
+    /// with the server concerns between Profiles and Binary.
+    private var storageSection: some View {
+        Section("Storage") {
+            if let m = model { SplashStorageSection(model: m) }
         }
     }
 
