@@ -77,11 +77,17 @@ import Testing
 
     @Test func installLineComposes() {
         #expect(SplashTabModel.installLine(
-            chip: "M2 Max", variant: "fork", installed: "1.6.1-m1", latest: "v1.6.2")
-            == "M2 Max · fork 1.6.1-m1 installed · v1.6.2 available")
+            chip: "M2 Max", variant: "fork", repo: "paperniuk/splash",
+            installed: "1.6.2-m1", latest: "1.6.2-m1")
+            == "M2 Max · fork · paperniuk/splash · 1.6.2-m1 installed · 1.6.2-m1 available")
         #expect(SplashTabModel.installLine(
-            chip: "M2 Max", variant: "fork", installed: nil, latest: nil)
-            == "M2 Max · fork · not installed")
+            chip: "M2 Max", variant: "fork", repo: "paperniuk/splash", installed: nil, latest: nil)
+            == "M2 Max · fork · paperniuk/splash · not installed")
+        // Equal versions (and unparseable tokens, below) never append a verdict.
+        #expect(SplashTabModel.installLine(
+            chip: "M2 Max", variant: "fork", repo: "paperniuk/splash",
+            installed: "unknown", latest: "1.7.0-m1")
+            == "M2 Max · fork · paperniuk/splash · unknown installed · 1.7.0-m1 available")
     }
 
     // MARK: Profile delete (spec §5.2)
@@ -134,6 +140,52 @@ import Testing
 
     @Test func installVariantBrewsOfficialOnM3Plus() {
         #expect(SplashTabModel.installVariant(chipKind: .officialM3Plus) == .brewOfficial)
+    }
+
+    // MARK: Install row truth (spec §5, Task 9)
+
+    @Test func installLineIncludesRepoAndVerdict() {
+        #expect(SplashTabModel.installLine(
+            chip: "Apple M2 Max", variant: "fork", repo: "paperniuk/splash",
+            installed: "1.6.1-m1.1", latest: "1.7.0-m1") ==
+            "Apple M2 Max · fork · paperniuk/splash · 1.6.1-m1.1 installed · 1.7.0-m1 available · update available")
+        #expect(SplashTabModel.installLine(
+            chip: "Apple M3", variant: "official", repo: "incoai/splash",
+            installed: nil, latest: nil).contains("not installed"))
+    }
+
+    @Test func installButtonState() {
+        let osOK = SplashChip.macOSSupportsSplash(OperatingSystemVersion(majorVersion: 27, minorVersion: 2, patchVersion: 1))
+        #expect(SplashTabModel.installButtonState(supportsOS: osOK, installed: nil) == (label: "Install", enabled: true))
+        #expect(SplashTabModel.installButtonState(supportsOS: osOK, installed: "1.6.1-m1.1") == (label: "Update", enabled: true))
+        #expect(SplashTabModel.installButtonState(supportsOS: false, installed: nil).enabled == false)
+    }
+
+    @Test func macOSGateLineOnlyBelow264() {
+        #expect(SplashTabModel.macOSGateLine(
+            os: OperatingSystemVersion(majorVersion: 26, minorVersion: 4, patchVersion: 0)) == nil)
+        #expect(SplashTabModel.macOSGateLine(
+            os: OperatingSystemVersion(majorVersion: 27, minorVersion: 2, patchVersion: 1)) == nil)
+        #expect(SplashTabModel.macOSGateLine(
+            os: OperatingSystemVersion(majorVersion: 26, minorVersion: 3, patchVersion: 1))
+            == "splash needs macOS 26.4+ (this Mac: 26.3.1)")
+        #expect(SplashTabModel.macOSGateLine(
+            os: OperatingSystemVersion(majorVersion: 15, minorVersion: 7, patchVersion: 0)) != nil)
+    }
+
+    /// Companion fix A (Task 3 review): a legacy direct-binary override is
+    /// cleared after a successful fork install unless it names a managed
+    /// shim path — nil override is never touched.
+    @Test func staleOverrideClearedUnlessManaged() {
+        let managed = ["/opt/homebrew/bin/splash-m1", "/Users/x/.local/bin/splash-m1"]
+        #expect(SplashTabModel.shouldClearOverride(current: nil, managedPaths: managed) == false)
+        #expect(SplashTabModel.shouldClearOverride(
+            current: "/opt/homebrew/bin/splash-m1", managedPaths: managed) == false)
+        #expect(SplashTabModel.shouldClearOverride(
+            current: "/Users/x/.local/bin/splash-m1", managedPaths: managed) == false)
+        #expect(SplashTabModel.shouldClearOverride(
+            current: "/Users/x/Library/Application Support/ZGate/bin/splash-m1",
+            managedPaths: managed) == true)
     }
 }
 

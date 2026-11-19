@@ -46,6 +46,13 @@ final class SplashTabModel {
             storage: storage)
     }
 
+    /// Persist WITHOUT applying or restarting — the install path's
+    /// stale-override clear (Task 9 companion fix) routes through the same
+    /// closure as every other save; a binary change lands at next start.
+    func persistOnly() {
+        persist(settings())
+    }
+
     /// Ports outside the valid range don't apply — the view disables
     /// submission and keeps serving the last valid configuration.
     var portIsValid: Bool { Self.portRange.contains(port) }
@@ -123,11 +130,47 @@ final class SplashTabModel {
         }
     }
 
-    nonisolated static func installLine(chip: String, variant: String, installed: String?, latest: String?) -> String {
-        var s = "\(chip) · \(variant)"
-        if let installed { s += " \(installed) installed" } else { s += " · not installed" }
+    /// Spec §5 install row: `<chip> · <variant> · <repo> · <installed>
+    /// installed · <latest> available`, plus `· update available` when a
+    /// real `isOlder` verdict holds — only when BOTH tokens parse, so an
+    /// unparseable version never fabricates a verdict.
+    nonisolated static func installLine(
+        chip: String, variant: String, repo: String, installed: String?, latest: String?
+    ) -> String {
+        var s = "\(chip) · \(variant) · \(repo)"
+        if let installed { s += " · \(installed) installed" } else { s += " · not installed" }
         if let latest { s += " · \(latest) available" }
+        if let i = installed, let l = latest,
+           let iv = SplashVersion.parseTag(i), let lv = SplashVersion.parseTag(l),
+           SplashVersion.isOlder(iv, than: lv) {
+            s += " · update available"
+        }
         return s
+    }
+
+    /// Install vs Update follows what the row's "installed" token claims
+    /// (no binary answers → Install); the macOS floor disables acting.
+    nonisolated static func installButtonState(supportsOS: Bool, installed: String?)
+        -> (label: String, enabled: Bool) {
+        (label: installed == nil ? "Install" : "Update", enabled: supportsOS)
+    }
+
+    /// The gate's explanatory line (spec §5): nil on a supported OS —
+    /// healthy machines see no extra row.
+    nonisolated static func macOSGateLine(os: OperatingSystemVersion) -> String? {
+        guard !SplashChip.macOSSupportsSplash(os) else { return nil }
+        let v = "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+        return "splash needs macOS 26.4+ (this Mac: \(v))"
+    }
+
+    /// Companion fix (Task 3 review): a successful fork install makes a
+    /// legacy direct-binary `binaryPathOverride` stale — resolution prefers
+    /// an existing override, so the row would keep reporting the dead
+    /// legacy binary's version forever. Clear unless the override already
+    /// names a shim path the managed installs own.
+    nonisolated static func shouldClearOverride(current: String?, managedPaths: [String]) -> Bool {
+        guard let current else { return false }
+        return !managedPaths.contains(current)
     }
 
     /// Spec §5.3 install branch: fork binary on M1/M2, official Homebrew
@@ -163,6 +206,7 @@ struct SplashTabView: View {
     @State private var installLine: String = "…"
     @State private var installBusy = false
     @State private var chipKind: SplashChip?   // cached for runInstall's branch
+    @State private var installedToken: String?   // row's installed claim → button verb
     @State private var deletingProfile: SplashProfile?
 
     var body: some View {
@@ -340,12 +384,26 @@ struct SplashTabView: View {
             HStack {
                 Text(installLine).font(.callout)
                 Spacer()
-                Button(installBusy ? "Installing…" : "Update / Install") {
+                Button(installBusy ? "Installing…" : installButton.label) {
                     Task { await runInstall() }
                 }
-                .disabled(installBusy)
+                .disabled(installBusy || !installButton.enabled)
+            }
+            // macOS floor (spec §5): below 26.4 splash can't install/update
+            // here, so the gate explains while the button above stays
+            // disabled; supported machines see no line at all.
+            if let gate = SplashTabModel.macOSGateLine(os: ProcessInfo.processInfo.operatingSystemVersion) {
+                Text(gate).font(.callout).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// Install-vs-Update verb follows the row's installed claim; the
+    /// macOS floor (both repos need 26.4) disables acting (spec §5).
+    private var installButton: (label: String, enabled: Bool) {
+        SplashTabModel.installButtonState(
+            supportsOS: SplashChip.macOSSupportsSplash(ProcessInfo.processInfo.operatingSystemVersion),
+            installed: installedToken)
     }
 
     private var logSection: some View {
@@ -354,28 +412,48 @@ struct SplashTabView: View {
 
     private func refreshInstallLine() {
         Task {
+            let chip = SplashChip.current   // cached identity; nil → fork rules everywhere below
+            chipKind = chip
             let brand = SplashChip.currentBrandString() ?? "Unknown chip"
-            chipKind = SplashChip.from(brandString: brand)
             // Same derivation runInstall branches on — label and action agree.
-            let variant = SplashTabModel.installVariant(chipKind: chipKind) == .brewOfficial
+            let variant = SplashTabModel.installVariant(chipKind: chip) == .brewOfficial
                 ? "official" : "fork"
             let binary = SplashManager.resolvedBinaryPath(override: model?.binaryPathOverride)
             let installed = await SplashInstaller.installedVersion(binaryPath: binary)
                 .flatMap(Self.versionToken)
-            let latest = await SplashInstaller().latestRelease(for: chipKind)?.tag_name
+            installedToken = installed   // the button's Install/Update verb keys on it
+            let latest = await SplashInstaller().latestRelease(for: chip)?.tag_name
             installLine = SplashTabModel.installLine(
-                chip: brand, variant: variant, installed: installed, latest: latest)
+                chip: brand, variant: variant,
+                repo: (chip ?? .forkM1M2).repoSlug,   // same repo the check just queried
+                installed: installed, latest: latest)
         }
     }
 
     /// `Splash 1.6.1-m1` (or a bare version token) → `1.6.1-m1` for the
-    /// install row; keeps the fork suffix `SplashVersion.parse` drops.
+    /// install row; keeps the fork suffix, which `SplashVersion.parse`
+    /// orders as a 4th component.
     nonisolated private static func versionToken(_ output: String) -> String? {
         let tokens = output.split(whereSeparator: { $0.isWhitespace })
         guard let idx = tokens.firstIndex(of: "Splash"), idx + 1 < tokens.count else {
             return tokens.first.map(String.init)
         }
         return String(tokens[idx + 1])
+    }
+
+    /// Companion fix (Task 3 review): the shim the tarball installer just
+    /// wrote must win resolution, but an existing override beats it — so a
+    /// legacy direct-binary override is dropped (persist-only, no restart)
+    /// unless it already names one of the managed shim paths.
+    private func clearStaleOverrideIfUnmanaged(_ m: SplashTabModel) {
+        let managed = [
+            SplashTarballInstaller.defaultBinDir.appendingPathComponent("splash-m1").path,
+            "/opt/homebrew/bin/splash-m1",
+        ]
+        guard SplashTabModel.shouldClearOverride(
+            current: m.binaryPathOverride, managedPaths: managed) else { return }
+        m.binaryPathOverride = nil
+        m.persistOnly()
     }
 
     private func runInstall() async {
@@ -385,12 +463,14 @@ struct SplashTabView: View {
         // Homebrew formula on M3+ — same variant the install row shows.
         switch SplashTabModel.installVariant(chipKind: chipKind) {
         case .fork:
+            guard let m = model else { return }
             guard let release = await SplashInstaller().latestRelease(for: chipKind) else {
                 installLine += " · no release info"
                 return
             }
             do {
                 _ = try await SplashTarballInstaller().install(release: release)
+                clearStaleOverrideIfUnmanaged(m)
                 refreshInstallLine()
             } catch {
                 installLine += " · install failed"
