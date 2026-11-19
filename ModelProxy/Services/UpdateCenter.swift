@@ -113,10 +113,12 @@ nonisolated extension SplashInstalledVersionReader {
 
 /// Observable update-check service (spec §3.4): splash installed vs the
 /// chip repo's latest tag, ZGate tag triple vs the public repo, launch +
-/// daily cadence, per-tag dismissal that expires on a newer tag. Every
-/// check failure degrades to a non-alerting state — a failed check never
-/// alerts, never crashes. The apply verbs (splash auto-apply, ZGate
-/// stage/swap) arrive with their own tasks; this type only observes.
+/// daily cadence, per-tag dismissal that expires on a newer tag, and the
+/// splash AUTO-APPLY (locked decision 2) driven through two SplashManager
+/// hooks — apply when stopped, defer while owned-running, banner only when
+/// adopted. Every check failure degrades to a non-alerting state — a
+/// failed check never alerts, never crashes; a failed apply never blocks
+/// a splash start. The ZGate stage/swap verbs arrive with their own task.
 @MainActor @Observable
 final class UpdateCenter {
     enum SplashUpdateState: Equatable {
@@ -182,15 +184,41 @@ final class UpdateCenter {
             let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
             return ZGateVersion.parse(tag: "v\(short).\(build)")
         }
+        /// Auto-apply's macOS floor (both repos need 26.4, spec §3.2);
+        /// injected so tests pin both the refusal and the proceed side.
+        var osVersion: @Sendable () -> OperatingSystemVersion = {
+            ProcessInfo.processInfo.operatingSystemVersion
+        }
+        /// Fork tarball apply (spec §3.2); returns the installed tag.
+        var applyFork: @Sendable (SplashRelease) async throws -> String = { release in
+            try await SplashTarballInstaller().install(release: release)
+        }
+        /// Official brew apply (spec §3.3); argv[0] is the executable.
+        var applyBrew: @Sendable ([String]) async throws -> Void = { argv in
+            try await SplashInstaller.runBrew(argv: argv)
+        }
     }
 
     private var settings = UpdateSettings()
     @ObservationIgnored private var configWrite: ((inout UpdateSettings) -> Void)?
     @ObservationIgnored private let deps: Deps
     @ObservationIgnored private var repeatTask: Task<Void, Never>?
+    /// Shared installer (rides the injected fetch seam) for check + apply.
+    private let installer: SplashInstaller
+    /// Weak: the manager owns the lifecycle; the center only observes it.
+    @ObservationIgnored private weak var manager: SplashManager?
+    /// One apply at a time (spec §3.4); also the re-entrancy break for
+    /// apply → checkNow → evaluateAutoApply.
+    @ObservationIgnored private var applying = false
+    /// An update was seen while the engine ran owned — applied at the stop
+    /// hook or the next start gate, whichever comes first.
+    @ObservationIgnored private var pendingApply = false
+    /// Chip the last check ran for; the apply branches on the same value.
+    @ObservationIgnored private var chip: SplashChip? = SplashChip.current
 
     init(deps: Deps = Deps()) {
         self.deps = deps
+        self.installer = SplashInstaller(deps: SplashInstallerDeps(fetch: deps.fetch))
     }
 
     deinit { repeatTask?.cancel() }
@@ -204,6 +232,24 @@ final class UpdateCenter {
     ) {
         settings = configLoad() ?? UpdateSettings()
         self.configWrite = configWrite
+    }
+
+    /// SplashManager wiring (spec §3.4 apply side): the start gate applies
+    /// a pending update before the next spawn — and returns true whatever
+    /// happened, so a failed apply never blocks the start; the stop hook
+    /// re-evaluates auto-apply the moment a deliberate stop lands an owned
+    /// child in .stopped.
+    func attach(to manager: SplashManager) {
+        self.manager = manager
+        manager.preStartUpdateGate = { [weak self] in
+            guard let self, self.pendingApply else { return true }
+            await self.applySplashUpdate()
+            return true   // proceed with the start whatever happened
+        }
+        manager.ownedStoppedHook = { [weak self] in
+            guard let self else { return }
+            Task { await self.evaluateAutoApply() }
+        }
     }
 
     /// Launch entry: one cadence-gated check, then the 24 h repeat.
@@ -235,14 +281,17 @@ final class UpdateCenter {
     /// One full cycle: splash (unless disabled — M3+ unsupervised hosts,
     /// or `splash: false` for a ZGate-only refresh), then ZGate. Persists
     /// the last-seen tags and `lastCheckAt` — degraded cycles included,
-    /// which is what prevents a retry storm after a failed check.
+    /// which is what prevents a retry storm after a failed check. Ends by
+    /// re-evaluating auto-apply against the fresh verdict.
     func checkNow(splash: Bool = true, chip: SplashChip? = SplashChip.current) async {
+        self.chip = chip
         if splash {
             await checkSplash(chip: chip)
         }
         await checkZGate()
         settings.lastCheckAt = deps.now()
         persist()
+        await evaluateAutoApply()
     }
 
     /// Per-tag dismissal: suppresses this tag's alert; a newer tag
@@ -257,10 +306,68 @@ final class UpdateCenter {
         persist()
     }
 
+    // MARK: - Splash auto-apply (spec §3.4, locked decision 2)
+
+    /// After every check + on the stop hook: apply when the engine is
+    /// stopped, defer (pendingApply) while it runs OWNED — the flag is
+    /// consumed by the start gate or the stop hook, whichever lands first.
+    /// Adopted/external instances are banner-only, never touched.
+    func evaluateAutoApply() async {
+        guard case .available = splashState, settings.splashAutoApply else { return }
+        if manager?.state == .stopped {
+            await applySplashUpdate()
+        } else if case .running(_, _, false)? = manager?.state {
+            pendingApply = true
+        }
+    }
+
+    /// Apply the available splash update: fork tarball or official brew
+    /// (whichever `installVariant` picks for this chip), one at a time,
+    /// macOS ≥ 26.4 gated, post-apply version-verified. Every refusal and
+    /// failure degrades to `.failed` — non-alerting, never blocking.
+    func applySplashUpdate() async {
+        guard !applying, case .available(_, let latest) = splashState else { return }
+        guard SplashChip.macOSSupportsSplash(deps.osVersion()) else {
+            splashState = .failed("needs macOS 26.4+")
+            return
+        }
+        applying = true
+        pendingApply = false
+        defer { applying = false }
+        switch SplashTabModel.installVariant(chipKind: chip) {
+        case .fork:
+            guard let release = await installer.latestRelease(for: chip) else {
+                splashState = .failed("release unavailable")
+                return
+            }
+            do { _ = try await deps.applyFork(release) }
+            catch {
+                splashState = .failed(String(describing: error))
+                return
+            }
+        case .brewOfficial:
+            // .available implies an installed version → the upgrade verb.
+            do { try await deps.applyBrew(SplashInstaller.brewArguments(installed: true)) }
+            catch {
+                splashState = .failed(String(describing: error))
+                return
+            }
+        }
+        // Post-apply verify (spec §3.4): the new version must answer, in
+        // either form the seam returns (release.json tag / --version).
+        let answered = await deps.installedSplashVersion(chip)
+        guard let answered, Self.splashParts(answered) == SplashVersion.parseTag(latest) else {
+            splashState = .failed("verify: still \(answered ?? "?")")
+            return
+        }
+        // The trailing evaluateAutoApply sees .upToDate (and `applying` is
+        // still set) — no re-entry loop.
+        await checkNow(chip: chip)
+    }
+
     // MARK: - Private
 
     private func checkSplash(chip: SplashChip?) async {
-        let installer = SplashInstaller(deps: SplashInstallerDeps(fetch: deps.fetch))
         guard let latest = await installer.latestRelease(for: chip) else {
             splashState = .unknown  // fetch/decode failure — never alerts
             return

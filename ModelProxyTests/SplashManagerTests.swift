@@ -403,6 +403,109 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         #expect(m.state == .stopped)
     }
 
+    // MARK: Update hooks (Task 6, spec §3.4 apply side)
+
+    /// The pre-start gate is AWAITED before spawning: while it is parked
+    /// no child exists, no launch counted, state untouched.
+    @Test func startAwaitsPreStartUpdateGateBeforeSpawn() async throws {
+        let m = makeManager { _ in true }
+        let gate = OneShotGate()
+        var gateCalls = 0
+        m.preStartUpdateGate = {
+            gateCalls += 1
+            await gate.park()
+            return true
+        }
+        let startTask = Task { await m.start(profile: SplashProfile(name: "p", model: "m")) }
+        let parkedBy = Date().addingTimeInterval(5)
+        while !gate.parked, Date() < parkedBy {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        #expect(gate.parked)
+        #expect(gateCalls == 1)
+        #expect(m.launchCount == 0)   // gate strictly before the spawn
+        #expect(m.child == nil)
+        #expect(m.state == .stopped)
+        gate.open()
+        await startTask.value
+        #expect(m.state == .running(profile: "p", since: m.stateRunningSince!, adopted: false))
+        #expect(m.launchCount == 1)
+        try await m.stop()
+    }
+
+    /// The crash-relaunch flag's meaning, pinned directly: a start that
+    /// skips pending-update application never enters the gate.
+    @Test func startWithoutPendingUpdateSkipsGate() async throws {
+        let m = makeManager { _ in true }
+        var gateCalls = 0
+        m.preStartUpdateGate = { gateCalls += 1; return true }
+        try await m.start(profile: SplashProfile(name: "p", model: "m"), applyPendingUpdate: false)
+        #expect(gateCalls == 0)
+        #expect(m.state == .running(profile: "p", since: m.stateRunningSince!, adopted: false))
+        try await m.stop()
+    }
+
+    /// A crash relaunch (handleChildExit tail) must not wait on a download:
+    /// the initial launch enters the gate once, none of the relaunches do.
+    @Test func crashRelaunchSkipsPreStartUpdateGate() async throws {
+        let clock = ManualClock()
+        let stubURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("splash-quickexit-\(UUID().uuidString).sh")
+        try #"""
+        #!/bin/sh
+        echo "dying"
+        """#.write(to: stubURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: stubURL.path)
+        let probeBox = LockedBox(value: false)
+        let m = SplashManager(binaryPathProvider: { stubURL }, clock: clock, probe: { _ in probeBox.load() })
+        let gateCalls = LockedBox(value: 0)
+        m.preStartUpdateGate = { gateCalls.store(gateCalls.load() + 1); return true }
+        let settings = SplashSettings(keepRunning: true, profiles: [SplashProfile(name: "p", model: "m")])
+        await m.configure(settings: settings)   // startOwned → detached start → gate once
+        probeBox.store(true)
+        try await Task.sleep(nanoseconds: 2_000_000_000)   // several relaunch cycles
+        #expect(m.launchCount >= 2)
+        #expect(gateCalls.load() == 1)   // the relaunch tail never re-enters
+        await m.terminateFromApp()
+    }
+
+    /// One deliberate stop of an OWNED child fires the hook exactly once;
+    /// a second stop with no child never re-fires it.
+    @Test func deliberateOwnedStopFiresHookExactlyOnce() async throws {
+        let m = makeManager { _ in true }
+        try await m.start(profile: SplashProfile(name: "p", model: "m"))
+        try await waitForStubStdout(m)
+        let fires = LockedBox(value: 0)
+        m.ownedStoppedHook = { fires.store(fires.load() + 1) }
+        try await m.stop()
+        #expect(m.state == .stopped)
+        let firedBy = Date().addingTimeInterval(5)
+        while fires.load() == 0, Date() < firedBy {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        #expect(fires.load() == 1)
+        try await m.stop()   // no owned child anymore
+        try await Task.sleep(nanoseconds: 300_000_000)
+        #expect(fires.load() == 1)
+    }
+
+    /// An adopted instance is never ours to stop — no owned child landed
+    /// in .stopped, so the hook must stay silent.
+    @Test func adoptedStopNeverFiresHook() async throws {
+        let m = makeManager { _ in true }
+        await m.configure(
+            settings: SplashSettings(keepRunning: true, profiles: [SplashProfile(name: "p", model: "m")]))
+        if case .running(_, _, true) = m.state {} else {
+            Issue.record("expected adopted running, got \(m.state)")
+        }
+        let fires = LockedBox(value: 0)
+        m.ownedStoppedHook = { fires.store(fires.load() + 1) }
+        await m.stop()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        #expect(fires.load() == 0)
+    }
+
     // MARK: Test-context suppression guard (Task 7, pure predicate)
 
     @Test func shouldSuperviseAllowsPlainEnvironment() {
@@ -434,4 +537,27 @@ final class LockedBox<T>: @unchecked Sendable {
     init(value: T) { v = value }
     func load() -> T { lock.withLock { v } }
     func store(_ n: T) { lock.withLock { v = n } }
+}
+
+/// One-shot async gate for the pre-start hook test: park() suspends its
+/// (single) waiter until open(); `parked` flips true once the waiter enters.
+final class OneShotGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var entered = false
+    var parked: Bool { lock.withLock { entered } }
+    func park() async {
+        await withCheckedContinuation { c in
+            lock.withLock {
+                entered = true
+                waiter = c
+            }
+        }
+    }
+    func open() {
+        let w = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            let w = waiter; waiter = nil; return w
+        }
+        w?.resume()
+    }
 }

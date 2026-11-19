@@ -80,25 +80,10 @@ final class SplashTabModel {
     /// Brew execution seam for the M3+ install branch (spec §5.3). argv is
     /// the FULL command (`SplashInstaller.brewArguments` — argv[0] is the
     /// executable). Tests inject a recording closure; no test ever runs
-    /// brew or spawns a Process. Default mirrors the installer's Process
-    /// idiom (pipe stdout, null stderr, throw on failure).
+    /// brew or spawns a Process. Default delegates to the installer's
+    /// process seam (`SplashInstaller.runBrew`).
     var runBrew: @Sendable ([String]) async throws -> Void = { argv in
-        try await SplashTabModel.runBrewProcess(argv)
-    }
-
-    private enum BrewProcessError: Error { case failed(Int32) }
-
-    nonisolated private static func runBrewProcess(_ argv: [String]) async throws {
-        try await Task.detached {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: argv[0])
-            p.arguments = Array(argv.dropFirst())
-            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = FileHandle.nullDevice
-            try p.run()
-            pipe.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            if p.terminationStatus != 0 { throw BrewProcessError.failed(p.terminationStatus) }
-        }.value
+        try await SplashInstaller.runBrew(argv: argv)
     }
 
     // MARK: Pure derivations (tested)

@@ -112,10 +112,29 @@ struct SplashInstallerDeps: Sendable {
 }
 
 struct SplashInstaller: Sendable {
+    private enum BrewProcessError: Error { case failed(Int32) }
+
     var deps = SplashInstallerDeps()
 
     static func brewArguments(installed: Bool) -> [String] {
         ["/opt/homebrew/bin/brew", installed ? "upgrade" : "install", "incoai/tap/splash"]
+    }
+
+    /// Brew runner — the seam home for both the Install button's
+    /// view-model and UpdateCenter's auto-apply (spec §3.3). argv is the
+    /// FULL command (`brewArguments` — argv[0] is the executable); pipes
+    /// stdout, nulls stderr, throws on non-zero exit.
+    nonisolated static func runBrew(argv: [String]) async throws {
+        try await Task.detached {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: argv[0])
+            p.arguments = Array(argv.dropFirst())
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = FileHandle.nullDevice
+            try p.run()
+            pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            if p.terminationStatus != 0 { throw BrewProcessError.failed(p.terminationStatus) }
+        }.value
     }
 
     /// Latest release for the chip's repo (spec §3.1); nil on ANY failure.

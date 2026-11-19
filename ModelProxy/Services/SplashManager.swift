@@ -119,6 +119,16 @@ final class SplashManager {
     private let clock: any SplashClock
     private let probe: @Sendable (Int) async -> Bool
 
+    /// Awaited before spawning when a start may apply a pending splash
+    /// update (spec §3.4). Crash relaunch passes applyPendingUpdate: false
+    /// — a down splash never waits on a download. The gate's Bool is
+    /// advisory: the start proceeds regardless (a failed apply never
+    /// blocks splash).
+    var preStartUpdateGate: (@MainActor () async -> Bool)?
+    /// Fired (fire-and-forget) after a DELIBERATE stop() lands an owned
+    /// child in .stopped — UpdateCenter applies a pending update here.
+    var ownedStoppedHook: (@MainActor () -> Void)?
+
     init(
         binaryPathProvider: @escaping @Sendable () throws -> URL = {
             URL(fileURLWithPath: SplashManager.resolvedBinaryPath())
@@ -221,7 +231,13 @@ final class SplashManager {
 
     // MARK: Start / stop
 
-    func start(profile: SplashProfile) async {
+    func start(profile: SplashProfile, applyPendingUpdate: Bool = true) async {
+        // Pending-update gate (spec §3.4): apply before spawning when this
+        // start allows it. The gate returns true whatever happened to the
+        // apply — a failed update never blocks a start.
+        if applyPendingUpdate, let gate = preStartUpdateGate {
+            _ = await gate()
+        }
         await stopChildIfAny()   // restart semantics: never two children
         beginStart(profile: profile)
         // Direct starts resolve readiness inline; detached starts (configure,
@@ -231,12 +247,20 @@ final class SplashManager {
 
     func stop() async {
         suppressingRelaunch = true
+        // Captured BEFORE the grace window: a stop of an adopted/external
+        // instance (no child) must never fire the update hook.
+        let hadOwnedChild = child != nil
         await stopChildIfAny()
         // Only declare .stopped when no replacement child appeared while we
         // were parked stopping (rapid toggle off→on races through the grace
         // window; the newer start owns the state — and the child — now).
         if child == nil { state = .stopped }
         adoptedTask?.cancel(); adoptedTask = nil
+        // Auto-apply seam (spec §3.4): a deliberate stop that landed an
+        // OWNED child in .stopped hands the transition to UpdateCenter.
+        if hadOwnedChild, case .stopped = state, let hook = ownedStoppedHook {
+            Task { @MainActor in hook() }   // fire-and-forget: stop() returns now
+        }
     }
 
     func restart(profile: SplashProfile) async {
@@ -395,7 +419,9 @@ final class SplashManager {
         guard !suppressingRelaunch,
               case .crashed(let name, _, _) = state, name == profile.name,
               let next = settings?.activeProfile else { return }
-        await start(profile: next)
+        // Crash relaunch never waits on a download (spec §3.4): the gate is
+        // skipped — splash is DOWN, getting it back up comes first.
+        await start(profile: next, applyPendingUpdate: false)
     }
 
     private func startAdoptedMonitoring(profile: SplashProfile) {

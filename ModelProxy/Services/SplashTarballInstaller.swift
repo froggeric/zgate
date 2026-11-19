@@ -165,7 +165,7 @@ struct SplashTarballInstaller: Sendable {
 
     private enum ProcessError: Error { case failed(Int32) }
 
-    /// The Process idiom of `SplashTabModel.runBrewProcess` (pipe stdout,
+    /// The Process idiom of `SplashInstaller.runBrew` (pipe stdout,
     /// null stderr, detached); throws on non-zero exit.
     nonisolated private static func runProcess(_ argv: [String]) async throws {
         try await Task.detached {
