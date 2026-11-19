@@ -267,7 +267,7 @@ Gatekeeper prompts on any machine.
    the new app in → relaunch → health check → automatic rollback on failure.
    Log: `/tmp/zgate-release-swap.log`.
 5. Version the CHANGELOG (`marketing.build`, e.g. 2.6.4 = 2.6 / build 4),
-   merge `zgate-main` → `main` (`--no-ff`), push, tag `v<marketing.build>`,
+   push `main`, tag `v<marketing.build>`,
    and publish a GitHub release with the stapled app zipped
    (`ditto -c -k --keepParent`) as the asset.
 
