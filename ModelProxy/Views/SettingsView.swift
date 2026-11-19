@@ -17,7 +17,7 @@ struct SettingsView: View {
                 .tabItem { Label("Rules", systemImage: "arrow.triangle.branch") }
 
             VendorsTabView()
-                .tabItem { Label("Targets", systemImage: "server.rack") }
+                .tabItem { Label("Vendors", systemImage: "server.rack") }
 
             QuotaTabView()
                 .tabItem { Label("Quota", systemImage: "gauge.with.needle") }
@@ -239,14 +239,14 @@ struct RulesTabView: View {
                 HStack {
                     Text("Routing Rules")
                     Spacer()
-                    Button("Add Rule") { showAddSheet = true }
-                        .buttonStyle(.mpInline)
+                    Button("Add Rule…") { showAddSheet = true }
+                        .buttonStyle(.link)
                         .disabled(configStore.config.vendors.isEmpty)
                         .accessibilityLabel("Add routing rule")
                 }
             } footer: {
                 if configStore.config.vendors.isEmpty {
-                    Text("Add at least one target in the Targets tab before creating rules.")
+                    Text("Add at least one vendor in the Vendors tab before creating rules.")
                         .foregroundStyle(.secondary)
                 } else {
                     Text("Rules are evaluated in order, first match wins; the catch-all serves everything unmatched. Editing persists on Save; reordering and toggling persist immediately.")
@@ -337,7 +337,7 @@ private struct RuleRow: View {
                         badge("model", color: .secondary)
                     }
                     Text(matchLabel)
-                        .font(.system(.body, design: .monospaced))
+                        .font(.body.monospaced())
                 }
                 Text("\(mapping.targetModel) @ \(vendorName)")
                     .font(.caption)
@@ -350,7 +350,7 @@ private struct RuleRow: View {
                 ForEach(Array((mapping.conditions ?? []).enumerated()), id: \.offset) { _, condition in
                     Text("when \(condition.badgeText)")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.secondary)
                 }
             }
             .opacity(mapping.isEnabled ? 1 : 0.55)
@@ -362,16 +362,20 @@ private struct RuleRow: View {
                     onMove(-1)
                 } label: {
                     Image(systemName: "chevron.up")
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.mpInline)
+                .buttonStyle(.borderless)
                 .disabled(!canMoveUp)
                 .accessibilityLabel("Move rule up")
                 Button {
                     onMove(1)
                 } label: {
                     Image(systemName: "chevron.down")
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.mpInline)
+                .buttonStyle(.borderless)
                 .disabled(!canMoveDown)
                 .accessibilityLabel("Move rule down")
 
@@ -393,10 +397,11 @@ private struct RuleRow: View {
 
             VStack(spacing: 2) {
                 Button("Edit", action: onEdit)
-                    .buttonStyle(.mpInline)
+                    .buttonStyle(.link)
                     .accessibilityLabel("Edit rule for \(mapping.sourceModel)")
-                Button("Delete", action: onDelete)
-                    .buttonStyle(.mpDestructive)
+                Button("Delete", role: .destructive, action: onDelete)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                     .accessibilityLabel("Delete rule for \(mapping.sourceModel)")
             }
         }
@@ -469,7 +474,7 @@ private struct RuleEditorSheet: View {
 
             if case .exactModel = draft.matchMode {
                 TextField("Model ID to match, e.g. glm-5.3", text: $draft.exactModel)
-                    .font(.system(.body, design: .monospaced))
+                    .font(.body.monospaced())
                     .autocorrectionDisabled()
             } else if case .catchAll = draft.matchMode {
                 Text("Serves every request no earlier rule matched. Evaluated after all class rules.")
@@ -538,11 +543,11 @@ private struct RuleEditorSheet: View {
                     draft.conditions.append(
                         RuleCondition(type: .timeWindow, days: .daily, from: "09:00", to: "17:00"))
                 }
-                .buttonStyle(.mpInline)
+                .buttonStyle(.link)
                 Button("Add quota condition") {
                     draft.conditions.append(RuleCondition(type: .quotaBelow, percent: 25))
                 }
-                .buttonStyle(.mpInline)
+                .buttonStyle(.link)
             }
         } header: {
             Text("When (all must hold)")
@@ -567,9 +572,11 @@ private struct RuleEditorSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                    .buttonStyle(.mpCancel)
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
                 Button("Save") { save() }
-                    .buttonStyle(.mpPrimary)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
                     .disabled(validationMessage != nil)
             }
         }
@@ -617,8 +624,9 @@ private struct ConditionEditorRow: View {
                     systemImage: condition.type == .timeWindow ? "clock" : "gauge.with.needle")
                     .font(.footnote.weight(.medium))
                 Spacer()
-                Button("Remove", action: onRemove)
-                    .buttonStyle(.mpDestructive)
+                Button("Remove", role: .destructive, action: onRemove)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
             }
 
             switch condition.type {
@@ -697,10 +705,10 @@ struct QuotaTabView: View {
             Section {
                 QuotaBarView(state: quotaModel.state, fetchedAt: quotaModel.fetchedAt, showsCaption: true)
                 HStack {
-                    Button("Refresh now") {
+                    Button("Refresh Now") {
                         Task { await quotaModel.refreshNow() }
                     }
-                    .disabled(!quotaModel.canRefresh)
+                    .disabled(!quotaModel.canRefresh || quotaModel.isRefreshing)
                     if quotaModel.isDemoSeeded {
                         Text("demo data seeded (debug menu)")
                             .font(.footnote)
@@ -721,7 +729,7 @@ struct QuotaTabView: View {
             }
 
             Section {
-                row("Warning at ≤ 25% remaining", value: "gold", valueColor: .yellow)
+                row("Warning at ≤ 25% remaining", value: "yellow", valueColor: .yellow)
                 row("Critical at ≤ 10% remaining", value: "red", valueColor: .red)
             } header: {
                 Text("Thresholds")
@@ -817,8 +825,14 @@ struct AdvancedTabView: View {
                 Text("Relay signing context")
                 Spacer()
                 if proxyServer.relayContext != nil {
-                    Label("ready", systemImage: "checkmark.seal.fill")
-                        .foregroundStyle(.green)
+                    // Green stays reserved for process-up and quota; the
+                    // seal carries the positive signal, the word stays primary.
+                    Label {
+                        Text("ready")
+                    } icon: {
+                        Image(systemName: "checkmark.seal.fill")
+                            .foregroundStyle(.green)
+                    }
                 } else {
                     Text("not built (starts with the proxy)")
                         .foregroundStyle(.secondary)

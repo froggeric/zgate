@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct LogViewerView: View {
     @Environment(AppLogManager.self) private var logManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedCategory: String = "All"
     @State private var searchText = ""
     @State private var autoScroll = true
@@ -26,8 +27,9 @@ struct LogViewerView: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.tertiary)
                 .frame(width: 28)
+                .accessibilityHidden(true)
 
-            TextField("Search...", text: $searchText)
+            TextField("Search…", text: $searchText)
                 .textFieldStyle(.plain)
 
             Picker("", selection: $selectedCategory) {
@@ -36,6 +38,7 @@ struct LogViewerView: View {
             .labelsHidden()
             .pickerStyle(.menu)
             .frame(width: 80)
+            .accessibilityLabel("Filter by log category")
         }
         .padding(.vertical, 5)
         .padding(.horizontal, 8)
@@ -63,8 +66,12 @@ struct LogViewerView: View {
             .defaultScrollAnchor(.bottom)
             .onChange(of: logManager.entries.count) {
                 if autoScroll, let last = filteredEntries.last {
-                    withAnimation {
+                    if reduceMotion {
                         proxy.scrollTo(last.id, anchor: .bottom)
+                    } else {
+                        withAnimation {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
                     }
                 }
             }
@@ -85,15 +92,15 @@ struct LogViewerView: View {
             Button("Clear") {
                 Task { try? await logManager.clearLogs() }
             }
-            .buttonStyle(.mpInline)
+            .buttonStyle(.link)
 
             Button("Open Log Folder") {
                 NSWorkspace.shared.open(logManager.logsDirectory)
             }
-            .buttonStyle(.mpInline)
+            .buttonStyle(.link)
 
             Button("Export Log") { exportLog() }
-                .buttonStyle(.mpInline)
+                .buttonStyle(.link)
         }
         .padding(.vertical, 8)
     }
@@ -146,23 +153,23 @@ struct LogEntryRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 4) {
             Text(Self.timeFormatter.string(from: entry.timestamp))
-                .font(.system(.caption, design: .monospaced))
+                .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .frame(width: 60, alignment: .leading)
 
             Text("[\(entry.category)]")
-                .font(.system(.caption, design: .monospaced))
+                .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .frame(width: 60, alignment: .leading)
 
             Text(entry.level.rawValue.uppercased())
-                .font(.system(.caption2, design: .monospaced))
+                .font(.caption2.monospaced())
                 .fontWeight(.semibold)
                 .foregroundStyle(levelColor)
                 .frame(width: 50, alignment: .leading)
 
             Text(entry.message)
-                .font(.system(.caption, design: .monospaced))
+                .font(.caption.monospaced())
                 .lineLimit(nil)
         }
     }

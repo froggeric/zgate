@@ -53,7 +53,7 @@ struct ModelProxyApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra(quotaModel.state.menuBarTitle, systemImage: proxyServer.menuBarSymbol) {
+        MenuBarExtra {
             StatusPopover()
                 .environment(configStore)
                 .environment(proxyServer)
@@ -64,6 +64,8 @@ struct ModelProxyApp: App {
                 .environment(quotaModel)
                 .environment(credentialModel)
                 .environment(splashManager)
+        } label: {
+            MenuBarLabel(quotaModel: quotaModel, proxyServer: proxyServer)
         }
         .menuBarExtraStyle(.window)
 
@@ -77,9 +79,44 @@ struct ModelProxyApp: App {
                 .environment(quotaModel)
                 .environment(credentialModel)
                 .environment(splashManager)
-                .onDisappear {
-                    NSApp.setActivationPolicy(.accessory)
-                }
         }
+    }
+}
+
+/// Menu-bar mark: the "ZΓ 63%" title carries the exact value; the icon is
+/// the quota ring (template image, arc = remaining weekly fraction) in the
+/// healthy state, with fault symbols (paused / launching / error /
+/// credentials) outranking it. Invalidates on the same observable state
+/// the popover renders, so bar and popover can never disagree.
+private struct MenuBarLabel: View {
+    let quotaModel: QuotaStatusModel
+    let proxyServer: ProxyServer
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(quotaModel.state.menuBarTitle)
+            if let symbol = proxyServer.menuBarSymbol {
+                Image(systemName: symbol)
+            } else {
+                Image(nsImage: QuotaMenuBarIcon.image(
+                    weeklyFraction: quotaModel.state.weeklyFraction,
+                    stale: quotaModel.state.isStale))
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    private var accessibilityText: String {
+        var parts = ["ZGate"]
+        parts.append(
+            proxyServer.isRunning
+                ? "running" : (proxyServer.isStopped ? "paused" : "starting"))
+        if let percent = quotaModel.state.percentText {
+            parts.append("weekly quota \(percent) remaining")
+        } else {
+            parts.append("quota data unavailable")
+        }
+        return parts.joined(separator: ", ")
     }
 }

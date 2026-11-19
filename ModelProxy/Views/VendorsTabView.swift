@@ -30,12 +30,13 @@ struct VendorsTabView: View {
                             Button("Edit") {
                                 editingVendor = vendor
                             }
-                            .buttonStyle(.mpInline)
+                            .buttonStyle(.link)
                             .accessibilityLabel("Edit \(vendor.name)")
-                            Button("Delete") {
+                            Button("Delete", role: .destructive) {
                                 deletingVendor = vendor
                             }
-                            .buttonStyle(.mpDestructive)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                             .accessibilityLabel("Delete \(vendor.name)")
                         }
                         .padding(.vertical, 2)
@@ -45,8 +46,8 @@ struct VendorsTabView: View {
                 HStack {
                     Text("Vendors")
                     Spacer()
-                    Button("Add Vendor") { showAddSheet = true }
-                        .buttonStyle(.mpInline)
+                    Button("Add Vendor…") { showAddSheet = true }
+                        .buttonStyle(.link)
                         .accessibilityLabel("Add Vendor")
                 }
             }

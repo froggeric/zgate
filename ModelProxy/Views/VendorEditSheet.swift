@@ -30,6 +30,22 @@ struct VendorEditSheet: View {
     private var isEditing: Bool { editingVendorID != nil }
     private var title: String { isEditing ? "Edit Vendor" : "Add Vendor" }
 
+    /// nil = valid to save. First failing check wins, phrased for display
+    /// (the RuleEditorSheet contract: a disabled Save always says why).
+    private var validationMessage: String? {
+        if name.trimmingCharacters(in: .whitespaces).isEmpty {
+            return "Enter a name."
+        }
+        let url = baseURL.trimmingCharacters(in: .whitespaces)
+        if url.isEmpty {
+            return "Enter a Base URL."
+        }
+        if URL(string: url)?.scheme == nil {
+            return "Enter a Base URL including its scheme, e.g. https://api.z.ai"
+        }
+        return nil
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Form {
@@ -52,7 +68,7 @@ struct VendorEditSheet: View {
                         Button(showAPIKey ? "Hide" : "Reveal") {
                             showAPIKey.toggle()
                         }
-                        .buttonStyle(.mpInline)
+                        .buttonStyle(.link)
                         .accessibilityLabel(showAPIKey ? "Hide API Key" : "Reveal API Key")
                     }
 
@@ -140,6 +156,8 @@ struct VendorEditSheet: View {
                             } label: {
                                 Image(systemName: "minus.circle.fill")
                                     .foregroundStyle(.red.opacity(0.7))
+                                    .frame(width: 22, height: 22)
+                                    .contentShape(Rectangle())
                             }
                             .buttonStyle(.borderless)
                             .accessibilityLabel("Remove Supported Model")
@@ -151,7 +169,7 @@ struct VendorEditSheet: View {
                     } label: {
                         Label("Add Model", systemImage: "plus")
                     }
-                    .buttonStyle(.mpInline)
+                    .buttonStyle(.link)
                     .accessibilityLabel("Add Supported Model")
                 } header: {
                     Text("Supported Models")
@@ -166,24 +184,29 @@ struct VendorEditSheet: View {
 
             Divider()
 
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .buttonStyle(.mpCancel)
-                    .keyboardShortcut(.cancelAction)
-                    .accessibilityLabel("Cancel")
-                Button(isEditing ? "Save" : "Add") {
-                    commitVendor()
-                    dismiss()
+            VStack(alignment: .leading, spacing: 8) {
+                // Same contract as RuleEditorSheet: a disabled Save always
+                // says why, next to the field state that caused it.
+                if let message = validationMessage {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
                 }
-                .buttonStyle(.mpPrimary)
-                .keyboardShortcut(.defaultAction)
-                .disabled(
-                    name.trimmingCharacters(in: .whitespaces).isEmpty
-                    || baseURL.trimmingCharacters(in: .whitespaces).isEmpty
-                    || URL(string: baseURL.trimmingCharacters(in: .whitespaces))?.scheme == nil
-                )
-                .accessibilityLabel(isEditing ? "Save Vendor" : "Add Vendor")
+                HStack {
+                    Spacer()
+                    Button("Cancel") { dismiss() }
+                        .buttonStyle(.bordered)
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityLabel("Cancel")
+                    Button(isEditing ? "Save" : "Add") {
+                        commitVendor()
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(validationMessage != nil)
+                    .accessibilityLabel(isEditing ? "Save Vendor" : "Add Vendor")
+                }
             }
             .padding()
         }
@@ -373,7 +396,7 @@ private extension OptionHelp {
 
     static let signingDomain = OptionHelp(
         title: "Signing Domain",
-        whatItDoes: "Tells ModelProxy whether this endpoint is Anthropic's own service. Anthropic API, Bedrock and Vertex check thinking signatures and tool IDs, so ModelProxy rewrites tool IDs that other vendors produced into the format they accept. It also sets the default Replay Policy.",
+        whatItDoes: "Tells ZGate whether this endpoint is Anthropic's own service. Anthropic API, Bedrock and Vertex check thinking signatures and tool IDs, so ZGate rewrites tool IDs that other vendors produced into the format they accept. It also sets the default Replay Policy.",
         howToChoose: "It is filled in from the Base URL. Change it only when a custom gateway sits in front of Anthropic, Bedrock or Vertex. Every other vendor (DeepSeek, Kimi, MiniMax, ...) is Compatible Third-Party."
     )
 
@@ -391,7 +414,7 @@ private extension OptionHelp {
 
     static let supportsCountTokens = OptionHelp(
         title: "Supports Count Tokens",
-        whatItDoes: "On: token-counting requests (/v1/messages/count_tokens) are forwarded to this vendor. Off: ModelProxy answers them locally with 404 and Claude Code estimates the count itself.",
+        whatItDoes: "On: token-counting requests (/v1/messages/count_tokens) are forwarded to this vendor. Off: ZGate answers them locally with 404 and Claude Code estimates the count itself.",
         howToChoose: "Keep it on. Turn it off only if the vendor returns errors for token counting."
     )
 

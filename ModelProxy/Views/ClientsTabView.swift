@@ -32,19 +32,19 @@ private struct ClientRowSection: View {
         return boundPort != client.port
     }
 
+    /// Per-keystroke validity: invalid text shows in red with a hint, so a
+    /// rejected edit is visible instead of silently swallowed.
+    private var portIsValid: Bool {
+        guard let port = Int(portText) else { return false }
+        return (1024...65535).contains(port)
+    }
+
+    /// One formatter (EnvExportLine) for the popover env line and this
+    /// quick start — same 127.0.0.1 host, same actual-bound-port semantics.
     private var envExportCommand: String {
-        let toolCommand: String
-        switch client.clientName.lowercased() {
-        case let n where n.contains("claude"):
-            toolCommand = "claude"
-        case let n where n.contains("codex"):
-            toolCommand = "codex"
-        default:
-            toolCommand = client.clientName.lowercased()
-        }
-        // Gateway hint headers let the traffic list label subagent, compaction and auxiliary requests.
-        let hintHeaders = toolCommand == "claude" ? " CLAUDE_CODE_GATEWAY_HINT_HEADERS=1" : ""
-        return "export ANTHROPIC_BASE_URL=http://localhost:\(client.port)\(hintHeaders) && \\\(toolCommand)"
+        EnvExportLine.quickStartCommand(
+            client: client,
+            boundPort: proxyServer.boundPorts[client.clientName])
     }
 
     var body: some View {
@@ -52,10 +52,17 @@ private struct ClientRowSection: View {
             TextField("Port", text: $portText)
                 .onAppear { portText = "\(client.port)" }
                 .onSubmit {
-                    guard let port = Int(portText), (1024...65535).contains(port) else { return }
+                    guard portIsValid, let port = Int(portText) else { return }
                     configStore.config.clients[index].port = port
                     configStore.saveAndReload(proxyServer: proxyServer)
                 }
+                .foregroundStyle(portText.isEmpty || portIsValid ? AnyShapeStyle(.primary) : AnyShapeStyle(.red))
+
+            if !portText.isEmpty && !portIsValid {
+                Text("Port must be 1024–65535; the change applies when you press Return.")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
 
             // Port change banner (DP-002: port change needs manual Stop/Start)
             if portChanged {
@@ -112,7 +119,7 @@ private struct ClientRowSection: View {
             LabeledContent("Quick start") {
                 HStack(spacing: 6) {
                     Text(envExportCommand)
-                        .font(.system(.footnote, design: .monospaced))
+                        .font(.footnote.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -125,7 +132,7 @@ private struct ClientRowSection: View {
                             showCopied = false
                         }
                     }
-                    .buttonStyle(MPInlineButtonStyle(color: showCopied ? .green : nil))
+                    .buttonStyle(.link)
                     .accessibilityLabel("Copy quick start command for \(client.clientName)")
                     .accessibilityHint("Copies the export command to clipboard.")
                 }

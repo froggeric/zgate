@@ -172,6 +172,7 @@ struct SplashTabView: View {
     @State private var installLine: String = "…"
     @State private var installBusy = false
     @State private var chipKind: SplashChip?   // cached for runInstall's branch
+    @State private var deletingProfile: SplashProfile?
 
     var body: some View {
         Form {
@@ -209,15 +210,43 @@ struct SplashTabView: View {
                 editingProfile = nil
             }
         }
+        .confirmationDialog(
+            "Delete profile?",
+            isPresented: Binding(
+                get: { deletingProfile != nil },
+                set: { if !$0 { deletingProfile = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let m = model, let profile = deletingProfile {
+                    m.deleteProfile(id: profile.id)   // clears active if it was p (§5.2)
+                    Task { await m.saveAndApply() }
+                }
+                deletingProfile = nil
+            }
+            Button("Cancel", role: .cancel) { deletingProfile = nil }
+        } message: {
+            if let profile = deletingProfile, let m = model {
+                if m.activeProfileID == profile.id {
+                    Text("Deleting the active profile also clears the active selection — splash won't start until you pick another.")
+                } else {
+                    Text("Remove \"\(profile.name)\"? This cannot be undone.")
+                }
+            }
+        }
     }
 
     private var statusSection: some View {
         Section("Server") {
             if let m = model {
-                HStack {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 8, height: 8)
+                HStack(spacing: 6) {
+                    // Same shape language as the popover's splash chip
+                    // (filled / half / dashed / alert) — state survives
+                    // color-blind viewing and both appearances.
+                    Image(systemName: statusSymbol)
+                        .font(.footnote)
+                        .foregroundStyle(statusColor)
                     Text(SplashTabModel.stateLine(manager.state, now: Date()))
                         .font(.footnote)
                     Spacer()
@@ -273,12 +302,16 @@ struct SplashTabView: View {
         }
     }
 
+    private var statusSymbol: String {
+        SplashLifecycleChip.face(for: manager.state, now: Date()).symbolName
+    }
+
     private var statusColor: Color {
         switch manager.state {
         case .running: return .green
         case .crashed: return .orange
-        case .starting, .stopping: return .gray
-        case .stopped: return Color.secondary.opacity(0.5)
+        case .starting, .stopping: return .secondary
+        case .stopped: return .secondary
         }
     }
 
@@ -299,9 +332,8 @@ struct SplashTabView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { editingProfile = p }
                     .contextMenu {
-                        Button("Delete", role: .destructive) {
-                            m.deleteProfile(id: p.id)   // clears active if it was p (§5.2)
-                            Task { await m.saveAndApply() }
+                        Button("Delete…", role: .destructive) {
+                            deletingProfile = p
                         }
                     }
                 }
@@ -434,12 +466,14 @@ struct SplashProfileEditorView: View {
 
             HStack {
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Save") {
                     profile.extraArgs = SplashProfile.parseExtraArgs(extraArgsRaw)
                     onSave(profile)
                 }
                 .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
                 .disabled(profile.name.isEmpty || profile.model.isEmpty)
             }
             .padding(12)
@@ -467,7 +501,7 @@ struct SplashLogTail: View {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
                         Text(line)
-                            .font(.system(.caption, design: .monospaced))
+                            .font(.caption.monospaced())
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .id(i)
                     }
