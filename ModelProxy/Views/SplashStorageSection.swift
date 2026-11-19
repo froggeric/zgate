@@ -23,6 +23,12 @@ struct SplashStorageSection: View {
     @State private var moveBackup: URL?
     @State private var quotaCustom = ""
     @State private var writeBudgetRaw = ""
+    /// The custom-size field's visibility follows the EDITING session, not
+    /// the persisted value (fix round 1): deriving it from `maxCacheDisk`
+    /// removed the field mid-edit — every typing path passes through an
+    /// invalid intermediate, and "16" → nil → Auto yanked the field away
+    /// and lost the typed text. True while the picker sits on Custom.
+    @State private var quotaEditing = false
     @State private var confirmingClearCache = false
     @State private var confirmingClearPrefix = false
     @State private var confirmingDeleteBackup = false
@@ -150,15 +156,17 @@ struct SplashStorageSection: View {
                 Text("Off").tag(QuotaMode.off)
                 Text("Custom").tag(QuotaMode.custom)
             }
-            if quotaMode == .custom {
+            if quotaEditing {
                 sizeField(
                     label: "Quota size", placeholder: "16G",
                     raw: $quotaCustom,
+                    persisted: model.storage?.maxCacheDisk,
                     apply: { v in setStorage { $0.maxCacheDisk = v } })
             }
             sizeField(
                 label: "Write budget", placeholder: "200G",
                 raw: $writeBudgetRaw,
+                persisted: model.storage?.maxCacheDiskWrites,
                 apply: { v in setStorage { $0.maxCacheDiskWrites = v } })
             if isRunning, let line = diskStatus.map(Self.usageLine), !line.isEmpty {
                 LabeledContent("Prefix usage") {
@@ -178,19 +186,24 @@ struct SplashStorageSection: View {
 
     // MARK: Quota mode plumbing
 
-    private enum QuotaMode: String, CaseIterable, Identifiable {
+    enum QuotaMode: String, CaseIterable, Identifiable {
         case auto, off, custom
         var id: String { rawValue }
     }
 
     /// nil → Auto, "0" → Off (spec §2 quota semantics), anything else →
-    /// Custom carrying that value in the size field.
-    private var quotaMode: QuotaMode {
-        switch model.storage?.maxCacheDisk {
+    /// Custom carrying that value in the size field. Internal so the
+    /// derivation is pinnable by tests.
+    nonisolated static func quotaMode(for value: String?) -> QuotaMode {
+        switch value {
         case nil, "": return .auto
         case "0": return .off
         default: return .custom
         }
+    }
+
+    private var quotaMode: QuotaMode {
+        Self.quotaMode(for: model.storage?.maxCacheDisk)
     }
 
     private var quotaBinding: Binding<QuotaMode> {
@@ -199,26 +212,30 @@ struct SplashStorageSection: View {
             set: { mode in
                 switch mode {
                 case .auto:
+                    quotaEditing = false
                     setStorage { $0.maxCacheDisk = nil }
                 case .off:
+                    quotaEditing = false
                     setStorage { $0.maxCacheDisk = "0" }
                 case .custom:
-                    // Persist a valid starter so the picker STAYS on Custom
-                    // (an empty custom value would read back as Auto).
-                    setStorage { s in
-                        if s.maxCacheDisk == nil || s.maxCacheDisk == "0" { s.maxCacheDisk = "16G" }
-                    }
-                    quotaCustom = model.storage?.maxCacheDisk ?? "16G"
+                    // The editing session (and the field) stays up even when
+                    // the persisted value is transiently nil — visibility is
+                    // `quotaEditing`, never the persisted value.
+                    quotaEditing = true
+                    let seed = Self.quotaCustomSeed(persisted: model.storage?.maxCacheDisk)
+                    setStorage { $0.maxCacheDisk = seed }
+                    quotaCustom = seed
                 }
             })
     }
 
     /// One validated size field (quota custom + write budget share it):
-    /// empty → flag omitted; invalid text stays red and never persists
-    /// (the port field's mid-edit discipline).
+    /// valid → persist; EMPTY → flag omitted; invalid intermediate text
+    /// never persists — the last valid value survives (fix round 1), the
+    /// text just renders red.
     private func sizeField(
         label: String, placeholder: String,
-        raw: Binding<String>,
+        raw: Binding<String>, persisted: String?,
         apply: @escaping (String?) -> Void
     ) -> some View {
         LabeledContent(label) {
@@ -226,8 +243,7 @@ struct SplashStorageSection: View {
                 get: { raw.wrappedValue },
                 set: { text in
                     raw.wrappedValue = text
-                    let t = text.trimmingCharacters(in: .whitespaces)
-                    apply(t.isEmpty ? nil : (Self.isValidSizeSpec(t) ? t : nil))
+                    apply(Self.resolveSizeInput(text, lastValid: persisted))
                 }))
             .multilineTextAlignment(.trailing)
             .frame(width: 110)
@@ -288,6 +304,7 @@ struct SplashStorageSection: View {
     }
 
     private func seedFields() {
+        quotaEditing = quotaMode == .custom
         quotaCustom = model.storage?.maxCacheDisk ?? ""
         writeBudgetRaw = model.storage?.maxCacheDiskWrites ?? ""
     }
@@ -390,6 +407,23 @@ struct SplashStorageSection: View {
     nonisolated static func isValidSizeSpec(_ s: String) -> Bool {
         guard let r = try? Regex("^\\d+(\\.\\d+)?[KMG]$") else { return false }
         return s.trimmingCharacters(in: .whitespaces).wholeMatch(of: r) != nil
+    }
+
+    /// Size-field edit rule (fix round 1, finding 3): what to persist for
+    /// the raw text just typed. Valid → the trimmed value; EMPTY → nil
+    /// (flag explicitly omitted); INVALID intermediate → the LAST VALID
+    /// value — a set budget is never wiped from config by one keystroke.
+    nonisolated static func resolveSizeInput(_ raw: String, lastValid: String?) -> String? {
+        let t = raw.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { return nil }
+        return isValidSizeSpec(t) ? t : lastValid
+    }
+
+    /// Picker→Custom seed (fix round 1): a valid starter so the selection
+    /// is real — but an EXISTING custom value survives (the user may be
+    /// mid-edit on it); Auto/Off are replaced.
+    nonisolated static func quotaCustomSeed(persisted: String?) -> String {
+        (persisted == nil || persisted == "0") ? "16G" : persisted!
     }
 
     nonisolated private static func kbString(_ kb: Int) -> String {

@@ -128,12 +128,19 @@ nonisolated struct StorageActions: Sendable {
             throw ActionError.preflightSpace
         }
 
-        try await run(["/usr/bin/ditto", source.path, target.path])
-
-        let dstKB = kb(try await capture(["/usr/bin/du", "-sk", target.path]))
-        guard dstKB >= srcKB else {
-            try? fm.removeItem(at: target)   // no half-moved copy lingers
-            throw ActionError.verificationFailed
+        // Copy → verify inside ONE do/catch (fix round 1): any failure after
+        // the copy began — ditto dying mid-copy (ENOSPC despite preflight,
+        // read error), the post-copy `du` failing, or the size mismatch —
+        // removes the target before rethrowing. A lingering partial would
+        // block a retry to the same location via the non-empty guard above.
+        // The source is untouched in every branch.
+        do {
+            try await run(["/usr/bin/ditto", source.path, target.path])
+            let dstKB = kb(try await capture(["/usr/bin/du", "-sk", target.path]))
+            guard dstKB >= srcKB else { throw ActionError.verificationFailed }
+        } catch {
+            try? fm.removeItem(at: target)
+            throw error
         }
 
         let ts = Int(now().timeIntervalSince1970)

@@ -133,6 +133,66 @@ import Testing
         try fm.removeItem(at: srcParent)
     }
 
+    // Fix round 1: ANY failure after the copy began must clean the target —
+    // a lingering partial would block a retry via the non-empty guard.
+
+    @Test func moveCleansPartialTargetWhenDittoDiesMidCopy() async throws {
+        let fm = FileManager.default
+        let (srcParent, src) = try makeCacheDir("hub")
+        let dst = fm.temporaryDirectory
+            .appendingPathComponent("dst4-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("hub", isDirectory: true)
+        struct DiedMidCopy: Error {}
+        let actions = StorageActions(
+            run: { _ in
+                // ditto materialized part of the target, then died.
+                try fm.createDirectory(at: dst, withIntermediateDirectories: true)
+                try Data("partial".utf8).write(to: dst.appendingPathComponent("partial.bin"))
+                throw DiedMidCopy()
+            },
+            capture: { _ in "2048\t\(src.path)" })
+
+        await #expect(throws: DiedMidCopy.self) {
+            _ = try await actions.moveModelCache(from: src, to: dst)
+        }
+        #expect(!fm.fileExists(atPath: dst.path))   // partial copy cleaned
+        #expect(fm.fileExists(atPath: src.appendingPathComponent("models--x--y/model.bin").path))   // source intact
+        try fm.removeItem(at: srcParent)
+    }
+
+    @Test func moveCleansTargetWhenPostCopyDuFails() async throws {
+        let fm = FileManager.default
+        let (srcParent, src) = try makeCacheDir("hub")
+        let dst = fm.temporaryDirectory
+            .appendingPathComponent("dst5-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("hub", isDirectory: true)
+        struct DuDied: Error {}
+        // Serial call counter: capture #1 answers the source du, #2 (the
+        // post-copy target du) dies.
+        final class Calls: @unchecked Sendable {
+            private let lock = NSLock(); private var n = 0
+            func next() -> Int { lock.withLock { n += 1; return n } }
+        }
+        let calls = Calls()
+        let actions = StorageActions(
+            run: { _ in
+                // the "copy" lands (simulated), verification then breaks
+                try fm.createDirectory(at: dst, withIntermediateDirectories: true)
+                try Data("partial".utf8).write(to: dst.appendingPathComponent("model.bin"))
+            },
+            capture: { _ in
+                if calls.next() >= 2 { throw DuDied() }
+                return "2048\t\(src.path)"
+            })
+
+        await #expect(throws: DuDied.self) {
+            _ = try await actions.moveModelCache(from: src, to: dst)
+        }
+        #expect(!fm.fileExists(atPath: dst.path))   // cleaned despite the copy "succeeding"
+        #expect(fm.fileExists(atPath: src.appendingPathComponent("models--x--y/model.bin").path))
+        try fm.removeItem(at: srcParent)
+    }
+
     @Test func moveRefusesNonEmptyTargetWithoutTouchingSource() async throws {
         let fm = FileManager.default
         let (srcParent, src) = try makeCacheDir("hub")
