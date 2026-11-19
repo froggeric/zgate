@@ -311,6 +311,37 @@ struct SigningClientTests {
         return client
     }
 
+    // MARK: - Status snapshot: project-key location presence
+
+    @Test func statusSnapshotReportsWhetherStoreLacksProjectLocation() async throws {
+        // Exactly what the in-app login writes on a fresh install:
+        // saveZaiLogin persists credentials WITHOUT a project-key
+        // location (only a GUI/CLI login can populate it) — the face
+        // derives its setup-gap state from this flag.
+        let freshBase = try makeTempDirectory()
+        _ = try CredentialStore.saveZaiLogin(
+            accessToken: ChainFixtures.fakeJWT(payload: ["exp": 1_763_003_600]),
+            zcodeJwtToken: ChainFixtures.bizJwt(),
+            userInfoJSON: "{}",
+            base: freshBase)
+        let freshClient = SigningClient(configuration: makeConfiguration(
+            clock: ManualClock(Self.baseDate),
+            storeLoader: { try CredentialStore(base: freshBase) },
+            location: nil,
+            cacheDirectory: try makeTempDirectory()))
+        let fresh = await freshClient.statusSnapshot()
+        #expect(fresh.storeLacksProjectLocation == true)
+
+        // The committed synthetic store carries a location entry.
+        let locatedClient = SigningClient(configuration: makeConfiguration(
+            clock: ManualClock(Self.baseDate),
+            storeLoader: { try syntheticStore() },
+            location: nil,
+            cacheDirectory: try makeTempDirectory()))
+        let located = await locatedClient.statusSnapshot()
+        #expect(located.storeLacksProjectLocation == false)
+    }
+
     // MARK: - Handshake request shape (AC: wire form)
 
     @Test func handshakeRequestBodyMatchesLiveWireForm() async throws {

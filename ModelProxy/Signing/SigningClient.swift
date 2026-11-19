@@ -171,6 +171,11 @@ actor SigningClient {
         let sessionMarginRelaxed: Bool
         /// `exp` of the store access token when a store loads, else nil.
         let storeAccessTokenExpiresAtMs: Int64?
+        /// True when a store loads but carries no `project-key-location`
+        /// entry — the ladder can never mint until a GUI/CLI login
+        /// populates it (the fresh-install setup gap). False when no
+        /// store loads at all (viability is a separate field).
+        let storeLacksProjectLocation: Bool
         /// acquiredAt of the on-disk biz-session cache when present.
         let cacheAcquiredAtMs: Int64?
         /// True when the most recent served relay exchange went out
@@ -184,7 +189,8 @@ actor SigningClient {
     /// store-token exp when a store loads, cache acquiredAt — enough for
     /// the UI task to render faces without touching token material.
     func statusSnapshot() -> StatusSnapshot {
-        let storeTokenExpiryMs: Int64? = loadStore()
+        let store = loadStore()
+        let storeTokenExpiryMs: Int64? = store
             .flatMap { try? $0.accessTokenExpiry() }
             .map { Int64($0.timeIntervalSince1970 * 1000) }
         return StatusSnapshot(
@@ -193,6 +199,8 @@ actor SigningClient {
             sessionExpiresAtMs: session?.expiresAtMs,
             sessionMarginRelaxed: session?.marginRelaxed ?? false,
             storeAccessTokenExpiresAtMs: storeTokenExpiryMs,
+            storeLacksProjectLocation: store
+                .map { (try? $0.projectKeyLocation()) == nil } ?? false,
             cacheAcquiredAtMs: cache.load()?.acquiredAtMs,
             servedUnsigned: servedUnsigned)
     }

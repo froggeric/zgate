@@ -23,6 +23,7 @@ struct CredentialStatusModelTests {
         sessionExpiresAtMs: Int64? = nil,
         sessionMarginRelaxed: Bool = false,
         storeAccessTokenExpiresAtMs: Int64? = nil,
+        storeLacksProjectLocation: Bool = false,
         cacheAcquiredAtMs: Int64? = nil,
         servedUnsigned: Bool = false
     ) -> SigningClient.StatusSnapshot {
@@ -33,6 +34,7 @@ struct CredentialStatusModelTests {
             sessionExpiresAtMs: sessionExpiresAtMs,
             sessionMarginRelaxed: sessionMarginRelaxed,
             storeAccessTokenExpiresAtMs: storeAccessTokenExpiresAtMs,
+            storeLacksProjectLocation: storeLacksProjectLocation,
             cacheAcquiredAtMs: cacheAcquiredAtMs,
             servedUnsigned: servedUnsigned)
     }
@@ -186,6 +188,86 @@ struct CredentialStatusModelTests {
         #expect(face == .actionNeeded(reason: "stored login expired"))
     }
 
+    // MARK: - Machine: location-less store (fresh-install setup gap)
+
+    @Test("a live location-less store reads setup action-needed, not renewing")
+    func locationlessLiveStoreIsSetupActionNotRenewing() {
+        // The fresh-install post-login state: the in-app login wrote a
+        // live store WITHOUT a project-key location (only a GUI/CLI
+        // login populates it) and its trailing location warning is the
+        // last event. buildChain fails before any network call while the
+        // location is missing, so renewal can never succeed — "renewing"
+        // here was a forever-lie (the keeper kept failing at ≤5 min
+        // intervals, re-seating the same face).
+        let face = CredentialFace.face(
+            relayConfigured: true,
+            snapshot: snapshot(
+                phase: .unsigned, sessionExpiresAtMs: nil,
+                storeAccessTokenExpiresAtMs: Self.nowMs + Self.minutes(30),
+                storeLacksProjectLocation: true),
+            events: [
+                .awaitingAuthorization,
+                .authorizationComplete,
+                .refreshFailed(
+                    stage: ZaiLoginClient.missingLocationStage,
+                    reason: ZaiLoginClient.missingLocationReason),
+            ],
+            loginInFlight: false)
+        #expect(face == .actionNeeded(reason: CredentialFace.locationMissingReason))
+    }
+
+    @Test("restart flavor: no events at all, still setup action-needed (not signed in)")
+    func locationlessLiveStoreWithoutEventsIsSetupAction() {
+        // Events are in-memory; after a restart on the fresh machine the
+        // same snapshot must still derive the setup gap — previously it
+        // read green "signed in" until the first keeper failure event.
+        let face = CredentialFace.face(
+            relayConfigured: true,
+            snapshot: snapshot(
+                phase: .unsigned, sessionExpiresAtMs: nil,
+                storeAccessTokenExpiresAtMs: Self.nowMs + Self.minutes(30),
+                storeLacksProjectLocation: true),
+            events: [],
+            loginInFlight: false)
+        #expect(face == .actionNeeded(reason: CredentialFace.locationMissingReason))
+    }
+
+    @Test("a stale location warning over a store that since gained its location reads signed in")
+    func staleLocationWarningReadsSignedIn() {
+        // After the user completes one GUI/CLI login (populating the
+        // location in the same store), the login's trailing location
+        // warning is stale — it cannot recur — so it must not seat
+        // "renewing" until the keeper's next .renewed.
+        let face = CredentialFace.face(
+            relayConfigured: true,
+            snapshot: snapshot(
+                phase: .unsigned, sessionExpiresAtMs: nil,
+                storeAccessTokenExpiresAtMs: Self.nowMs + Self.minutes(30)),
+            events: [
+                .authorizationComplete,
+                .refreshFailed(
+                    stage: ZaiLoginClient.missingLocationStage,
+                    reason: ZaiLoginClient.missingLocationReason),
+            ],
+            loginInFlight: false)
+        #expect(face == .signedIn(minutesLeft: nil))
+    }
+
+    @Test("an expired location-less store stays on the expired-login red")
+    func expiredLocationlessStoreStillReadsExpired() {
+        // The expired token is the more fundamental problem — sign in
+        // again — and remains the derived face.
+        let face = CredentialFace.face(
+            relayConfigured: true,
+            snapshot: snapshot(
+                phase: .unsigned, sessionExpiresAtMs: nil,
+                storeAccessTokenExpiresAtMs: Self.nowMs - 1,
+                storeLacksProjectLocation: true),
+            events: [.refreshFailed(stage: "chain", reason: "no location")],
+            loginInFlight: false)
+        #expect(face == .actionNeeded(reason: "stored login expired"))
+    }
+
     // MARK: - Machine: awaitingAuthorization
 
     @Test("an in-flight in-app login shows authorizing — even over an unrecovered expiry")
@@ -331,6 +413,7 @@ struct CredentialStatusModelTests {
             .renewing,
             .awaitingAuthorization,
             .actionNeeded(reason: Self.hostileReason),
+            .actionNeeded(reason: CredentialFace.locationMissingReason),
             .degraded,
             .off,
             .unknown,
@@ -384,6 +467,11 @@ struct CredentialStatusModelTests {
         #expect(
             CredentialFace.actionNeeded(reason: "no stored login").chip
             == .init(text: "● sign in to use the relay", color: .red))
+        // Setup-gap copy: login succeeded; the missing piece is one
+        // GUI/CLI login away — not "expired".
+        #expect(
+            CredentialFace.actionNeeded(reason: CredentialFace.locationMissingReason).chip
+            == .init(text: "● finish setup in ZCode, then Reload", color: .red))
         #expect(CredentialFace.degraded.chip == .init(text: "● degraded (unsigned)", color: .orange))
         #expect(CredentialFace.off.chip == .init(text: "● off", color: .gray))
         #expect(CredentialFace.unknown.chip == .init(text: "◐ checking…", color: .gray))
@@ -551,6 +639,7 @@ struct CredentialStatusModelTests {
                     sessionExpiresAtMs: Self.nowMs + Self.minutes(41),
                     sessionMarginRelaxed: false,
                     storeAccessTokenExpiresAtMs: nil,
+                    storeLacksProjectLocation: false,
                     cacheAcquiredAtMs: nil,
                     servedUnsigned: false)
             },

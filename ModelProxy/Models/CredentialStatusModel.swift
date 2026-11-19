@@ -38,7 +38,9 @@ enum CredentialFace: Equatable, Sendable {
 
     /// The face for a given observable state. Priority: off/unknown guards,
     /// then the in-app login (authorizing…), then a dead ladder (persistent
-    /// red), then transient renewal (only when a rung can still build it —
+    /// red), then the location-less setup gap (live store, no project-key
+    /// location — action-needed; no retry inside ZGate can fix it), then
+    /// transient renewal (only when a rung can still build it —
     /// a futile retry falls through to the dead-ladder red), then the
     /// standing degraded flag, then signed-in views — session countdown
     /// first, store/cache without countdown second — and finally the derived
@@ -56,9 +58,28 @@ enum CredentialFace: Equatable, Sendable {
         if let reason = lastUnrecoveredExpired(events) {
             return .actionNeeded(reason: reason)
         }
+        // The fresh-install setup gap: a live store that lacks its
+        // project-key location. buildChain fails at the noLocation guard
+        // before any network call, so no retry inside ZGate can ever
+        // succeed — renewal here was a forever-lie (the keeper kept
+        // re-seating it at ≤5 min intervals). Action-needed until a
+        // GUI/CLI login writes the location; the snapshot re-reads the
+        // store on every recompute, so the face self-clears — no event,
+        // no restart — the moment the location appears. Requires a LIVE
+        // store token: an expired one keeps the expired-login red below
+        // (the more fundamental problem), and a cache-only machine CAN
+        // build (a usable cache bypasses the location lookup).
+        if snapshot.storeLacksProjectLocation,
+            let storeExpiresAtMs = snapshot.storeAccessTokenExpiresAtMs,
+            storeExpiresAtMs > snapshot.nowMs
+        {
+            return .actionNeeded(reason: Self.locationMissingReason)
+        }
         if snapshot.phase == .handshaking { return .renewing }
         if snapshot.servedUnsigned { return .degraded }
-        if case .refreshFailed = events.last {
+        if case let .refreshFailed(stage, _) = events.last,
+            stage != ZaiLoginClient.missingLocationStage
+        {
             // A refresh failure reads as renewal while the ladder can still
             // build (viable store/cache — buildChain rebuilds from those,
             // never from held-session material) OR was working in-process
@@ -66,7 +87,11 @@ enum CredentialFace: Equatable, Sendable {
             // likely transient server/network trouble rather than missing
             // credentials). A ladder with neither — login-less or
             // unreadable store — can never build on retry and falls through
-            // to the derived dead-ladder red below.
+            // to the derived dead-ladder red below. The login's location
+            // warning is excluded: while the location is missing, the
+            // setup-gap branch above has already answered; once a GUI/CLI
+            // login populated it the warning is stale (it cannot recur) —
+            // neither state is renewal.
             if snapshot.sessionExpiresAtMs != nil || storeOrCacheViable(snapshot) {
                 return .renewing
             }
@@ -100,6 +125,12 @@ enum CredentialFace: Equatable, Sendable {
         }
         return reason
     }
+
+    /// Derived reason when the store is live but location-less: the
+    /// ladder can never mint until a GUI/CLI login populates the
+    /// project-key location — retrying inside ZGate cannot fix it, so
+    /// the face reads action-needed, not renewal.
+    static let locationMissingReason = "project location missing"
 
     /// BizSessionCache's usable window (180 d TTL − 5 d margin) — a cache
     /// inside it can still build a chain on demand, so the face may claim
@@ -146,13 +177,21 @@ extension CredentialFace {
             return .init(text: "● authorizing…", color: .orange)
         case let .actionNeeded(reason):
             // First-run copy: a machine that never stored a login reads
-            // wrong as "expired". Only the fixed derived literal is
-            // special-cased; every other reason keeps the expired wording
-            // (no reason text is ever rendered — the no-leak invariant).
-            return .init(
-                text: reason == "no stored login"
-                    ? "● sign in to use the relay" : "● login expired — sign in",
-                color: .red)
+            // wrong as "expired"; the setup gap reads wrong as both. Only
+            // the fixed derived literals are special-cased; every other
+            // reason keeps the expired wording (no reason text is ever
+            // rendered — the no-leak invariant).
+            let text: String
+            if reason == "no stored login" {
+                text = "● sign in to use the relay"
+            } else if reason == Self.locationMissingReason {
+                // The login succeeded; the missing piece (the project-key
+                // location) is one GUI/CLI login away — not "expired".
+                text = "● finish setup in ZCode, then Reload"
+            } else {
+                text = "● login expired — sign in"
+            }
+            return .init(text: text, color: .red)
         case .degraded:
             return .init(text: "● degraded (unsigned)", color: .orange)
         case .off:

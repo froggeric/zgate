@@ -179,10 +179,11 @@ actor ZaiLoginClient {
                     // location entry cannot mint a plan token, and ZGate
                     // cannot resolve the location itself (the store entry is
                     // the only source). Emitted AFTER .authorizationComplete
-                    // so the warning is the channel's LAST event — the
-                    // standing face already renders a trailing
-                    // .refreshFailed generically. Non-fatal: the login
-                    // itself succeeded; payload is fixed typed copy.
+                    // so the warning is the channel's LAST event (the
+                    // Advanced raw log reads it). The standing face derives
+                    // the setup gap from the SNAPSHOT (a live store without
+                    // a location), not from this event. Non-fatal: the
+                    // login itself succeeded; payload is fixed typed copy.
                     if missingLocationAfterSave {
                         configuration.onEvent?(.refreshFailed(
                             stage: Self.missingLocationStage,
