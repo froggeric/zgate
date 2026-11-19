@@ -221,10 +221,14 @@ final class UpdateCenter {
     /// Chip the last check ran for; the apply branches on the same value.
     @ObservationIgnored private var chip: SplashChip? = SplashChip.current
 
-    init(deps: Deps = Deps()) {
+    /// `appUpdate`: inject the shared service the app also hands to the
+    /// popover's explicit Install action (its `lastCheckedRelease` is the
+    /// release stage() needs); nil (tests) mints a private one riding
+    /// the same fetch seam.
+    init(deps: Deps = Deps(), appUpdate: AppUpdateService? = nil) {
         self.deps = deps
         self.installer = SplashInstaller(deps: SplashInstallerDeps(fetch: deps.fetch))
-        self.appUpdate = AppUpdateService(deps: AppUpdateService.Deps(fetch: deps.fetch))
+        self.appUpdate = appUpdate ?? AppUpdateService(deps: AppUpdateService.Deps(fetch: deps.fetch))
     }
 
     deinit { repeatTask?.cancel() }

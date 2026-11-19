@@ -38,6 +38,13 @@ enum QuotaRingSpec {
     /// (4° is a ~3 px dot at 18 pt — perceptible but unmistakably "empty").
     static let minimumSweepDegrees: CGFloat = 4
 
+    // MARK: Update badge (spec §5)
+
+    /// Update badge (spec §5): filled dot at the top-right of the ring.
+    static let badgeRadius: CGFloat = 2.1
+    static let badgeOffset: CGFloat = 3.4   // center offset toward the corner
+    static let badgeAlpha: CGFloat = 0.95
+
     /// Arc sweep for a fraction, clamped into 0...1. A full fraction draws
     /// the complete circle (360°) so the round caps don't overlap.
     static func sweepDegrees(forFraction fraction: Double) -> CGFloat {
@@ -73,13 +80,15 @@ enum QuotaRingSpec {
 
 /// Draws the menu-bar template image. `weeklyFraction == nil` is the
 /// no-data state (dashed ring); `stale` dims the arc to the shared
-/// last-known constant. Callers re-render whenever the quota state
-/// changes. Rendering is a deterministic high-resolution raster
-/// (NSBitmapImageRep at `renderScale`, declared point size `canvas`) —
-/// crisp at every menu-bar backing store, no deprecated lockFocus, and
-/// pixel-exact for tests.
+/// last-known constant; `updateAvailable` inks the spec §5 badge dot on
+/// the ring's top-right (ring states only — fault symbols replace the
+/// whole icon and outrank it). Callers re-render whenever the quota or
+/// update state changes. Rendering is a deterministic high-resolution
+/// raster (NSBitmapImageRep at `renderScale`, declared point size
+/// `canvas`) — crisp at every menu-bar backing store, no deprecated
+/// lockFocus, and pixel-exact for tests.
 enum QuotaMenuBarIcon {
-    static func image(weeklyFraction: Double?, stale: Bool) -> NSImage {
+    static func image(weeklyFraction: Double?, stale: Bool, updateAvailable: Bool = false) -> NSImage {
         let pointSize = NSSize(width: QuotaRingSpec.canvas, height: QuotaRingSpec.canvas)
         let pixels = Int(QuotaRingSpec.canvas * QuotaRingSpec.renderScale)
         guard
@@ -153,6 +162,21 @@ enum QuotaMenuBarIcon {
             markAlpha = QuotaRingSpec.noDataAlpha
         }
         drawMark(in: rect, alpha: markAlpha)
+
+        // Update badge (spec §5): a filled dot at the ring's top-right,
+        // drawn on every ring state (arc, stale, no-data) but only ever
+        // on the ring — a fault symbol replaces the whole icon and always
+        // outranks the badge (the caller gates on menuBarSymbol == nil).
+        // Black + alpha like everything else, so it stays template-safe.
+        if updateAvailable {
+            let center = NSPoint(
+                x: rect.midX + QuotaRingSpec.badgeOffset,
+                y: rect.midY + QuotaRingSpec.badgeOffset)
+            NSColor.black.withAlphaComponent(QuotaRingSpec.badgeAlpha).setFill()
+            NSBezierPath(ovalIn: NSRect(
+                x: center.x - QuotaRingSpec.badgeRadius, y: center.y - QuotaRingSpec.badgeRadius,
+                width: QuotaRingSpec.badgeRadius * 2, height: QuotaRingSpec.badgeRadius * 2)).fill()
+        }
 
         NSGraphicsContext.restoreGraphicsState()
 

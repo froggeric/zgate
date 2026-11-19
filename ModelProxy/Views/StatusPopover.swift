@@ -8,11 +8,23 @@ struct StatusPopover: View {
     @Environment(QuotaStatusModel.self) private var quotaModel
     @Environment(SplashManager.self) private var splashManager
     @Environment(CredentialStatusModel.self) private var credentialModel
+    @Environment(UpdateCenter.self) private var updateCenter
+    @Environment(AppUpdateService.self) private var appUpdate
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showCorruptBanner: Bool = false
     @State private var showingReloginAlert: Bool = false
     @State private var reloginMessage: String = ""
     @State private var copiedEnvLine: Bool = false
+    /// ZGate install flow (spec §3.5 via §5): the tag awaiting the
+    /// proxy-down confirmation, the staging/restart transient, and the
+    /// surfaced failure line.
+    @State private var zGateConfirmTag: String?
+    @State private var zGateBusy: Bool = false
+    @State private var zGateError: String?
+    /// View-local mirror of the in-flight splash apply — enough to
+    /// disable its button (UpdateCenter's applying flag is deliberately
+    /// non-observable).
+    @State private var splashApplying: Bool = false
     /// Slow tick so the splash chip and quota caption age without traffic.
     @State private var tick: Date = .now
 
@@ -20,13 +32,17 @@ struct StatusPopover: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            bannerSection
+            updateBannerSection
                 .padding(.horizontal, 12)
                 .padding(.top, 12)
 
+            bannerSection
+                .padding(.horizontal, 12)
+                .padding(.top, updateCenter.hasActiveAlert ? 4 : 12)
+
             clientHeader
                 .padding(.horizontal, 12)
-                .padding(.top, bannerIsVisible ? 8 : 12)
+                .padding(.top, bannerIsVisible || updateCenter.hasActiveAlert ? 8 : 12)
                 .padding(.bottom, 8)
 
             Divider()
@@ -94,6 +110,23 @@ struct StatusPopover: View {
         } message: {
             Text(reloginMessage)
         }
+        .confirmationDialog(
+            "Install ZGate \(zGateConfirmTag ?? "")?",
+            isPresented: Binding(
+                get: { zGateConfirmTag != nil },
+                set: { if !$0 { zGateConfirmTag = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Install and Restart") {
+                if let tag = zGateConfirmTag { performZGateInstall(tag: tag) }
+                zGateConfirmTag = nil
+            }
+            Button("Cancel", role: .cancel) { zGateConfirmTag = nil }
+        } message: {
+            // The swap script quits this app by design — the proxy is down
+            // for the seconds the restart takes (spec §3.5).
+            Text("ZGate will quit and restart — the proxy is down for a few seconds. Continue?")
+        }
         .task {
             // Primary start happens at app launch (ModelProxyApp init). This
             // is the idempotent re-entry: a no-op while running (start()
@@ -106,6 +139,123 @@ struct StatusPopover: View {
 
     private var bannerIsVisible: Bool {
         proxyServer.lastError != nil || showCorruptBanner
+    }
+
+    // MARK: - Update banners (spec §5)
+
+    /// Per-target update banners, one action each: ZGate Install… (a
+    /// /Applications install; anywhere else View… → the Releases page,
+    /// since the swap script only ever replaces the prod install) and
+    /// splash Update → the managed apply. Each dismiss (×) persists the
+    /// dismissed tag — a NEWER tag re-alerts (UpdateCenter's per-tag
+    /// dismissal). Failures surface inline in the banner line.
+    @ViewBuilder
+    private var updateBannerSection: some View {
+        if updateCenter.zgateAlert, case .available(let tag, _) = updateCenter.zgateState {
+            let line = zGateError.map { "ZGate \(tag) available — \($0)" }
+                ?? "ZGate \(tag) available"
+            actionBanner(
+                icon: "arrow.down.circle.fill", tint: .orange,
+                text: line,
+                primaryTitle: zGateBusy ? "Restarting…" : (prodInstall ? "Install…" : "View…"),
+                primaryDisabled: zGateBusy,
+                primary: {
+                    if prodInstall { zGateConfirmTag = tag } else { openReleases() }
+                },
+                dismissLabel: "Dismiss ZGate update banner",
+                dismiss: { updateCenter.dismissZGate(tag: tag) })
+        }
+        if updateCenter.splashAlert, case .available(let installed, let latest) = updateCenter.splashState {
+            actionBanner(
+                icon: "arrow.down.circle.fill", tint: .orange,
+                text: "splash \(latest) available\(installed.map { " · \($0) installed" } ?? "")",
+                primaryTitle: splashApplying ? "Updating…" : "Update",
+                primaryDisabled: splashApplying,
+                primary: {
+                    splashApplying = true
+                    Task {
+                        await updateCenter.applySplashUpdate()
+                        splashApplying = false
+                    }
+                },
+                dismissLabel: "Dismiss splash update banner",
+                dismiss: { updateCenter.dismissSplash(tag: latest) })
+        }
+    }
+
+    /// Action banner: the shared `banner` capsule with a trailing primary
+    /// link button and an × dismiss. Deliberately NOT wrapped in an
+    /// accessibilityElement — the buttons must stay individually
+    /// reachable; each carries its own label.
+    private func actionBanner(
+        icon: String,
+        tint: Color,
+        text: String,
+        primaryTitle: String,
+        primaryDisabled: Bool,
+        primary: @escaping () -> Void,
+        dismissLabel: String,
+        dismiss: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
+            Text(text)
+                .font(.callout)
+                .multilineTextAlignment(.leading)
+            Spacer(minLength: 0)
+            Button(primaryTitle, action: primary)
+                .buttonStyle(.link)
+                .font(.callout)
+                .disabled(primaryDisabled)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.link)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel(dismissLabel)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// The swap script only ever replaces exactly /Applications/ZGate.app;
+    /// running anywhere else, the banner offers the Releases page instead.
+    private var prodInstall: Bool {
+        appUpdate.deps.currentBundlePath() == AppUpdateService.prodAppPath
+    }
+
+    private func openReleases() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/froggeric/zgate/releases")!)
+    }
+
+    /// Confirmed install (spec §3.5): stage (download → digest + TeamID
+    /// verify) then the detached swap whose script quits this app. The
+    /// "Restarting…" transient covers the staging gap; a thrown failure
+    /// surfaces its error string in the banner line.
+    private func performZGateInstall(tag: String) {
+        guard let release = appUpdate.lastCheckedRelease, release.tag_name == tag else {
+            zGateError = "release details unavailable — check again later"
+            return
+        }
+        zGateError = nil
+        zGateBusy = true
+        Task {
+            do {
+                let staged = try await appUpdate.stage(release)
+                try await appUpdate.swap(staged: staged)
+                // swap() spawns the script detached and it SIGTERMs this
+                // app moments later; landing here only means the spawn
+                // itself returned.
+                zGateBusy = false
+            } catch {
+                zGateBusy = false
+                zGateError = String(describing: error)
+            }
+        }
     }
 
     // MARK: - Banner
@@ -691,4 +841,6 @@ private struct TrafficRowView: View {
         .environment(quotaModel)
         .environment(splashManager)
         .environment(CredentialStatusModel())
+        .environment(UpdateCenter())
+        .environment(AppUpdateService())
 }

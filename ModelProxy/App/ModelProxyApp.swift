@@ -9,6 +9,8 @@ struct ModelProxyApp: App {
     @State private var quotaModel: QuotaStatusModel
     @State private var credentialModel: CredentialStatusModel
     @State private var splashManager: SplashManager
+    @State private var updateCenter: UpdateCenter
+    @State private var appUpdate: AppUpdateService
 
     init() {
         AppPaths.migrateLegacyDirIfNeeded()   // 2026-11-18: ModelProxy → ZGate, before any store reads
@@ -31,6 +33,14 @@ struct ModelProxyApp: App {
         _credentialModel = State(initialValue: credentialModel)
         let splashManager = SplashManager()
         _splashManager = State(initialValue: splashManager)
+        // Update subsystem (spec §3.4/§3.5): ONE AppUpdateService shared by
+        // the center's ZGate check and the popover's explicit Install
+        // action (stage() needs the check's lastCheckedRelease), so both
+        // scenes get the same instance through the environment.
+        let appUpdate = AppUpdateService()
+        _appUpdate = State(initialValue: appUpdate)
+        let updateCenter = UpdateCenter(appUpdate: appUpdate)
+        _updateCenter = State(initialValue: updateCenter)
         // Serve from LAUNCH, not from the first popover open: MenuBarExtra
         // window content is created lazily, so a .task on it defers until a
         // human clicks — leaving a running-but-not-listening proxy for every
@@ -43,12 +53,29 @@ struct ModelProxyApp: App {
             quotaModel.start()
             credentialModel.start()
             await AppLogManager.shared.configure(from: configStore.config.debug)
+            // Update subsystem (spec §3.4): persistence rides ConfigStore
+            // (load once; the center hands back its settings on every
+            // mutation and we write them through config.update).
+            updateCenter.attach(
+                configLoad: { [weak configStore] in configStore?.config.update },
+                configWrite: { [weak configStore] settings in
+                    guard let configStore else { return }
+                    configStore.config.update = settings
+                    configStore.save()
+                })
             // Package C: adopt an external splash or start ours per settings.
             // Guard lives here, not in configure — SplashManagerTests call
             // configure directly under the XCTest environment and need real
-            // behavior on stub processes.
-            guard SplashManager.shouldSupervise(environment: ProcessInfo.processInfo.environment) else { return }
-            await splashManager.configure(settings: configStore.config.splash)
+            // behavior on stub processes. The SAME guard scopes the splash
+            // half of the update subsystem (checks + manager hooks); the
+            // ZGate check runs in every environment (spec §3.4).
+            let supervise = SplashManager.shouldSupervise(
+                environment: ProcessInfo.processInfo.environment)
+            if supervise {
+                await splashManager.configure(settings: configStore.config.splash)
+                updateCenter.attach(to: splashManager)
+            }
+            await updateCenter.start(splashChecksEnabled: supervise)
         }
     }
 
@@ -64,8 +91,10 @@ struct ModelProxyApp: App {
                 .environment(quotaModel)
                 .environment(credentialModel)
                 .environment(splashManager)
+                .environment(updateCenter)
+                .environment(appUpdate)
         } label: {
-            MenuBarLabel(quotaModel: quotaModel, proxyServer: proxyServer)
+            MenuBarLabel(quotaModel: quotaModel, proxyServer: proxyServer, updateCenter: updateCenter)
         }
         .menuBarExtraStyle(.window)
 
@@ -79,20 +108,26 @@ struct ModelProxyApp: App {
                 .environment(quotaModel)
                 .environment(credentialModel)
                 .environment(splashManager)
+                .environment(updateCenter)
+                .environment(appUpdate)
         }
     }
 }
 
 /// Menu-bar mark: icon-only — the quota ring (template image, arc =
 /// remaining weekly fraction) with the ZΓ brand mark drawn inside it in
-/// the healthy state; fault symbols (paused / launching / error /
-/// credentials) replace the whole mark when set. The exact percentage
-/// stays glanceable in the popover and in the accessibility label.
-/// Invalidates on the same observable state the popover renders, so bar
-/// and popover can never disagree.
-private struct MenuBarLabel: View {
+/// the healthy state, plus the spec §5 update badge dot when
+/// `updateCenter.hasActiveAlert`; fault symbols (paused / launching /
+/// error / credentials) replace the whole mark when set and always
+/// outrank the badge. The exact percentage stays glanceable in the
+/// popover and in the accessibility label. Invalidates on the same
+/// observable state the popover renders, so bar and popover can never
+/// disagree. (Internal: UpdateAlertUITests pin the pure accessibility
+/// helper.)
+struct MenuBarLabel: View {
     let quotaModel: QuotaStatusModel
     let proxyServer: ProxyServer
+    let updateCenter: UpdateCenter
 
     var body: some View {
         Group {
@@ -101,7 +136,8 @@ private struct MenuBarLabel: View {
             } else {
                 Image(nsImage: QuotaMenuBarIcon.image(
                     weeklyFraction: quotaModel.state.weeklyFraction,
-                    stale: quotaModel.state.isStale))
+                    stale: quotaModel.state.isStale,
+                    updateAvailable: updateCenter.hasActiveAlert))
             }
         }
         .accessibilityElement(children: .ignore)
@@ -109,15 +145,35 @@ private struct MenuBarLabel: View {
     }
 
     private var accessibilityText: String {
-        var parts = ["ZGate"]
+        // The pure helper's `running` Bool carries running/paused;
+        // "starting" (neither running nor stopped) is the one nuance it
+        // cannot — computed here, everything else stays shared.
+        let status = proxyServer.isRunning
+            ? "running" : (proxyServer.isStopped ? "paused" : "starting")
+        return Self.label(
+            status: status,
+            quotaPercent: quotaModel.state.percentText,
+            updateAvailable: updateCenter.hasActiveAlert)
+    }
+
+    /// Pure, tested form of the accessibility label.
+    nonisolated static func accessibilityText(
+        running: Bool, quotaPercent: String?, updateAvailable: Bool
+    ) -> String {
+        label(
+            status: running ? "running" : "paused",
+            quotaPercent: quotaPercent,
+            updateAvailable: updateAvailable)
+    }
+
+    private nonisolated static func label(
+        status: String, quotaPercent: String?, updateAvailable: Bool
+    ) -> String {
+        var parts = ["ZGate", status]
         parts.append(
-            proxyServer.isRunning
-                ? "running" : (proxyServer.isStopped ? "paused" : "starting"))
-        if let percent = quotaModel.state.percentText {
-            parts.append("weekly quota \(percent) remaining")
-        } else {
-            parts.append("quota data unavailable")
-        }
+            quotaPercent.map { "weekly quota \($0) remaining" }
+                ?? "quota data unavailable")
+        if updateAvailable { parts.append("update available") }
         return parts.joined(separator: ", ")
     }
 }
