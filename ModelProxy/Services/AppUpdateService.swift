@@ -33,14 +33,6 @@ final class AppUpdateService {
             try await AppUpdateService.runCaptureProcess(argv)
         }
         var currentBundlePath: @Sendable () -> String = { Bundle.main.bundleURL.path }
-        /// UI-level convenience only — the check path takes the triple as a
-        /// parameter so a nil version read can degrade honestly instead of
-        /// fabricating an update (UpdateCenter guards that; see checkState).
-        var currentVersion: @Sendable () -> (Int, Int, Int) = {
-            let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
-            let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
-            return ZGateVersion.parse(tag: "v\(short).\(build)") ?? (0, 0, 0)
-        }
         /// The bundled swap script (wired into Resources in this task).
         var scriptPath: @Sendable () -> URL? = {
             Bundle.main.url(forResource: "release-swap", withExtension: "sh")

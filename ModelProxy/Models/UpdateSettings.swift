@@ -6,7 +6,8 @@ import Foundation
 /// partials load without resetting anything.
 struct UpdateSettings: Codable, Equatable, Sendable {
     /// Gates every automatic check (launch check + 24 h timer); manual
-    /// "Check Now" is unaffected.
+    /// "Check Now" is unaffected. Read live at every cycle boundary, so
+    /// a mid-session toggle takes effect without a relaunch.
     var autoCheck: Bool = true
     /// Locked decision 2 default: apply splash updates automatically when
     /// the engine is stopped (consumed by the auto-apply task).

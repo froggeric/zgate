@@ -124,7 +124,6 @@ import Testing
                 return try await AppUpdateService.runCaptureProcess(argv)
             },
             currentBundlePath: { currentBundlePath },
-            currentVersion: { (2, 8, 9) },
             scriptPath: { scriptPath }))
     }
 

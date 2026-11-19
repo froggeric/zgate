@@ -208,6 +208,44 @@ import Testing
         #expect(center.splashState == .available(installed: "1.6.1-m1.1", latest: "1.7.0-m1"))
     }
 
+    /// Fix pass: a pending auto-apply does not survive the splashAutoApply
+    /// toggle going OFF. The update is seen while owned-running
+    /// (pendingApply set), the user toggles "Update splash automatically
+    /// when stopped" off — neither the stop hook NOR the next start's
+    /// pre-start gate may apply it.
+    @Test func pendingAutoApplyDoesNotSurviveToggleOff() async throws {
+        let stub = FetchStub()
+        serveUpdateAvailable(stub: stub)
+        let installed = LockedBox<String?>(value: "1.6.1-m1.1")
+        let recorder = Recorder()
+        let center = makeCenter(
+            stub: stub, installed: installed,
+            applyFork: installingFork(installed: installed, recorder))
+        let manager = makeManager()
+        try await manager.start(profile: SplashProfile(name: "p", model: "m"))   // owned running
+        center.attach(to: manager)
+
+        await center.checkNow(chip: .forkM1M2)   // update seen while owned-running → deferred
+        #expect(recorder.fork.isEmpty)
+        #expect(center.splashState == .available(installed: "1.6.1-m1.1", latest: "1.7.0-m1"))
+
+        // User toggles OFF; the General tab syncs the center's copy.
+        center.adoptSettings(UpdateSettings(splashAutoApply: false))
+
+        // Deliberate stop → the stop hook must not apply…
+        try await waitUntil { manager.log.lines.contains("stub up") }
+        await manager.stop()
+        #expect(recorder.fork.isEmpty)
+
+        // …and the next start's pre-start gate must not apply either —
+        // the deferred intent is void, not parked.
+        try await manager.start(profile: SplashProfile(name: "p", model: "m"))
+        #expect(recorder.fork.isEmpty)
+        #expect(center.splashState == .available(installed: "1.6.1-m1.1", latest: "1.7.0-m1"))
+
+        await manager.terminateFromApp()
+    }
+
     // MARK: - Guards
 
     /// Post-apply verify (spec §3.4): the seam "installed" but the version
@@ -291,6 +329,41 @@ import Testing
         }
         #expect(message == "needs macOS 26.4+")
         #expect(!center.splashAlert)
+    }
+
+    /// Fix pass: a macOS-gate refusal is REMEMBERED — evaluateAutoApply
+    /// skips the refused tag for the rest of the session, so a low-OS
+    /// host with auto-apply on cannot flap .available → apply → .failed
+    /// on every cycle. Manual applies (the failure banner's Update
+    /// button) stay allowed.
+    @Test func gateRefusalIsRememberedWithinTheSession() async throws {
+        let stub = FetchStub()
+        serveUpdateAvailable(stub: stub)
+        let installed = LockedBox<String?>(value: "1.6.1-m1.1")
+        let recorder = Recorder()
+        let center = makeCenter(
+            stub: stub, installed: installed,
+            os: OperatingSystemVersion(majorVersion: 15, minorVersion: 7, patchVersion: 0),
+            applyFork: installingFork(installed: installed, recorder))
+        let manager = makeManager()   // stopped → the automatic path is live
+        center.attach(to: manager)
+
+        // Cycle 1: auto-apply runs into the gate and refuses.
+        await center.checkNow(chip: .forkM1M2)
+        #expect(recorder.fork.isEmpty)
+        #expect(center.splashState == .failed("needs macOS 26.4+"))
+
+        // Cycle 2: the fresh check says .available again — but the
+        // refusal is remembered: no second apply attempt, no flap.
+        await center.checkNow(chip: .forkM1M2)
+        #expect(recorder.fork.isEmpty)
+        #expect(center.splashState == .available(installed: "1.6.1-m1.1", latest: "1.7.0-m1"))
+
+        // Manual retry is NOT blocked — it refuses again honestly,
+        // without ever reaching a download.
+        await center.applySplashUpdate()
+        #expect(recorder.fork.isEmpty)
+        #expect(center.splashState == .failed("needs macOS 26.4+"))
     }
 
     // MARK: - Brew branch (official chip)

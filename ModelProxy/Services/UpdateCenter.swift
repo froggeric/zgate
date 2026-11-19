@@ -157,6 +157,11 @@ final class UpdateCenter {
         }
         return false
     }
+    /// Read-only banner plumbing (fix pass): `.failed` carries only a
+    /// reason, so the popover's failure line reads the last-seen tag and
+    /// the per-tag dismissal from the settings copy.
+    var lastSplashTag: String? { settings.lastSplashTag }
+    var dismissedSplashTag: String? { settings.dismissedSplashTag }
 
     /// Public repo (locked decision 4): anonymous releases/latest. The
     /// fetcher/decoder now live in AppUpdateService; this alias keeps the
@@ -222,6 +227,12 @@ final class UpdateCenter {
     /// An update was seen while the engine ran owned — applied at the stop
     /// hook or the next start gate, whichever comes first.
     @ObservationIgnored private var pendingApply = false
+    /// Session-scoped macOS-gate refusal memory (fix pass): the tag whose
+    /// auto-apply the 26.4 gate refused — `evaluateAutoApply` skips it for
+    /// the rest of the session (no .available↔.failed flap on every
+    /// cycle), cleared when the gate passes or a different tag appears.
+    /// Manual applies (the failure banner's Update) are never gated by it.
+    @ObservationIgnored private var refusedApplyTag: String?
     /// Chip the last check ran for; the apply branches on the same value.
     @ObservationIgnored private var chip: SplashChip? = SplashChip.current
 
@@ -252,10 +263,11 @@ final class UpdateCenter {
     /// through ConfigStore while the center holds its own copy from
     /// attach() — without re-adopting the persisted copy here, the
     /// center's next persist() (every check bumps `lastCheckAt`) would
-    /// round-trip its stale struct over the user's toggle. No timer
-    /// action: `start()` honors `autoCheck` at launch and the repeat
-    /// task is cadence-driven, so persisting the toggle is enough for
-    /// the next cycle (Task 11 ruling: no live timer restart).
+    /// round-trip its stale struct over the user's toggle. The toggle
+    /// acts LIVE through this copy (fix pass): the repeat loop re-reads
+    /// it every cycle, so OFF stops the scheduled checks at the next
+    /// cycle boundary and ON resumes them — no timer restart, no
+    /// relaunch.
     func adoptSettings(_ settings: UpdateSettings?) {
         self.settings = settings ?? UpdateSettings()
     }
@@ -269,6 +281,14 @@ final class UpdateCenter {
         self.manager = manager
         manager.preStartUpdateGate = { [weak self] in
             guard let self, self.pendingApply else { return true }
+            // The setting is read LIVE here (fix pass): a pending
+            // auto-apply must not survive "Update splash automatically
+            // when stopped" going off — the deferred intent is voided,
+            // not parked for a later re-enable.
+            guard self.settings.splashAutoApply else {
+                self.pendingApply = false
+                return true
+            }
             await self.applySplashUpdate()
             return true   // proceed with the start whatever happened
         }
@@ -282,10 +302,15 @@ final class UpdateCenter {
     /// `splashChecksEnabled` = `SplashManager.shouldSupervise` (splash
     /// work is supervised-environment-only; the ZGate check always runs).
     /// The `autoCheck` toggle gates every automatic check — manual
-    /// `checkNow` is unaffected (spec §4).
+    /// `checkNow` is unaffected (spec §4) — and is read LIVE: the launch
+    /// check consults it here, the repeat loop re-reads it every cycle.
+    /// The loop is always created (even with the toggle off), so a
+    /// mid-session toggle acts at the next cycle boundary in BOTH
+    /// directions — OFF skips the cycle's checks, ON resumes them —
+    /// without a relaunch; an OFF loop only ever wakes and sleeps.
     func start(splashChecksEnabled: Bool) async {
-        guard settings.autoCheck else { return }
-        if UpdateCadence.shouldCheck(lastCheckAt: settings.lastCheckAt, now: deps.now()) {
+        if settings.autoCheck,
+           UpdateCadence.shouldCheck(lastCheckAt: settings.lastCheckAt, now: deps.now()) {
             await checkNow(splash: splashChecksEnabled)
         }
         let deps = self.deps
@@ -294,6 +319,10 @@ final class UpdateCenter {
             while !Task.isCancelled {
                 try? await deps.sleep(UpdateCadence.repeatInterval)
                 guard let self else { return }
+                // The toggle is re-read every cycle (fix pass): OFF skips
+                // this cycle's checks but keeps the loop alive, so a later
+                // ON resumes without a relaunch.
+                guard self.settings.autoCheck else { continue }
                 await self.checkNow(splash: splashChecksEnabled)
             }
         }
@@ -340,9 +369,14 @@ final class UpdateCenter {
     /// After every check + on the stop hook: apply when the engine is
     /// stopped, defer (pendingApply) while it runs OWNED — the flag is
     /// consumed by the start gate or the stop hook, whichever lands first.
-    /// Adopted/external instances are banner-only, never touched.
+    /// Adopted/external instances are banner-only, never touched. Both
+    /// the setting and the gate-refusal memory are read here, so the
+    /// deferred flag can never arm for an apply that is off or refused.
     func evaluateAutoApply() async {
-        guard case .available = splashState, settings.splashAutoApply else { return }
+        guard case .available(_, let latest) = splashState,
+              settings.splashAutoApply,
+              latest != refusedApplyTag   // gate-refused this session (fix pass)
+        else { return }
         if manager?.state == .stopped {
             await applySplashUpdate()
         } else if case .running(_, _, false)? = manager?.state {
@@ -354,12 +388,35 @@ final class UpdateCenter {
     /// (whichever `installVariant` picks for this chip), one at a time,
     /// macOS ≥ 26.4 gated, post-apply version-verified. Every refusal and
     /// failure degrades to `.failed` — non-alerting, never blocking.
+    /// Manual entry (popover Update button): besides `.available`, a
+    /// `.failed` verdict retries the last tag the check half saw; the
+    /// automatic paths (evaluateAutoApply + the start gate) decide
+    /// BEFORE calling here, so they still honor `splashAutoApply` and
+    /// the refusal memory while a manual click always gets its attempt.
     func applySplashUpdate() async {
-        guard !applying, case .available(_, let latest) = splashState else { return }
+        guard !applying else { return }
+        let latest: String
+        switch splashState {
+        case .available(_, let tag):
+            latest = tag
+        case .failed:
+            // Retry from the failure banner: `.failed` carries only the
+            // reason, so the target is the last-seen tag.
+            guard let tag = settings.lastSplashTag else { return }
+            latest = tag
+        default:
+            return
+        }
         guard SplashChip.macOSSupportsSplash(deps.osVersion()) else {
+            // The refusal is remembered (fix pass): automatic paths skip
+            // this tag for the rest of the session — a low-OS host cannot
+            // flap .available → apply → .failed on every cycle.
+            refusedApplyTag = latest
+            pendingApply = false
             splashState = .failed("needs macOS 26.4+")
             return
         }
+        refusedApplyTag = nil   // the gate passes — a prior refusal is stale
         applying = true
         pendingApply = false
         defer { applying = false }

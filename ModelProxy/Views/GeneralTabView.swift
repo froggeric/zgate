@@ -219,9 +219,10 @@ struct GeneralTabView: View {
     /// this tab persists through ConfigStore while the center holds its
     /// own copy — without re-adoption the center's next check would
     /// round-trip a stale struct over the toggle. The toggle's live
-    /// effect needs nothing else: `UpdateCenter.start` honors
-    /// `autoCheck`, so persisting is enough for the next cycle (Task 11
-    /// ruling: a setAutoCheck-style live timer restart is NOT required).
+    /// effect rides exactly this call: the repeat loop re-reads the
+    /// adopted copy every cycle, so OFF stops the scheduled checks at
+    /// the next cycle boundary and ON resumes them — no timer restart,
+    /// no relaunch.
     private func syncUpdateCenter() {
         updateCenter.adoptSettings(configStore.config.update)
     }

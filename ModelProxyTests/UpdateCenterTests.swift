@@ -69,6 +69,73 @@ import Testing
             currentZGateVersion: { current }))
     }
 
+    /// Steppable sleep seam — a virtual 24 h clock for the repeat loop:
+    /// each `step()` releases exactly one parked sleep (or arms the next
+    /// one to pass straight through), so a test walks cycle boundaries
+    /// deterministically. Task cancellation is honored like Task.sleep
+    /// (parked waiters resume and throw).
+    private final class StepClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var armed = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        var isParked: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return !waiters.isEmpty
+        }
+
+        func sleep(_ seconds: TimeInterval) async throws {
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { c in
+                    lock.lock()
+                    if armed {
+                        armed = false
+                        lock.unlock()
+                        c.resume()
+                        return
+                    }
+                    waiters.append(c)
+                    lock.unlock()
+                }
+            } onCancel: {
+                self.resumeAll()
+            }
+            if Task.isCancelled { throw CancellationError() }
+        }
+
+        /// Let exactly one sleep pass: resume the parked waiter, or arm
+        /// the next sleep call to return immediately.
+        func step() {
+            lock.lock()
+            if waiters.isEmpty {
+                armed = true
+                lock.unlock()
+                return
+            }
+            let all = waiters
+            waiters = []
+            lock.unlock()
+            all.forEach { $0.resume() }
+        }
+
+        private func resumeAll() {
+            lock.lock()
+            let all = waiters
+            waiters = []
+            lock.unlock()
+            all.forEach { $0.resume() }
+        }
+    }
+
+    /// Bounded poll for MainActor state the repeat loop flips from its
+    /// own task (same shape as UpdateCenterApplyTests.waitUntil).
+    private func waitFor(_ condition: @escaping () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(10)
+        while !condition(), Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
     // MARK: - Splash check
 
     @Test func forkUpdateAvailableFromTags() async {
@@ -244,6 +311,48 @@ import Testing
 
         await center.checkNow(chip: .forkM1M2)
         #expect(center.splashState == .available(installed: "1.6.1-m1.1", latest: "1.7.0-m1"))
+    }
+
+    /// Fix pass: the autoCheck toggle is LIVE mid-session — the repeat
+    /// loop re-reads the adopted settings every cycle, so OFF stops the
+    /// scheduled checks at the next cycle boundary and ON resumes them,
+    /// without a relaunch and without a timer restart.
+    @Test func autoCheckToggleIsLiveInTheRepeatLoop() async throws {
+        let stub = FetchStub()
+        stub.serve(splashFixture(tag: "1.7.0-m1"), for: SplashChip.releasesURL(for: .forkM1M2))
+        stub.serve(zgateFixture(tag: "v2.8.9"), for: UpdateCenter.zgateReleasesURL)
+        let clock = StepClock()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let center = UpdateCenter(deps: UpdateCenter.Deps(
+            fetch: { try stub.fetch($0) },
+            now: { now },
+            sleep: { try await clock.sleep($0) },
+            installedSplashVersion: { _ in "1.6.1-m1.1" },
+            currentZGateVersion: { (2, 8, 9) }))
+        // Recent lastCheckAt: the launch check is cadence-gated, the
+        // repeat loop parks in its first 24 h sleep.
+        center.attach(
+            configLoad: { UpdateSettings(lastCheckAt: now.addingTimeInterval(-3600)) },
+            configWrite: { _ in })
+        await center.start(splashChecksEnabled: true)
+        try await waitFor { clock.isParked }
+        #expect(stub.requested.isEmpty)
+
+        // Toggle OFF mid-session (General tab: persist + adoptSettings)…
+        center.adoptSettings(UpdateSettings(
+            autoCheck: false, lastCheckAt: now.addingTimeInterval(-3600)))
+        clock.step()   // 24 h pass → the cycle wakes → no fetch → sleeps again
+        try await waitFor { clock.isParked }
+        #expect(stub.requested.isEmpty)
+
+        // Toggle back ON → the next cycle checks again (splash + zgate).
+        center.adoptSettings(UpdateSettings(
+            autoCheck: true, lastCheckAt: now.addingTimeInterval(-3600)))
+        clock.step()
+        try await waitFor { clock.isParked }
+        #expect(stub.requested.count == 2)
+
+        center.stop()
     }
 
     // MARK: - Persistence

@@ -221,4 +221,94 @@ struct UpdateAlertUITests {
         await done
         #expect(!center.isChecking)
     }
+
+    // MARK: - Fix round 2 (splash-apply failure banner, spec §3.4)
+
+    /// The failure banner model (StatusPopover.splashFailureBanner): a
+    /// NON-ALERTING status line for `.failed` only, with the same
+    /// per-tag dismissal semantics as the available banner (suppressed
+    /// when the tag is the dismissed one; a newer tag re-surfaces it).
+    /// No last-seen tag → no line (nothing to dismiss or retry against).
+    @Test("failure banner matrix: .failed renders the line; per-tag dismissal suppresses it")
+    func splashFailureBannerMatrix() {
+        let banner = StatusPopover.splashFailureBanner(
+            state: .failed("needs macOS 26.4+"), lastTag: "1.7.0-m1", dismissedTag: nil)
+        #expect(banner?.text == "splash update failed — needs macOS 26.4+")
+        #expect(banner?.updateTag == "1.7.0-m1")
+        // Dismissed tag suppresses the line…
+        #expect(StatusPopover.splashFailureBanner(
+            state: .failed("verify: still 1.6.1-m1.1"), lastTag: "1.7.0-m1",
+            dismissedTag: "1.7.0-m1") == nil)
+        // …a newer undismissed tag re-surfaces it.
+        #expect(StatusPopover.splashFailureBanner(
+            state: .failed("staging"), lastTag: "1.8.0-m1",
+            dismissedTag: "1.7.0-m1") != nil)
+        // No tag known → no line; non-failed verdicts never render it.
+        #expect(StatusPopover.splashFailureBanner(
+            state: .failed("release unavailable"), lastTag: nil, dismissedTag: nil) == nil)
+        #expect(StatusPopover.splashFailureBanner(
+            state: .available(installed: "1.6.1-m1.1", latest: "1.7.0-m1"),
+            lastTag: "1.7.0-m1", dismissedTag: nil) == nil)
+        #expect(StatusPopover.splashFailureBanner(
+            state: .upToDate(installed: "1.7.0-m1"), lastTag: "1.7.0-m1", dismissedTag: nil) == nil)
+    }
+
+    /// End to end through a real center: a macOS-gate refusal lands in
+    /// `.failed`, which is informational only (`hasActiveAlert` stays
+    /// false), renders the failure line from the last-seen tag, is
+    /// suppressed by per-tag dismissal — and the manual Update path
+    /// still retries (once the OS gate passes, the retry completes).
+    @Test("failure banner: gate refusal surfaces, never alerts, manual retry completes")
+    @MainActor
+    func splashFailureBannerSurfacesAndRetries() async throws {
+        let splashURL = SplashChip.releasesURL(for: .forkM1M2)
+        let splashFixture = Data(
+            #"{"tag_name":"1.7.0-m1","assets":[{"name":"splash-1.7.0-m1-arm64-macos26.tar.gz","browser_download_url":"https://example.com/splash-1.7.0-m1-arm64-macos26.tar.gz"}]}"#
+                .utf8)
+        let zgateFixture = Data(
+            #"{"tag_name":"v2.8.9","assets":[{"name":"ZGate-v2.8.9.zip","browser_download_url":"https://example.com/ZGate-v2.8.9.zip","digest":"sha256:\#(String(repeating: "ab", count: 32))"}]}"#
+                .utf8)
+        let os = LockedBox(
+            value: OperatingSystemVersion(majorVersion: 15, minorVersion: 7, patchVersion: 0))
+        let applied = LockedBox(value: false)
+        let center = UpdateCenter(deps: UpdateCenter.Deps(
+            fetch: { url in
+                if url == splashURL { return splashFixture }
+                if url == UpdateCenter.zgateReleasesURL { return zgateFixture }
+                throw URLError(.notConnectedToInternet)
+            },
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            installedSplashVersion: { _ in applied.load() ? "1.7.0-m1" : "1.6.1-m1.1" },
+            currentZGateVersion: { (2, 8, 9) },
+            osVersion: { os.load() },
+            applyFork: { release in
+                applied.store(true)
+                return release.tag_name
+            }))
+
+        await center.checkNow(chip: .forkM1M2)
+        #expect(center.splashState == .available(installed: "1.6.1-m1.1", latest: "1.7.0-m1"))
+
+        // Manual apply under a low OS → refused → .failed, never an alert.
+        await center.applySplashUpdate()
+        #expect(center.splashState == .failed("needs macOS 26.4+"))
+        #expect(!center.splashAlert && !center.zgateAlert && !center.hasActiveAlert)
+        #expect(StatusPopover.splashFailureBanner(
+            state: center.splashState,
+            lastTag: center.lastSplashTag,
+            dismissedTag: center.dismissedSplashTag)?.text
+            == "splash update failed — needs macOS 26.4+")
+
+        // Dismissing the tag suppresses the failure line.
+        center.dismissSplash(tag: "1.7.0-m1")
+        #expect(StatusPopover.splashFailureBanner(
+            state: center.splashState,
+            lastTag: center.lastSplashTag,
+            dismissedTag: center.dismissedSplashTag) == nil)
+
+        // Manual retry once the OS gate passes (26.4+) completes the apply.
+        os.store(OperatingSystemVersion(majorVersion: 26, minorVersion: 4, patchVersion: 0))
+        await center.applySplashUpdate()
+        #expect(center.splashState == .upToDate(installed: "1.7.0-m1"))
+    }
 }

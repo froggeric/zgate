@@ -182,6 +182,46 @@ struct StatusPopover: View {
                 dismissLabel: "Dismiss splash update banner",
                 dismiss: { updateCenter.dismissSplash(tag: latest) })
         }
+        // Apply-time failure (spec §3.4): a NON-ALERTING status line —
+        // the badge and alert layer stay silent for `.failed`; the
+        // Update action retries manually, the × dismisses the tag.
+        if let failure = StatusPopover.splashFailureBanner(
+            state: updateCenter.splashState,
+            lastTag: updateCenter.lastSplashTag,
+            dismissedTag: updateCenter.dismissedSplashTag)
+        {
+            actionBanner(
+                icon: "exclamationmark.triangle.fill", tint: .orange,
+                text: failure.text,
+                primaryTitle: splashApplying ? "Updating…" : "Update",
+                primaryDisabled: splashApplying,
+                primary: {
+                    splashApplying = true
+                    Task {
+                        await updateCenter.applySplashUpdate()
+                        splashApplying = false
+                    }
+                },
+                dismissLabel: "Dismiss splash update failure",
+                dismiss: { updateCenter.dismissSplash(tag: failure.updateTag) })
+        }
+    }
+
+    /// Pure, tested model of the splash-apply failure line (fix pass,
+    /// spec §3.4 "the state goes to `failed` with the log tail
+    /// surfaced"): informational only — never a badge driver
+    /// (`hasActiveAlert` ignores `.failed`) — with the SAME per-tag
+    /// dismissal semantics as the available banner. `.failed` carries
+    /// only the reason, so the Update target is the last tag the check
+    /// half saw; no tag → no line (nothing to retry or dismiss against).
+    nonisolated static func splashFailureBanner(
+        state: UpdateCenter.SplashUpdateState,
+        lastTag: String?,
+        dismissedTag: String?
+    ) -> (text: String, updateTag: String)? {
+        guard case .failed(let reason) = state else { return nil }
+        guard let lastTag, lastTag != dismissedTag else { return nil }
+        return ("splash update failed — \(reason)", lastTag)
     }
 
     /// Action banner: the shared `banner` capsule with a trailing primary
