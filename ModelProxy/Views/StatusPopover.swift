@@ -61,7 +61,7 @@ struct StatusPopover: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
         }
-        .frame(width: 400)
+        .frame(width: 440)
         .onAppear {
             if configStore.didResetFromCorrupt {
                 showCorruptBanner = true
@@ -87,7 +87,8 @@ struct StatusPopover: View {
                 credentialModel.startSignIn()
             }
             Button(ReloginAlertContent.copyCommandActionTitle) {
-                copyToClipboard(ReloginAlertContent.command)
+                copyToClipboard(ReloginAlertContent.command(
+                    for: CredentialStore.resolveBase(configStore.config.credentialStoreBase)))
             }
             Button("Not Now", role: .cancel) { }
         } message: {
@@ -138,7 +139,7 @@ struct StatusPopover: View {
             Image(systemName: icon)
                 .foregroundStyle(tint)
             Text(text)
-                .font(.footnote)
+                .font(.callout)
                 .multilineTextAlignment(.leading)
             Spacer(minLength: 0)
         }
@@ -160,13 +161,13 @@ struct StatusPopover: View {
                 id: \.key
             ) { name, port in
                 Text(verbatim: "\(name):\(port)")
-                    .font(.footnote)
+                    .font(.callout)
                     .fontWeight(.medium)
                     .foregroundStyle(.secondary)
             }
             if proxyServer.boundPorts.isEmpty {
                 Text("No active listeners")
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.tertiary)
             }
         }
@@ -221,11 +222,11 @@ struct StatusPopover: View {
             let chip = credentialModel.face.chip
             HStack(spacing: 8) {
                 Text(chip.text)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(chip.color)
                 if let retry = credentialModel.lastLoginOutcome?.retryText {
                     Text(retry)
-                        .font(.caption2)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
@@ -234,7 +235,7 @@ struct StatusPopover: View {
                         credentialModel.cancelSignIn()
                     }
                     .buttonStyle(.link)
-                    .font(.caption)
+                    .font(.callout)
                     .accessibilityLabel("Cancel sign-in")
                     .accessibilityHint("Aborts the browser login flow.")
                 } else if credentialModel.face.isActionNeeded {
@@ -242,7 +243,7 @@ struct StatusPopover: View {
                         credentialModel.startSignIn()
                     }
                     .buttonStyle(.link)
-                    .font(.caption)
+                    .font(.callout)
                     .accessibilityLabel("Sign in to ZCode")
                     .accessibilityHint("Opens the browser for the ZCode login flow.")
                 }
@@ -262,7 +263,7 @@ struct StatusPopover: View {
                     vendors: configStore.config.vendors)
                 {
                     Text(summary)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .truncationMode(.middle)
@@ -270,7 +271,7 @@ struct StatusPopover: View {
                         .textSelection(.enabled)
                 } else {
                     Text("No rules enabled — unmatched models pass through")
-                        .font(.footnote)
+                        .font(.subheadline)
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -288,10 +289,10 @@ struct StatusPopover: View {
         let face = SplashLifecycleChip.face(for: state, now: tick)
         return HStack(spacing: 4) {
             Image(systemName: face.symbolName)
-                .font(.caption2)
+                .font(.callout)
                 .foregroundStyle(face.color)
             Text(face.text)
-                .font(.caption)
+                .font(.callout)
                 .foregroundStyle(.secondary)
         }
         .help("Splash lifecycle managed by ZGate (Settings → Splash)")
@@ -307,7 +308,7 @@ struct StatusPopover: View {
         {
             HStack(spacing: 6) {
                 Text(line)
-                    .font(.caption.monospaced())
+                    .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -321,7 +322,7 @@ struct StatusPopover: View {
                     }
                 } label: {
                     Text(copiedEnvLine ? "Copied" : "Copy")
-                        .font(.caption)
+                        .font(.callout)
                 }
                 .buttonStyle(.link)
                 .accessibilityLabel("Copy environment line")
@@ -335,7 +336,7 @@ struct StatusPopover: View {
     private var controlRow: some View {
         HStack(spacing: 8) {
             statusIndicator
-                .frame(width: 110, alignment: .leading)
+                .frame(width: 120, alignment: .leading)
 
             Spacer()
 
@@ -474,28 +475,28 @@ struct StatusPopover: View {
             if proxyServer.isRunning {
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.green)
-                    Text("Running").font(.footnote).fontWeight(.medium)
+                    Text("Running").font(.callout).fontWeight(.medium)
                 }
             } else if proxyServer.lastError != nil {
                 HStack(spacing: 6) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.red)
-                    Text("Error").font(.footnote).fontWeight(.medium)
+                    Text("Error").font(.callout).fontWeight(.medium)
                 }
             } else if proxyServer.isStopped {
                 HStack(spacing: 6) {
                     Image(systemName: "pause.circle.fill")
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
-                    Text("Paused").font(.footnote).fontWeight(.medium)
+                    Text("Paused").font(.callout).fontWeight(.medium)
                 }
             } else {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini)
-                    Text("Starting…").font(.footnote)
+                    Text("Starting…").font(.callout)
                 }
             }
         }
@@ -512,43 +513,61 @@ struct StatusPopover: View {
 
     // MARK: - Traffic
 
+    /// Column headers, shared by the empty state and the pinned section
+    /// header so the two branches can never drift apart. Lives INSIDE the
+    /// scroll container as a pinned section header: any scrollbar inset
+    /// applies to header and rows alike, so the columns stay aligned in
+    /// every scrollbar state.
+    private var trafficHeader: some View {
+        HStack(spacing: 6) {
+            Text("Recent Requests")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("ttft")
+                .frame(width: 48, alignment: .trailing)
+            Text("tok/s")
+                .frame(width: 46, alignment: .trailing)
+            Text("code")
+                .frame(width: 34, alignment: .trailing)
+        }
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 4)
+        .padding(.bottom, 6)
+        .background(.thinMaterial)
+    }
+
     @ViewBuilder
     private var trafficSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Text("Recent Requests")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("ttft")
-                    .frame(width: 40, alignment: .trailing)
-                Text("tok/s")
-                    .frame(width: 44, alignment: .trailing)
-                Text("code")
-                    .frame(width: 28, alignment: .trailing)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 4)
-
+        VStack(alignment: .leading, spacing: 0) {
             if trafficLog.entries.isEmpty {
+                trafficHeader
                 Text("No requests yet")
-                    .font(.footnote)
+                    .font(.subheadline)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 8)
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(trafficLog.entries) { entry in
-                                TrafficRowView(entry: entry)
-                                    .id(entry.id)
+                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                            Section {
+                                ForEach(trafficLog.entries) { entry in
+                                    TrafficRowView(entry: entry)
+                                        .id(entry.id)
+                                }
+                            } header: {
+                                trafficHeader
                             }
                         }
                     }
-                    .frame(height: 220)
-                    .scrollIndicators(.hidden)   // overlay scrollbar was shifting the columns off their headers
+                    .frame(height: 240)
+                    // Cosmetic: keeps the indicator knob off the code column
+                    // during auto-scrolls. Alignment no longer depends on it —
+                    // the header lives in the same scroll container, so any
+                    // scrollbar inset hits header and rows equally.
+                    .scrollIndicators(.hidden)
                     .onChange(of: trafficLog.entries.last?.id) { _, _ in
                         if let last = trafficLog.entries.last {
                             if reduceMotion {
@@ -575,17 +594,17 @@ private struct TrafficRowView: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(entry.timeDisplayText)
-                .font(.caption.monospacedDigit())
+                .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.tertiary)
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(entry.displayModelLabel)
-                    .font(.caption)
+                    .font(.body)
                     .foregroundStyle(entry.isAuxiliaryTraffic ? .secondary : .primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(entry.classTargetDisplayLabel)
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -593,22 +612,22 @@ private struct TrafficRowView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Text(entry.ttftDisplayText)
-                .font(.caption.monospacedDigit())
+                .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.tertiary)
-                .frame(width: 40, alignment: .trailing)
+                .frame(width: 48, alignment: .trailing)
 
             Text(entry.tokensPerSecondDisplayText)
-                .font(.caption.monospacedDigit())
+                .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.tertiary)
-                .frame(width: 44, alignment: .trailing)
+                .frame(width: 46, alignment: .trailing)
 
             Text("\(entry.httpStatus)")
-                .font(.caption.monospacedDigit())
+                .font(.subheadline.monospacedDigit())
                 .foregroundStyle(statusColor)
-                .frame(width: 28, alignment: .trailing)
+                .frame(width: 34, alignment: .trailing)
         }
         .padding(.horizontal, 4)
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilitySummary)
     }
@@ -624,7 +643,11 @@ private struct TrafficRowView: View {
     }
 
     private var accessibilitySummary: String {
-        "\(entry.timeDisplayText), \(entry.displayModelLabel), \(entry.classTargetDisplayLabel), HTTP \(entry.httpStatus), TTFT \(entry.ttftDisplayText), \(entry.tokensPerSecondDisplayText)"
+        // The unit is spoken only for a real value — "— tok/s" would
+        // announce a unit for a number that does not exist.
+        let tps = entry.tokensPerSecondDisplayText
+        let tpsSpoken = tps == "—" ? tps : "\(tps) tok/s"
+        return "\(entry.timeDisplayText), \(entry.displayModelLabel), \(entry.classTargetDisplayLabel), HTTP \(entry.httpStatus), TTFT \(entry.ttftDisplayText), \(tpsSpoken)"
     }
 
 }

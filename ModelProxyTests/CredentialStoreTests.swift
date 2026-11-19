@@ -428,10 +428,11 @@ extension CredentialStoreTests {
             zcodeJwtToken: "synthetic-identity-jwt",
             userInfoJSON: "{}",
             base: base)
-        // Swap the secret file: the envelopes' fingerprints no longer
+        // Swap the secret the store was sealed under (the colocated file —
+        // resolution candidate #1): the envelopes' fingerprints no longer
         // match — the read path must reject, not mis-decrypt.
-        try Data("a-different-secret".utf8)
-            .write(to: base.appendingPathComponent("secret.txt"))
+        let colocated = base.appendingPathComponent(".zcode/v2/credential-secret")
+        try Data("a-different-secret".utf8).write(to: colocated)
         #expect(throws: CredentialError.fingerprintMismatch(
             field: CredentialStore.activeProviderField)) {
             try CredentialStore(base: base)
@@ -444,19 +445,20 @@ extension CredentialStoreTests {
         try CredentialStore.saveZaiLogin(
             accessToken: "a", zcodeJwtToken: "i", userInfoJSON: "{}", base: base)
 
-        let storeURL = base.appendingPathComponent(".zcode/v2/credentials.json")
-        let secretURL = base.appendingPathComponent("secret.txt")
+        let v2 = base.appendingPathComponent(".zcode/v2", isDirectory: true)
+        let storeURL = v2.appendingPathComponent("credentials.json")
+        let secretURL = v2.appendingPathComponent("credential-secret")
         let permissions = { (url: URL) -> Int in
             ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.posixPermissions] as? NSNumber)?.intValue ?? 0
         }
         #expect(permissions(storeURL) & 0o777 == 0o600)
         #expect(permissions(secretURL) & 0o777 == 0o600)
-        // No temporary files survive the atomic rename.
-        let v2Entries = try FileManager.default.contentsOfDirectory(
-            atPath: storeURL.deletingLastPathComponent().path)
-        #expect(v2Entries == ["credentials.json"])
+        // No temporary files survive the atomic rename; the secret lives
+        // in the CLI's colocated location (nothing at <base>/secret.txt).
+        let v2Entries = try FileManager.default.contentsOfDirectory(atPath: v2.path)
+        #expect(Set(v2Entries) == ["credentials.json", "credential-secret"])
         let baseEntries = try FileManager.default.contentsOfDirectory(atPath: base.path)
-        #expect(Set(baseEntries) == [".zcode", "secret.txt"])
+        #expect(baseEntries == [".zcode"])
     }
 
     @Test func saveRejectsStaleExpectedRevision() throws {
@@ -544,16 +546,18 @@ extension CredentialStoreTests {
         // Re-poison (the fresh secret disappears again): the second
         // occurrence REPLACES the quarantine instead of failing or
         // accumulating files.
-        try FileManager.default.removeItem(at: base.appendingPathComponent("secret.txt"))
+        try FileManager.default.removeItem(
+            at: v2.appendingPathComponent("credential-secret"))
         try Data(#"{"second":"dead-store"}"#.utf8).write(to: storeURL)
         _ = try CredentialStore.saveZaiLogin(
             accessToken: "second-login", zcodeJwtToken: "identity", userInfoJSON: "{}",
             base: base)
         #expect(try String(contentsOf: quarantineURL, encoding: .utf8)
             == #"{"second":"dead-store"}"#)
-        // Exactly the live store plus one quarantine file — no leftovers.
+        // Exactly the live store, its fresh colocated secret, and one
+        // quarantine file — no leftovers.
         #expect(try FileManager.default.contentsOfDirectory(atPath: v2.path).sorted()
-            == ["credentials.json", "credentials.json.unreadable-store"])
+            == ["credential-secret", "credentials.json", "credentials.json.unreadable-store"])
         // The second clean write is intact and loadable.
         let store = try CredentialStore(base: base)
         #expect(try store.accessToken() == "second-login")
@@ -583,6 +587,199 @@ extension CredentialStoreTests {
         #expect(seeded == ZaiLoginSaveResult(
             storeLacksProjectLocation: false, quarantinedUnreadableStore: false))
     }
+
+    // MARK: - CLI co-tenancy (os envelopes + Keychain secret)
+
+    private struct FakeKeychain: KeychainReading {
+        var keys: [String: Data] = [:]
+        var deniedAccounts: Set<String> = []
+        var unavailableAccounts: Set<String> = []
+
+        func osSecretKey(account: String) throws -> Data {
+            if deniedAccounts.contains(account) {
+                throw KeychainSecretFailure.accessDenied
+            }
+            if unavailableAccounts.contains(account) {
+                throw KeychainSecretFailure.unavailable
+            }
+            guard let key = keys[account] else {
+                throw KeychainSecretFailure.itemNotFound
+            }
+            return key
+        }
+    }
+
+    /// Builds a CLI-shaped store: os envelopes under a synthetic 32-byte
+    /// key, a location entry, revision `revision`, and NO secret file —
+    /// exactly what a standard logged-in zcode CLI leaves behind.
+    private func seedOSStore(in base: URL, rawKey: Data, revision: Int) throws -> URL {
+        let v2 = base.appendingPathComponent(".zcode/v2", isDirectory: true)
+        try FileManager.default.createDirectory(at: v2, withIntermediateDirectories: true)
+        let key = CredentialStore.StoreKey(flavor: .os, keyData: rawKey, secretData: nil)
+        let locationJSON = """
+        {"organizationId":"\(Self.syntheticOrganizationId)","projectId":"\(Self.syntheticProjectId)","apiKeyId":"\(Self.syntheticAPIKeyId)"}
+        """
+        var fields: [String: String] = [:]
+        fields[CredentialStore.accessTokenField] = try CredentialStore.sealEnvelope(
+            value: "synthetic-os-access.jwt.payload", key: key)
+        fields[CredentialStore.zcodeJwtTokenField] = try CredentialStore.sealEnvelope(
+            value: "synthetic-os-identity.jwt.payload", key: key)
+        fields[CredentialStore.activeProviderField] = try CredentialStore.sealEnvelope(
+            value: "zai", key: key)
+        fields[CredentialStore.userInfoField] = try CredentialStore.sealEnvelope(
+            value: "{}", key: key)
+        fields[CredentialStore.sessionRevisionField] = try CredentialStore.sealEnvelope(
+            value: String(revision), key: key)
+        fields[CredentialStore.projectKeyLocationFieldPrefix + "%5B%22synthetic%22%5D"] =
+            try CredentialStore.sealEnvelope(value: locationJSON, key: key)
+        let storeURL = v2.appendingPathComponent("credentials.json")
+        try JSONEncoder().encode(fields).write(to: storeURL)
+        return storeURL
+    }
+
+    @Test func osEnvelopeStoreReadsViaKeychainKey() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let rawKey = Data((0..<32).map { UInt8($0 & 0xFF) })
+        let storeURL = try seedOSStore(in: base, rawKey: rawKey, revision: 7)
+
+        let account = CredentialStore.keychainAccount(forStoreAt: storeURL)
+        let store = try CredentialStore(
+            storeURL: storeURL,
+            secretURL: base.appendingPathComponent("secret.txt"),
+            keychain: FakeKeychain(keys: [account: rawKey]))
+
+        #expect(try store.accessToken() == "synthetic-os-access.jwt.payload")
+        #expect(try store.projectKeyLocation()?.organizationId == Self.syntheticOrganizationId)
+        #expect(store.sealingKey?.flavor == .os)
+    }
+
+    @Test func saveAdoptsReadableOSStoreWithoutQuarantineOrSecretFile() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let rawKey = Data((0..<32).map { UInt8(($0 * 7) & 0xFF) })
+        let storeURL = try seedOSStore(in: base, rawKey: rawKey, revision: 7)
+        let keychain = FakeKeychain(
+            keys: [CredentialStore.keychainAccount(forStoreAt: storeURL): rawKey])
+
+        let result = try CredentialStore.saveZaiLogin(
+            accessToken: "fresh-access.jwt.payload",
+            zcodeJwtToken: "fresh-identity.jwt.payload",
+            userInfoJSON: "{}",
+            base: base,
+            keychain: keychain)
+
+        // No quarantine, no secret file — the CLI's Keychain stays the
+        // only secret source.
+        #expect(!result.quarantinedUnreadableStore)
+        #expect(!FileManager.default.fileExists(
+            atPath: base.appendingPathComponent("secret.txt").path))
+        #expect(!FileManager.default.fileExists(
+            atPath: storeURL.deletingLastPathComponent()
+                .appendingPathComponent(CredentialStore.unreadableStoreQuarantineName).path))
+
+        // Re-sealed os flavor, location preserved verbatim, revision bumped.
+        let raw = try JSONDecoder().decode(
+            [String: String].self, from: Data(contentsOf: storeURL))
+        #expect(raw.values.allSatisfy { $0.hasPrefix("enc:v2:os:") })
+        #expect(raw.keys.contains { $0.hasPrefix(CredentialStore.projectKeyLocationFieldPrefix) })
+        #expect(!result.storeLacksProjectLocation)
+
+        // And it round-trips through the read path with the same key.
+        let store = try CredentialStore(
+            storeURL: storeURL,
+            secretURL: base.appendingPathComponent("secret.txt"),
+            keychain: keychain)
+        #expect(try store.accessToken() == "fresh-access.jwt.payload")
+        #expect(try store.value(for: CredentialStore.sessionRevisionField) == "8")
+    }
+
+    @Test func saveRefusesToQuarantineWhenKeychainAccessDenied() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let rawKey = Data((0..<32).map { UInt8(($0 * 11) & 0xFF) })
+        let storeURL = try seedOSStore(in: base, rawKey: rawKey, revision: 3)
+        let account = CredentialStore.keychainAccount(forStoreAt: storeURL)
+        let keychain = FakeKeychain(deniedAccounts: [account])
+
+        #expect(throws: CredentialWriteError.keychainAccessDenied) {
+            try CredentialStore.saveZaiLogin(
+                accessToken: "x", zcodeJwtToken: "y", userInfoJSON: "{}",
+                base: base, keychain: keychain)
+        }
+        // The CLI store is untouched — no quarantine, no rewrite.
+        #expect(!FileManager.default.fileExists(
+            atPath: storeURL.deletingLastPathComponent()
+                .appendingPathComponent(CredentialStore.unreadableStoreQuarantineName).path))
+        let raw = try JSONDecoder().decode(
+            [String: String].self, from: Data(contentsOf: storeURL))
+        #expect(raw[CredentialStore.accessTokenField]?.hasPrefix("enc:v2:os:") == true)
+    }
+
+    @Test func virginSaveUsesCLIDiscoverableColocatedSecret() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let v2 = base.appendingPathComponent(".zcode/v2", isDirectory: true)
+
+        _ = try CredentialStore.saveZaiLogin(
+            accessToken: "a", zcodeJwtToken: "i", userInfoJSON: "{}", base: base)
+
+        // The secret lands at the CLI's own colocated path, as a valid
+        // UTF-8 base64url string (the CLI hashes the file's UTF-8 bytes).
+        let secretURL = v2.appendingPathComponent("credential-secret")
+        #expect(FileManager.default.fileExists(atPath: secretURL.path))
+        let secretString = try #require(
+            String(data: try Data(contentsOf: secretURL), encoding: .utf8))
+        #expect(secretString.count == 43)
+        #expect(secretString.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+
+        // And the store round-trips through the read path with NO
+        // keychain item — the colocated file is candidate #1.
+        let store = try CredentialStore(
+            storeURL: v2.appendingPathComponent("credentials.json"),
+            secretURL: base.appendingPathComponent("secret.txt"),
+            keychain: FakeKeychain())
+        #expect(try store.accessToken() == "a")
+        #expect(store.sealingKey?.flavor == .env)
+    }
+
+    @Test func saveRefusesToQuarantineWhenKeychainUnavailable() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let rawKey = Data((0..<32).map { UInt8(($0 * 13) & 0xFF) })
+        let storeURL = try seedOSStore(in: base, rawKey: rawKey, revision: 5)
+        let account = CredentialStore.keychainAccount(forStoreAt: storeURL)
+        let keychain = FakeKeychain(unavailableAccounts: [account])
+
+        #expect(throws: CredentialWriteError.keychainUnavailable) {
+            try CredentialStore.saveZaiLogin(
+                accessToken: "x", zcodeJwtToken: "y", userInfoJSON: "{}",
+                base: base, keychain: keychain)
+        }
+        // The CLI store is untouched — no quarantine, no rewrite.
+        #expect(!FileManager.default.fileExists(
+            atPath: storeURL.deletingLastPathComponent()
+                .appendingPathComponent(CredentialStore.unreadableStoreQuarantineName).path))
+        let raw = try JSONDecoder().decode(
+            [String: String].self, from: Data(contentsOf: storeURL))
+        #expect(raw[CredentialStore.accessTokenField]?.hasPrefix("enc:v2:os:") == true)
+    }
+
+    @Test func loginRemedyIsBaseAware() {
+        #expect(CredentialStore.loginRemedy(forBase: nil) == CredentialStore.loginRemedy)
+        #expect(
+            CredentialStore.loginRemedy(forBase: CredentialStore.defaultBase)
+                == CredentialStore.loginRemedy)
+        let custom = URL(fileURLWithPath: "/opt/zgate-store", isDirectory: true)
+        #expect(
+            CredentialStore.loginRemedy(forBase: custom)
+                == "ZCODE_DATA_BASE_DIR=/opt/zgate-store " + CredentialStore.loginRemedy)
+        // The alert surface delegates to the same mapping.
+        #expect(
+            ReloginAlertContent.command(for: custom)
+                == CredentialStore.loginRemedy(forBase: custom))
+        #expect(ReloginAlertContent.command(for: nil) == ReloginAlertContent.command)
+    }
 }
 
 extension CredentialStore {
@@ -606,9 +803,11 @@ extension CredentialStoreTests {
             #expect(CredentialStore.defaultBase.path.hasPrefix(isolated.path))
         } else {
             // Live run: the GUI/CLI shared store (approved user decision
-            // 2026-11-18) — $HOME/.zcode, layout $HOME/.zcode/v2/…
+            // 2026-11-18) — the CLI's default data base $HOME, so the
+            // store resolves to $HOME/.zcode/v2/… exactly where a logged-in
+            // CLI writes it.
             let home = FileManager.default.homeDirectoryForCurrentUser
-            #expect(CredentialStore.defaultBase == home.appendingPathComponent(".zcode"))
+            #expect(CredentialStore.defaultBase == home)
         }
     }
 

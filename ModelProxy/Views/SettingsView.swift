@@ -40,7 +40,7 @@ struct SettingsView: View {
             AboutTabView()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(minWidth: 560, minHeight: 420)
+        .frame(minWidth: 600, minHeight: 440)
         .environment(configStore)
         .environment(proxyServer)
         .environment(tokenStatsStore)
@@ -340,16 +340,16 @@ private struct RuleRow: View {
                         .font(.body.monospaced())
                 }
                 Text("\(mapping.targetModel) @ \(vendorName)")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 if let backupVendorName {
                     Text("⇄ \(mapping.backupTargetModel ?? mapping.targetModel) @ \(backupVendorName)")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 ForEach(Array((mapping.conditions ?? []).enumerated()), id: \.offset) { _, condition in
                     Text("when \(condition.badgeText)")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -401,7 +401,6 @@ private struct RuleRow: View {
                     .accessibilityLabel("Edit rule for \(mapping.sourceModel)")
                 Button("Delete", role: .destructive, action: onDelete)
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
                     .accessibilityLabel("Delete rule for \(mapping.sourceModel)")
             }
         }
@@ -410,10 +409,10 @@ private struct RuleRow: View {
 
     private func badge(_ title: String, color: Color) -> some View {
         Text(title)
-            .font(.caption)
+            .font(.subheadline)
             .foregroundStyle(color)
             .padding(.horizontal, 4)
-            .padding(.vertical, 1)
+            .padding(.vertical, 2)
             .background(color.opacity(0.10))
             .clipShape(Capsule())
     }
@@ -478,7 +477,7 @@ private struct RuleEditorSheet: View {
                     .autocorrectionDisabled()
             } else if case .catchAll = draft.matchMode {
                 Text("Serves every request no earlier rule matched. Evaluated after all class rules.")
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
 
@@ -566,7 +565,7 @@ private struct RuleEditorSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             if let message = validationMessage {
                 Label(message, systemImage: "exclamationmark.triangle")
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.orange)
             }
             HStack {
@@ -622,11 +621,10 @@ private struct ConditionEditorRow: View {
                 Label(
                     condition.type == .timeWindow ? "Time window" : "Quota below",
                     systemImage: condition.type == .timeWindow ? "clock" : "gauge.with.needle")
-                    .font(.footnote.weight(.medium))
+                    .font(.subheadline.weight(.medium))
                 Spacer()
                 Button("Remove", role: .destructive, action: onRemove)
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
             }
 
             switch condition.type {
@@ -655,7 +653,7 @@ private struct ConditionEditorRow: View {
                         format: .number
                     )
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 50)
+                    .frame(width: 56)
                     .multilineTextAlignment(.trailing)
                     Text("%")
                 }
@@ -711,7 +709,7 @@ struct QuotaTabView: View {
                     .disabled(!quotaModel.canRefresh || quotaModel.isRefreshing)
                     if quotaModel.isDemoSeeded {
                         Text("demo data seeded (debug menu)")
-                            .font(.footnote)
+                            .font(.callout)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -839,7 +837,7 @@ struct AdvancedTabView: View {
                 }
             }
             Text("Rejected signatures re-handshake automatically (once), then fail open unsigned with a warning.")
-                .font(.footnote)
+                .font(.callout)
                 .foregroundStyle(.secondary)
         } header: {
             Text("Signing")
@@ -865,25 +863,29 @@ struct AdvancedTabView: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Re-login command (terminal fallback, opens a browser for OAuth):")
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
-                CopyableLineView(line: ReloginAlertContent.command, copiedKey: $copied, key: ReloginAlertContent.command)
+                CopyableLineView(
+                    line: ReloginAlertContent.command(
+                        for: CredentialStore.resolveBase(configStore.config.credentialStoreBase)),
+                    copiedKey: $copied,
+                    key: ReloginAlertContent.command)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Last chain build (stage · HTTP · duration · outcome length):")
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 if chainEvents.isEmpty {
                     Text("No chain events yet")
-                        .font(.footnote.monospaced())
+                        .font(.subheadline.monospaced())
                         .foregroundStyle(.tertiary)
                 } else {
                     ForEach(Array(chainEvents.enumerated()), id: \.offset) { _, event in
                         Text(
                             verbatim: "\(event.stage.rawValue) · HTTP \(event.status) · \(event.ms) ms"
                                 + (event.outcomeTokenLength.map { " · \($0) chars" } ?? ""))
-                            .font(.footnote.monospaced())
+                            .font(.subheadline.monospaced())
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -906,7 +908,7 @@ private struct CopyableLineView: View {
     var body: some View {
         HStack {
             Text(line)
-                .font(.footnote.monospaced())
+                .font(.callout.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -937,7 +939,7 @@ struct AboutTabView: View {
             Section("ZGate") {
                 row("Version", value: FeedbackMail.versionDisplay)
                 Text("A native menu-bar proxy for Claude Code: signed zcode relay routing, local splash fallback, and quota-aware rules.")
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
 
@@ -946,20 +948,20 @@ struct AboutTabView: View {
                     Text("ZGate — this fork")
                     if let url = URL(string: "https://github.com/froggeric/zgate") {
                         Link("github.com/froggeric/zgate", destination: url)
-                            .font(.footnote)
+                            .font(.callout)
                     }
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Built on model-proxy (MIT)")
                     if let url = URL(string: "https://github.com/n0rvyn/model-proxy") {
                         Link("github.com/n0rvyn/model-proxy", destination: url)
-                            .font(.footnote)
+                            .font(.callout)
                     }
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Splash local target")
                     Text("Anthropic-protocol local server (splash). Port is configured on the Splash tab (default 8123); the disabled qwen rules under Rules route here once enabled.")
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -967,7 +969,7 @@ struct AboutTabView: View {
             Section("Config & data") {
                 row("Config", value: "config.json")
                 Text(AppPaths.appSupport.path)
-                    .font(.footnote.monospaced())
+                    .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }

@@ -19,9 +19,9 @@ struct ModelProxyApp: App {
         let server = ProxyServer(tokenStatsStore: store)
         _proxyServer = State(initialValue: server)
         _loginItemService = State(initialValue: LoginItemService())
-        // Menu-bar title "ZΓ 63%" (spec §6) reads the same model the popover
-        // renders; the slow tick keeps the title fresh while the popover is
-        // closed.
+        // Menu-bar icon (quota ring with the ZΓ mark inside) reads the same
+        // model the popover renders; the slow tick keeps the ring fresh
+        // while the popover is closed.
         let quotaModel = QuotaStatusModel.live(server)
         _quotaModel = State(initialValue: quotaModel)
         // Credential status (login-flow UI): the same model feeds the
@@ -83,18 +83,19 @@ struct ModelProxyApp: App {
     }
 }
 
-/// Menu-bar mark: the "ZΓ 63%" title carries the exact value; the icon is
-/// the quota ring (template image, arc = remaining weekly fraction) in the
-/// healthy state, with fault symbols (paused / launching / error /
-/// credentials) outranking it. Invalidates on the same observable state
-/// the popover renders, so bar and popover can never disagree.
+/// Menu-bar mark: icon-only — the quota ring (template image, arc =
+/// remaining weekly fraction) with the ZΓ brand mark drawn inside it in
+/// the healthy state; fault symbols (paused / launching / error /
+/// credentials) replace the whole mark when set. The exact percentage
+/// stays glanceable in the popover and in the accessibility label.
+/// Invalidates on the same observable state the popover renders, so bar
+/// and popover can never disagree.
 private struct MenuBarLabel: View {
     let quotaModel: QuotaStatusModel
     let proxyServer: ProxyServer
 
     var body: some View {
-        HStack(spacing: 4) {
-            Text(quotaModel.state.menuBarTitle)
+        Group {
             if let symbol = proxyServer.menuBarSymbol {
                 Image(systemName: symbol)
             } else {

@@ -144,8 +144,15 @@ extension CredentialFace {
             return .init(text: "● renewing", color: .orange)
         case .awaitingAuthorization:
             return .init(text: "● authorizing…", color: .orange)
-        case .actionNeeded:
-            return .init(text: "● login expired — sign in", color: .red)
+        case let .actionNeeded(reason):
+            // First-run copy: a machine that never stored a login reads
+            // wrong as "expired". Only the fixed derived literal is
+            // special-cased; every other reason keeps the expired wording
+            // (no reason text is ever rendered — the no-leak invariant).
+            return .init(
+                text: reason == "no stored login"
+                    ? "● sign in to use the relay" : "● login expired — sign in",
+                color: .red)
         case .degraded:
             return .init(text: "● degraded (unsigned)", color: .orange)
         case .off:
@@ -158,13 +165,20 @@ extension CredentialFace {
 
 extension ZaiLoginOutcome {
 
-    /// Fixed retry copy for the status row after a terminal login outcome.
-    /// Only these strings render — the payload (server status / duration)
-    /// never reaches the UI.
+    /// Fixed retry copy for the status row after a terminal login outcome;
+    /// the model's typed client statuses (service unreachable, keychain
+    /// access denied) get their own line. Only these strings render — the
+    /// payload (server status / duration) never reaches the UI.
     var retryText: String? {
         switch self {
         case .ready: return nil
-        case .failed: return "Login failed — retry"
+        case let .failed(status):
+            switch status {
+            case "service unreachable": return "Sign-in service unreachable — retry"
+            case "keychain access denied": return "Keychain access denied — retry"
+            case "keychain unavailable": return "Keychain unavailable — retry"
+            default: return "Login failed — retry"
+            }
         case .timedOut: return "Login timed out — retry"
         }
     }
@@ -329,6 +343,16 @@ final class CredentialStatusModel {
                 outcome = try await client.pollUntilTerminal()
             } catch is CancellationError {
                 // User cancel: silently return to the previous face.
+            } catch let error as ZaiLoginError {
+                if case .http = error {
+                    outcome = .failed(status: "service unreachable")
+                } else {
+                    outcome = .failed(status: "client error")
+                }
+            } catch let error as CredentialWriteError where error == .keychainAccessDenied {
+                outcome = .failed(status: "keychain access denied")
+            } catch let error as CredentialWriteError where error == .keychainUnavailable {
+                outcome = .failed(status: "keychain unavailable")
             } catch {
                 outcome = .failed(status: "client error")
             }

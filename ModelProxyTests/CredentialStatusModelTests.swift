@@ -380,6 +380,10 @@ struct CredentialStatusModelTests {
         #expect(
             CredentialFace.actionNeeded(reason: "anything").chip
             == .init(text: "● login expired — sign in", color: .red))
+        // First-run copy: never-logged-in is not "expired".
+        #expect(
+            CredentialFace.actionNeeded(reason: "no stored login").chip
+            == .init(text: "● sign in to use the relay", color: .red))
         #expect(CredentialFace.degraded.chip == .init(text: "● degraded (unsigned)", color: .orange))
         #expect(CredentialFace.off.chip == .init(text: "● off", color: .gray))
         #expect(CredentialFace.unknown.chip == .init(text: "◐ checking…", color: .gray))
@@ -388,6 +392,15 @@ struct CredentialStatusModelTests {
     @Test("login outcome retry copy is fixed text; ready carries none")
     func loginOutcomeRetryCopyIsFixed() {
         #expect(ZaiLoginOutcome.failed(status: "auth_failed").retryText == "Login failed — retry")
+        #expect(
+            ZaiLoginOutcome.failed(status: "service unreachable").retryText
+                == "Sign-in service unreachable — retry")
+        #expect(
+            ZaiLoginOutcome.failed(status: "keychain access denied").retryText
+                == "Keychain access denied — retry")
+        #expect(
+            ZaiLoginOutcome.failed(status: "keychain unavailable").retryText
+                == "Keychain unavailable — retry")
         #expect(
             ZaiLoginOutcome.timedOut(afterMs: 300_000).retryText == "Login timed out — retry")
         let ready = ZaiLoginOutcome.ready(

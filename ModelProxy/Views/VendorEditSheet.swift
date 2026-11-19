@@ -109,12 +109,12 @@ struct VendorEditSheet: View {
                         Text("Model")
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Text("In $/M")
-                            .frame(width: 46, alignment: .trailing)
+                            .frame(width: 54, alignment: .trailing)
                         Text("Out $/M")
-                            .frame(width: 46, alignment: .trailing)
+                            .frame(width: 54, alignment: .trailing)
                         Color.clear.frame(width: 24)
                     }
-                    .font(.footnote)
+                    .font(.subheadline)
                     .foregroundStyle(.tertiary)
 
                     ForEach(Array(supportedModels.indices), id: \.self) { index in
@@ -133,9 +133,9 @@ struct VendorEditSheet: View {
                                 )
                             )
                             .textFieldStyle(.roundedBorder)
-                            .frame(width: 46)
+                            .frame(width: 54)
                             .multilineTextAlignment(.trailing)
-                            .font(.footnote.monospacedDigit())
+                            .font(.subheadline.monospacedDigit())
                             .labelsHidden()
 
                             TextField(
@@ -146,9 +146,9 @@ struct VendorEditSheet: View {
                                 )
                             )
                             .textFieldStyle(.roundedBorder)
-                            .frame(width: 46)
+                            .frame(width: 54)
                             .multilineTextAlignment(.trailing)
-                            .font(.footnote.monospacedDigit())
+                            .font(.subheadline.monospacedDigit())
                             .labelsHidden()
 
                             Button {
@@ -189,7 +189,7 @@ struct VendorEditSheet: View {
                 // says why, next to the field state that caused it.
                 if let message = validationMessage {
                     Label(message, systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
+                        .font(.subheadline)
                         .foregroundStyle(.orange)
                 }
                 HStack {
@@ -210,7 +210,7 @@ struct VendorEditSheet: View {
             }
             .padding()
         }
-        .frame(width: 420)
+        .frame(width: 440)
         .onAppear {
             if let vid = editingVendorID,
                let vendor = configStore.config.vendors.first(where: { $0.id == vid }) {

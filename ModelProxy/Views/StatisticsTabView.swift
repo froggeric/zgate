@@ -29,7 +29,7 @@ struct StatisticsTabView: View {
                 .font(.headline)
             Spacer()
             Text("Today: \(tokenStatsStore.todayTotalTokens.compactTokenString) tokens")
-                .font(.footnote)
+                .font(.callout)
                 .foregroundStyle(.secondary)
         }
         .padding(.bottom, 8)
@@ -47,7 +47,7 @@ struct StatisticsTabView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
             Text("Token counts appear after the first proxied request.")
-                .font(.footnote)
+                .font(.callout)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
             Spacer()
@@ -84,7 +84,7 @@ struct StatisticsTabView: View {
                     Text("Cost")
                         .frame(width: 60, alignment: .trailing)
                 }
-                .font(.footnote)
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .padding(.vertical, 6)
                 .padding(.horizontal, 4)
@@ -165,9 +165,9 @@ struct StatisticsTabView: View {
             HStack {
                 Image(systemName: "arrow.down.circle.fill")
                     .foregroundStyle(.green)
-                    .font(.caption)
+                    .font(.callout)
                 Text("Estimated savings today: $\(savings, specifier: "%.2f")")
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
             }

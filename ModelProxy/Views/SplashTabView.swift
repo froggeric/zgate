@@ -245,10 +245,10 @@ struct SplashTabView: View {
                     // (filled / half / dashed / alert) — state survives
                     // color-blind viewing and both appearances.
                     Image(systemName: statusSymbol)
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(statusColor)
                     Text(SplashTabModel.stateLine(manager.state, now: Date()))
-                        .font(.footnote)
+                        .font(.callout)
                     Spacer()
                 }
                 HStack {
@@ -295,7 +295,7 @@ struct SplashTabView: View {
                 }
                 if !m.portIsValid {
                     Text("Port must be 1024–65535; changes apply (and restart the server) once valid.")
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.red)
                 }
             }
@@ -325,9 +325,9 @@ struct SplashTabView: View {
                 }
                 ForEach(m.profiles) { p in
                     HStack {
-                        Text(p.name).font(.footnote)
+                        Text(p.name).font(.callout)
                         Spacer()
-                        Text(p.model).font(.caption).foregroundStyle(.secondary)
+                        Text(p.model).font(.callout).foregroundStyle(.secondary)
                     }
                     .contentShape(Rectangle())
                     .onTapGesture { editingProfile = p }
@@ -347,7 +347,7 @@ struct SplashTabView: View {
     private var installSection: some View {
         Section("Binary") {
             HStack {
-                Text(installLine).font(.caption)
+                Text(installLine).font(.callout)
                 Spacer()
                 Button(installBusy ? "Installing…" : "Update / Install") {
                     Task { await runInstall() }
@@ -501,14 +501,14 @@ struct SplashLogTail: View {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
                         Text(line)
-                            .font(.caption.monospaced())
+                            .font(.subheadline.monospaced())
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .id(i)
                     }
                 }
                 .padding(.vertical, 4)
             }
-            .frame(minHeight: 140, maxHeight: 260)
+            .frame(minHeight: 160, maxHeight: 300)
             .onAppear {
                 if let last = lines.indices.last { proxy.scrollTo(last, anchor: .bottom) }
             }

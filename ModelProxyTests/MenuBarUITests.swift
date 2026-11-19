@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import Testing
@@ -19,7 +20,8 @@ struct MenuBarUITests {
         #expect(state.fraction == nil)
         #expect(state.percentText == nil)
         #expect(state.isStale == false)
-        #expect(state.menuBarTitle == "ZΓ")
+        // No data → nil weekly fraction → the dashed no-data ring.
+        #expect(state.weeklyFraction == nil)
     }
 
     @Test("stale state keeps the last-known fraction and dims")
@@ -47,7 +49,6 @@ struct MenuBarUITests {
         let state = QuotaDisplayState.make(
             snapshot: QuotaSnapshot(fractionRemaining: 0.6324, fetchedAt: Date()), stale: false)
         #expect(state.percentText == "63%")
-        #expect(state.menuBarTitle == "ZΓ 63%")
     }
 
     // MARK: - Menu-bar ring (weekly fraction + sweep geometry)
@@ -87,6 +88,83 @@ struct MenuBarUITests {
         #expect(QuotaRingSpec.sweepDegrees(forFraction: 0.99) < 360)
         #expect(abs(QuotaRingSpec.sweepDegrees(forFraction: 0.5) - 180) < 0.001)
         #expect(abs(QuotaRingSpec.sweepDegrees(forFraction: 0.63) - 226.8) < 0.01)
+    }
+
+    @Test("ZΓ mark auto-fit clamps oversized measurements, keeps fitting ones at base size")
+    func markAutoFit() {
+        let clearSpan = QuotaRingSpec.diameter - QuotaRingSpec.lineWidth
+        // Oversized width at base size → scaled down into the fit box.
+        let wide = QuotaRingSpec.fittedMarkFontSize(measuredWidth: clearSpan, measuredCapHeight: 0.01)
+        #expect(wide < QuotaRingSpec.markBaseFontSize)
+        // Cap height clamps independently of width.
+        let tall = QuotaRingSpec.fittedMarkFontSize(measuredWidth: 0.01, measuredCapHeight: clearSpan)
+        #expect(tall < QuotaRingSpec.markBaseFontSize)
+        // Fits within the box → stays at the base size (never scaled up).
+        let fitting = QuotaRingSpec.fittedMarkFontSize(measuredWidth: 1, measuredCapHeight: 1)
+        #expect(fitting == QuotaRingSpec.markBaseFontSize)
+    }
+
+    @Test("menu-bar icon renders as a template image at canvas size in every state")
+    func iconRenderSmoke() {
+        for image in [
+            QuotaMenuBarIcon.image(weeklyFraction: 0.63, stale: false),
+            QuotaMenuBarIcon.image(weeklyFraction: 0.63, stale: true),
+            QuotaMenuBarIcon.image(weeklyFraction: nil, stale: false),
+        ] {
+            #expect(image.isTemplate)
+            #expect(image.size == NSSize(width: QuotaRingSpec.canvas, height: QuotaRingSpec.canvas))
+        }
+    }
+
+    @Test("ring geometry constants are pinned (the composed-mark sizing)")
+    func ringGeometryPinned() {
+        #expect(QuotaRingSpec.canvas == 18)
+        #expect(QuotaRingSpec.diameter == 15)
+        #expect(QuotaRingSpec.lineWidth == 1.75)
+        // The clear interior must fit the auto-fit box the mark targets.
+        #expect(QuotaRingSpec.diameter - QuotaRingSpec.lineWidth == 13.25)
+    }
+
+    @Test("rasterized icon carries mark ink in the interior and clear margins outside the stroke")
+    func iconInkRasterizes() throws {
+        for image in [
+            QuotaMenuBarIcon.image(weeklyFraction: 0.63, stale: false),
+            QuotaMenuBarIcon.image(weeklyFraction: nil, stale: false),
+        ] {
+            let rep = try #require(image.representations.first as? NSBitmapImageRep)
+            let p = rep.pixelsWide
+            let scale = Double(p) / Double(QuotaRingSpec.canvas)
+            let center = p / 2
+            // Nothing inks outside the stroke's outer extent (+ AA slack).
+            let outer = Int(scale * (QuotaRingSpec.diameter + QuotaRingSpec.lineWidth) / 2) + 2
+            var stray = 0
+            for y in 0..<p {
+                for x in 0..<p {
+                    let dx = x - center, dy = y - center
+                    if dx * dx + dy * dy > outer * outer,
+                        rep.colorAt(x: x, y: y)!.alphaComponent > 0.05
+                    {
+                        stray += 1
+                    }
+                }
+            }
+            #expect(stray == 0)
+            // The ZΓ mark inks strictly inside the interior (the only
+            // full-interior content in both states).
+            let inner = Int(scale * (QuotaRingSpec.diameter - QuotaRingSpec.lineWidth) / 2 * 0.55)
+            var markPixels = 0
+            for y in 0..<p {
+                for x in 0..<p {
+                    let dx = x - center, dy = y - center
+                    if dx * dx + dy * dy < inner * inner,
+                        rep.colorAt(x: x, y: y)!.alphaComponent > 0.05
+                    {
+                        markPixels += 1
+                    }
+                }
+            }
+            #expect(markPixels > 10)
+        }
     }
 
     // MARK: - Per-window rows + countdown (Package A)
@@ -203,8 +281,9 @@ struct MenuBarUITests {
             .with(requestClass: .subagent)
         #expect(entry.classTargetDisplayLabel == "subagent → Qwen3.8-27B-4bit")
         #expect(entry.ttftDisplayText == "0.4s")
-        // Decode window: (2.4 - 0.4) s → 1870 / 2.0 ≈ 935 tok/s.
-        #expect(entry.tokensPerSecondDisplayText == "935/s")
+        // Decode window: (2.4 - 0.4) s → 1870 / 2.0 ≈ 935 tok/s; the unit
+        // lives in the column header, so the cell shows the bare number.
+        #expect(entry.tokensPerSecondDisplayText == "935")
         #expect(entry.tokensDisplayText == "1.9K")
 
         // Non-streamed: first body byte ~ whole duration → tok/s suppressed
@@ -219,7 +298,7 @@ struct MenuBarUITests {
             model: "glm-5.3", routeType: .mapped(targetModel: "GLM-5.3"),
             requestKind: .generation, httpStatus: 200, duration: 12.6, ttft: 3.4, outputTokens: 1000)
         #expect(slow.ttftDisplayText == "3s")
-        #expect(slow.tokensPerSecondDisplayText == "109/s")  // 1000 / (12.6 - 3.4) = 108.7 → 109
+        #expect(slow.tokensPerSecondDisplayText == "109")  // 1000 / (12.6 - 3.4) = 108.7 → 109
 
         // Class falls back to model classification without a gateway hint.
         let unhinted = TrafficEntry(
@@ -371,11 +450,12 @@ struct MenuBarUITests {
 
     // MARK: - Credential re-login alert
 
-    @Test("re-login command is the exact Task 5 surface line")
+    @Test("re-login command is the shared-default remedy — no dev-machine env vars")
     func reloginCommandExact() {
+        #expect(ReloginAlertContent.command == CredentialStore.loginRemedy)
         #expect(
             ReloginAlertContent.command
-                == "ZCODE_DATA_BASE_DIR=$HOME/.zcode-scratch-v3 ZCODE_CREDENTIAL_SECRET_FILE=$HOME/.zcode-scratch-v3/secret.txt node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai")
+                == "node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai")
     }
 
     @Test("alert message carries reason and the browser path — short, nothing to transcribe")

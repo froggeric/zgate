@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 /// Typed failures for loading and decrypting the zcode scratch credential store.
 /// Associated values carry file paths, store field names, and structural reasons
@@ -79,6 +80,21 @@ struct CredentialStore {
     static let loginRemedy =
         "node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai"
 
+    /// Base-aware remedy: the bare command for the shared default base;
+    /// otherwise the CLI writes where ZGate reads via `ZCODE_DATA_BASE_DIR`
+    /// (the CLI's own data-base env var — the same semantics `resolveBase`
+    /// applies), so the remedy can always clear the alert.
+    static func loginRemedy(forBase base: URL?) -> String {
+        guard let base, base != defaultBase else { return loginRemedy }
+        return "ZCODE_DATA_BASE_DIR=\(base.path) " + loginRemedy
+    }
+
+    /// The CLI's file-secret location: colocated with the store file (the
+    /// CLI resolves it without any env vars). ZGate-created stores write
+    /// their secret HERE so the CLI can read what ZGate sealed — the CLI
+    /// never looks at `<base>/secret.txt`.
+    static let colocatedSecretFileName = "credential-secret"
+
     static let accessTokenField = "oauth:zai:access_token"
     static let zcodeJwtTokenField = "zcodejwttoken"
     static let projectKeyLocationFieldPrefix = "project-key-location:v1:"
@@ -87,10 +103,14 @@ struct CredentialStore {
     static let sessionRevisionField = "oauth:session_revision"
 
     /// The GUI/CLI shared store base (approved user decision 2026-11-18):
-    /// the default `$HOME/.zcode` the zcode CLI and GUI both use, so a
-    /// login in either is immediately visible to ZGate.
+    /// `$HOME`, the zcode CLI's default `ZCODE_DATA_BASE_DIR`, so the
+    /// shared store resolves to `~/.zcode/v2/credentials.json` — exactly
+    /// where a normally-installed, logged-in CLI writes it (layout
+    /// `<data-base>/.zcode/v2/…`). 2.8(7) and earlier pointed this at
+    /// `~/.zcode` itself, resolving the nonexistent `~/.zcode/.zcode/v2`
+    /// — the shared-store read never succeeded on any machine.
     nonisolated static var sharedBase: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zcode")
+        FileManager.default.homeDirectoryForCurrentUser
     }
 
     /// Legacy scratch home from the capture-time remedy (selectable via the
@@ -119,29 +139,66 @@ struct CredentialStore {
             isDirectory: true)
     }
 
-    private static let envelopePrefix = "enc:v2:env:"
     private static let fingerprintLength = 24
+
+    /// Envelope flavors the store can carry (the CLI's `enc:v2:` scheme).
+    /// `env` seals under SHA256(secret-file bytes) with the secret file
+    /// passed via `ZCODE_CREDENTIAL_SECRET_FILE` (ZGate's classic layout);
+    /// `os` — the CLI's default `credential-source` — seals under the raw
+    /// 32-byte Keychain secret. The flavor lives in the envelope prefix,
+    /// so a store can mix them; each field decrypts with its own flavor's
+    /// key.
+    enum EnvelopeFlavor: String {
+        case env = "enc:v2:env:"
+        case os = "enc:v2:os:"
+    }
+
+    /// One candidate AES key for decrypting (and re-sealing) a store, with
+    /// the flavor it serves. Key bytes only — never logged.
+    struct StoreKey {
+        let flavor: EnvelopeFlavor
+        /// AES key bytes: SHA256(secret-file bytes) for `env`, the raw
+        /// Keychain password bytes for `os`.
+        let keyData: Data
+        /// The `env` flavor's secret-file bytes (re-sealing needs them);
+        /// nil for `os`.
+        let secretData: Data?
+    }
+
+    /// SHA-256 hex of the store file's absolute path — the CLI's Keychain
+    /// account string for the os-flavor secret (live-verified 2026-11-19:
+    /// service "ZCode Credential Encryption", account = this digest).
+    static func keychainAccount(forStoreAt url: URL) -> String {
+        SHA256.hash(data: Data(url.path.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
 
     /// Field name → decrypted (or plaintext passthrough) value.
     private let values: [String: String]
 
+    /// The key that decrypted the store's envelopes (nil for all-plaintext
+    /// stores). `saveZaiLogin` re-seals with this exact key so the CLI
+    /// remains a co-tenant of a store ZGate did not create.
+    private(set) var sealingKey: StoreKey?
+
     // MARK: - Loading
 
-    init(storeURL: URL, secretURL: URL) throws {
+    /// Loads and decrypts the store. Secret candidates, in resolution
+    /// order: the CLI's colocated file secret
+    /// `<store-dir>/credential-secret` (env), the ZGate/scratch
+    /// `secretURL` (env), and the Keychain os secret (the CLI default).
+    /// Each encrypted field decrypts with the candidate matching its
+    /// flavor and fingerprint.
+    init(storeURL: URL, secretURL: URL, keychain: any KeychainReading = LiveKeychain()) throws {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: storeURL.path) else {
             throw CredentialError.notFound(path: storeURL.path)
-        }
-        guard fileManager.fileExists(atPath: secretURL.path) else {
-            throw CredentialError.notFound(path: secretURL.path)
         }
 
         let storeData: Data
         do { storeData = try Data(contentsOf: storeURL) }
         catch { throw CredentialError.unreadable(path: storeURL.path) }
-        let secretData: Data
-        do { secretData = try Data(contentsOf: secretURL) }
-        catch { throw CredentialError.unreadable(path: secretURL.path) }
 
         let fields: [String: String]
         do { fields = try JSONDecoder().decode([String: String].self, from: storeData) }
@@ -150,25 +207,56 @@ struct CredentialStore {
                 path: storeURL.path, reason: "not a JSON object mapping field names to string values")
         }
 
-        let keyData = Data(SHA256.hash(data: secretData))
-        let key = SymmetricKey(data: keyData)
-        let fingerprint = Self.fingerprint(ofKey: keyData)
+        var candidates: [StoreKey] = []
+        let colocatedSecretURL = storeURL.deletingLastPathComponent()
+            .appendingPathComponent(Self.colocatedSecretFileName)
+        for url in [colocatedSecretURL, secretURL] {
+            guard fileManager.fileExists(atPath: url.path) else { continue }
+            let secret: Data
+            do { secret = try Data(contentsOf: url) }
+            catch { throw CredentialError.unreadable(path: url.path) }
+            candidates.append(StoreKey(
+                flavor: .env,
+                keyData: Data(SHA256.hash(data: secret)),
+                secretData: secret))
+        }
+        if let rawKey = try? keychain.osSecretKey(account: Self.keychainAccount(forStoreAt: storeURL)) {
+            candidates.append(StoreKey(flavor: .os, keyData: rawKey, secretData: nil))
+        }
+        guard !candidates.isEmpty else {
+            // Same contract as the pre-adoption loader: with no secret
+            // from any source the store can never open — name the classic
+            // secret path so the remedy points at a re-login.
+            throw CredentialError.notFound(path: secretURL.path)
+        }
 
         var decrypted: [String: String] = [:]
+        var usedKey: StoreKey?
         // Sorted key order makes the first failure deterministic.
         for field in fields.keys.sorted() {
             let envelope = fields[field] ?? ""
-            if !envelope.hasPrefix(Self.envelopePrefix) {
-                guard envelope.hasPrefix("enc:") else {
-                    decrypted[field] = envelope  // unencrypted value — the CLI store tolerates these
-                    continue
-                }
+            guard envelope.hasPrefix("enc:") else {
+                decrypted[field] = envelope  // unencrypted value — the CLI store tolerates these
+                continue
+            }
+            let flavor: EnvelopeFlavor?
+            if envelope.hasPrefix(EnvelopeFlavor.env.rawValue) {
+                flavor = .env
+            } else if envelope.hasPrefix(EnvelopeFlavor.os.rawValue) {
+                flavor = .os
+            } else {
+                flavor = nil
+            }
+            guard let flavor else {
                 throw CredentialError.malformedValue(
-                    field: field, reason: "unsupported envelope (expected \(Self.envelopePrefix)…)")
+                    field: field,
+                    reason: "unsupported envelope (expected \(EnvelopeFlavor.env.rawValue)… or \(EnvelopeFlavor.os.rawValue)…)")
             }
 
-            let sealed = try Self.parseEnvelope(envelope, field: field)
-            guard sealed.fingerprint == fingerprint else {
+            let sealed = try Self.parseEnvelope(envelope, flavor: flavor, field: field)
+            guard let key = candidates.first(where: {
+                $0.flavor == flavor && Self.fingerprint(ofKey: $0.keyData) == sealed.fingerprint
+            }) else {
                 throw CredentialError.fingerprintMismatch(field: field)
             }
 
@@ -178,7 +266,7 @@ struct CredentialStore {
                     nonce: AES.GCM.Nonce(data: sealed.nonce),
                     ciphertext: sealed.ciphertext,
                     tag: sealed.authTag)
-                plaintext = try AES.GCM.open(box, using: key)
+                plaintext = try AES.GCM.open(box, using: SymmetricKey(data: key.keyData))
             } catch {
                 throw CredentialError.decryptFailed(field: field)
             }
@@ -186,11 +274,14 @@ struct CredentialStore {
                 throw CredentialError.malformedValue(field: field, reason: "decrypted value is not valid UTF-8")
             }
             decrypted[field] = value
+            usedKey = key
         }
         self.values = decrypted
+        self.sealingKey = usedKey
     }
 
-    /// Loads `<base>/.zcode/v2/credentials.json` + `<base>/secret.txt`.
+    /// Loads `<base>/.zcode/v2/credentials.json` (secret candidates:
+    /// `<store-dir>/credential-secret`, `<base>/secret.txt`, Keychain).
     init(base: URL) throws {
         try self.init(
             storeURL: base.appendingPathComponent(".zcode/v2/credentials.json"),
@@ -285,8 +376,10 @@ struct CredentialStore {
         let ciphertext: Data
     }
 
-    private static func parseEnvelope(_ envelope: String, field: String) throws -> SealedEnvelope {
-        let rest = String(envelope.dropFirst(envelopePrefix.count))
+    private static func parseEnvelope(
+        _ envelope: String, flavor: EnvelopeFlavor, field: String
+    ) throws -> SealedEnvelope {
+        let rest = String(envelope.dropFirst(flavor.rawValue.count))
         guard let colon = rest.firstIndex(of: ":") else {
             throw CredentialError.malformedValue(field: field, reason: "missing key fingerprint")
         }
@@ -342,6 +435,16 @@ enum CredentialWriteError: Error, Equatable {
     /// `oauth:session_revision` changed between read and write — a
     /// concurrent writer committed first (expected-revision CAS).
     case revisionConflict(expected: Int64, found: Int64)
+    /// The existing store is Keychain-sealed (os envelopes) and access to
+    /// its Keychain secret was refused. The store is NOT quarantined —
+    /// destroying a live CLI login over an access prompt is worse than
+    /// aborting; allow access (or re-login the CLI) and retry.
+    case keychainAccessDenied
+    /// The Keychain is present but unusable right now (service down, or
+    /// the item's password is not a parseable key). The store is NOT
+    /// quarantined — the CLI login may be intact and the failure
+    /// environmental; retry after the environment recovers.
+    case keychainUnavailable
 }
 
 /// Outcome of `saveZaiLogin` — typed flags only, never credential bytes.
@@ -357,68 +460,113 @@ struct ZaiLoginSaveResult: Equatable {
 
 extension CredentialStore {
 
-    /// Seals `value` exactly as the read path expects — the inverse of the
-    /// decrypt above: AES-256-GCM under key = SHA256(secret bytes),
-    /// envelope `enc:v2:env:<24-hex fingerprint>:<iv>.<tag>.<ct>` with the
+    /// Seals `value` under `key` exactly as the read path expects — the
+    /// inverse of the decrypt above: AES-256-GCM, envelope
+    /// `<flavor-prefix><24-hex fingerprint>:<iv>.<tag>.<ct>` with the
     /// triple in unpadded base64url. Fresh random nonce per value (the
     /// committed fixtures' deterministic IVs are test-only).
-    static func sealEnvelope(value: String, secretData: Data) throws -> String {
-        let keyData = Data(SHA256.hash(data: secretData))
+    static func sealEnvelope(value: String, key: StoreKey) throws -> String {
         let sealed = try AES.GCM.seal(
-            Data(value.utf8), using: SymmetricKey(data: keyData))
-        let fingerprint = Self.fingerprint(ofKey: keyData)
-        return "\(envelopePrefix)\(fingerprint)"
+            Data(value.utf8), using: SymmetricKey(data: key.keyData))
+        let fingerprint = Self.fingerprint(ofKey: key.keyData)
+        return key.flavor.rawValue + fingerprint
             + ":\(Base64URL.encode(Data(sealed.nonce)))"
             + ".\(Base64URL.encode(Data(sealed.tag)))"
             + ".\(Base64URL.encode(sealed.ciphertext))"
+    }
+
+    /// Env-flavor seal under key = SHA256(secret bytes) — the classic
+    /// secret-file form (write-path default, test fixtures).
+    static func sealEnvelope(value: String, secretData: Data) throws -> String {
+        try sealEnvelope(
+            value: value,
+            key: StoreKey(
+                flavor: .env,
+                keyData: Data(SHA256.hash(data: secretData)),
+                secretData: secretData))
     }
 
     /// Writes the field set the CLI's `saveZaiLoginCredentials` writes on
     /// flow `ready` (§A.6 step 4): `oauth:active_provider`,
     /// `oauth:zai:access_token`, `zcodejwttoken`, `oauth:zai:user_info`,
     /// preserving existing `project-key-location:v1:*` entries verbatim
-    /// (they stay sealed under the same secret) and wiping other-provider
-    /// fields. `oauth:session_revision` bumps with expected-revision CAS
-    /// semantics — a stale expectation throws `revisionConflict` and
-    /// leaves the store untouched.
+    /// and wiping other-provider fields. `oauth:session_revision` bumps
+    /// with expected-revision CAS semantics — a stale expectation throws
+    /// `revisionConflict` and leaves the store untouched.
     ///
-    /// Files: `<base>/.zcode/v2/credentials.json` + `<base>/secret.txt`.
-    /// A store that does not exist yet gets a freshly generated 32-byte
-    /// secret; an existing secret is reused (and must agree with the
-    /// existing envelopes — a mismatch surfaces as the read path's
-    /// `fingerprintMismatch`, never a blind overwrite). A store whose
-    /// secret file is MISSING is permanently unreadable (its envelopes
-    /// were sealed under a lost key): the write quarantines that file
+    /// Adoption (2026-11-19): an existing store is first read through the
+    /// full candidate ladder (colocated credential-secret, `<base>/secret.txt`,
+    /// Keychain). A READABLE store — including a CLI login with os
+    /// envelopes under the Keychain secret — is preserved in place and
+    /// re-sealed with its own key/flavor, so the CLI stays a co-tenant.
+    /// Only a store no secret from any source can open is quarantined
     /// aside as `credentials.json.unreadable-store` (replaced on each
-    /// occurrence) and writes a fresh virgin store instead of preserving
-    /// dead entries. Writes are 0600 from the first byte and atomic
-    /// (temp + rename, mirroring BizSessionCache.save). The returned
-    /// `ZaiLoginSaveResult` flags the quarantine and whether the
-    /// resulting store carries no location entry (the honest-gap warning
-    /// fast-follow F3).
+    /// occurrence) and rewritten as a virgin store — and an os-sealed
+    /// store whose Keychain access was REFUSED aborts with
+    /// `keychainAccessDenied` instead of being destroyed.
+    ///
+    /// Files: `<base>/.zcode/v2/credentials.json` + `<base>/secret.txt`
+    /// (a virgin store gets a freshly generated 32-byte secret). Writes
+    /// are 0600 from the first byte and atomic (temp + rename, mirroring
+    /// BizSessionCache.save). The returned `ZaiLoginSaveResult` flags the
+    /// quarantine and whether the resulting store carries no location
+    /// entry (the honest-gap warning fast-follow F3).
     @discardableResult
     static func saveZaiLogin(
         accessToken: String,
         zcodeJwtToken: String,
         userInfoJSON: String,
         base: URL,
-        expectedRevision: Int64? = nil
+        expectedRevision: Int64? = nil,
+        keychain: any KeychainReading = LiveKeychain()
     ) throws -> ZaiLoginSaveResult {
         let fileManager = FileManager.default
         let storeURL = base.appendingPathComponent(".zcode/v2/credentials.json")
         let secretURL = base.appendingPathComponent("secret.txt")
 
-        // Poisoned precondition (review F3): the store exists but its
-        // secret does not. The stored envelopes were sealed under the old
-        // secret's key, so they are cryptographically dead — nothing can
-        // be preserved and there is no migration path. Quarantine the
-        // unreadable file aside (deterministic name, replaced on a later
-        // occurrence — a user who recovers the old secret can restore)
-        // and continue as a virgin store. Without this, the CAS decrypt
-        // below throws notFound(secret) forever and wedges every login.
+        func readRawFields() throws -> [String: String] {
+            guard fileManager.fileExists(atPath: storeURL.path) else { return [:] }
+            let data = try Data(contentsOf: storeURL)
+            return try JSONDecoder().decode([String: String].self, from: data)
+        }
+
         let storeExisted = fileManager.fileExists(atPath: storeURL.path)
         let secretExisted = fileManager.fileExists(atPath: secretURL.path)
-        if storeExisted && !secretExisted {
+
+        // Full read through the candidate ladder BEFORE any quarantine
+        // decision: a CLI-written store (os envelopes + Keychain secret,
+        // no secret file) is perfectly readable and must be preserved in
+        // place, re-sealed with its own flavor.
+        var readable: CredentialStore?
+        var existing: [String: String] = [:]
+        if storeExisted {
+            existing = try readRawFields()
+            readable = try? CredentialStore(storeURL: storeURL, secretURL: secretURL, keychain: keychain)
+        }
+
+        var quarantined = false
+        if storeExisted, readable == nil {
+            // An os-sealed store is unreadable only because its Keychain
+            // secret is gone or was refused. A refusal must NOT destroy
+            // the CLI's login — abort; only a missing secret (dead
+            // envelopes, no source anywhere) justifies the quarantine.
+            if existing.values.contains(where: { $0.hasPrefix(EnvelopeFlavor.os.rawValue) }) {
+                do {
+                    _ = try keychain.osSecretKey(account: Self.keychainAccount(forStoreAt: storeURL))
+                    // A key exists but did not decrypt the envelopes —
+                    // treat as dead (fingerprint mismatch), quarantine.
+                } catch KeychainSecretFailure.itemNotFound {
+                    // Provably absent: the envelopes are cryptographically
+                    // dead — quarantine below is the only path.
+                } catch KeychainSecretFailure.accessDenied {
+                    throw CredentialWriteError.keychainAccessDenied
+                } catch {
+                    // Unavailable (keychain service down, unparseable
+                    // password): environmental, possibly transient — never
+                    // destroy a live CLI login over it.
+                    throw CredentialWriteError.keychainUnavailable
+                }
+            }
             let quarantineURL = storeURL.deletingLastPathComponent()
                 .appendingPathComponent(Self.unreadableStoreQuarantineName)
             if rename(storeURL.path, quarantineURL.path) != 0 {
@@ -428,29 +576,42 @@ extension CredentialStore {
                     userInfo: [NSLocalizedDescriptionKey:
                         "could not quarantine unreadable store: \(String(cString: strerror(errorCode)))"])
             }
+            quarantined = true
+            existing = [:]
         }
 
-        // Secret: reuse the existing file, or generate one for a new store.
-        let secretData: Data
-        if secretExisted {
-            secretData = try Data(contentsOf: secretURL)
+        // Sealing key: the readable store's own key (os → the same
+        // Keychain key, env → the same secret bytes); otherwise the env
+        // flavor with the existing secret file or a fresh secret.
+        var freshSecret: Data?
+        let sealingKey: StoreKey
+        if let readerKey = readable?.sealingKey {
+            sealingKey = readerKey
+        } else if secretExisted, let secretData = try? Data(contentsOf: secretURL) {
+            sealingKey = StoreKey(
+                flavor: .env,
+                keyData: Data(SHA256.hash(data: secretData)),
+                secretData: secretData)
         } else {
-            secretData = Self.generateSecret()
+            // Virgin (or secret-less) store: mint the CLI's own file-secret
+            // convention so the CLI stays a co-tenant of what ZGate seals —
+            // the colocated credential-secret holding the secret as an
+            // ASCII base64url STRING (the CLI hashes the file's UTF-8
+            // bytes; raw random bytes would be invalid UTF-8, and the CLI
+            // never looks at <base>/secret.txt).
+            let secretData = Data(Base64URL.encode(Self.generateSecret()).utf8)
+            freshSecret = secretData
+            sealingKey = StoreKey(
+                flavor: .env,
+                keyData: Data(SHA256.hash(data: secretData)),
+                secretData: secretData)
         }
 
-        func readRawFields() throws -> [String: String] {
-            guard fileManager.fileExists(atPath: storeURL.path) else { return [:] }
-            let data = try Data(contentsOf: storeURL)
-            return try JSONDecoder().decode([String: String].self, from: data)
-        }
-
-        // CAS: decrypt the existing store to read the current revision —
-        // this also verifies the secret agrees with the envelopes.
-        let existing = try readRawFields()
-        let foundRevision: Int64 = try {
-            guard !existing.isEmpty else { return 0 }
-            let store = try CredentialStore(storeURL: storeURL, secretURL: secretURL)
-            guard let raw = try? store.value(for: sessionRevisionField) else { return 0 }
+        // CAS: the readable store's revision (a virgin/quarantined path
+        // has none → 0).
+        let foundRevision: Int64 = {
+            guard let readable else { return 0 }
+            guard let raw = try? readable.value(for: sessionRevisionField) else { return 0 }
             return Int64(raw) ?? 0
         }()
         let expected = expectedRevision ?? foundRevision
@@ -459,39 +620,62 @@ extension CredentialStore {
         }
 
         // Assemble: preserved location entries verbatim, the zai login
-        // set sealed fresh, revision bumped.
+        // set sealed fresh under the sealing key, revision bumped.
         var fields = existing.filter { $0.key.hasPrefix(projectKeyLocationFieldPrefix) }
-        fields[activeProviderField] = try sealEnvelope(value: "zai", secretData: secretData)
-        fields[accessTokenField] = try sealEnvelope(value: accessToken, secretData: secretData)
-        fields[zcodeJwtTokenField] = try sealEnvelope(value: zcodeJwtToken, secretData: secretData)
-        fields[userInfoField] = try sealEnvelope(value: userInfoJSON, secretData: secretData)
+        fields[activeProviderField] = try sealEnvelope(value: "zai", key: sealingKey)
+        fields[accessTokenField] = try sealEnvelope(value: accessToken, key: sealingKey)
+        fields[zcodeJwtTokenField] = try sealEnvelope(value: zcodeJwtToken, key: sealingKey)
+        fields[userInfoField] = try sealEnvelope(value: userInfoJSON, key: sealingKey)
         fields[sessionRevisionField] = try sealEnvelope(
-            value: String(foundRevision + 1), secretData: secretData)
+            value: String(foundRevision + 1), key: sealingKey)
 
         // Narrow the CAS window: re-read and re-verify right before write.
-        let reread = try readRawFields()
-        if !reread.isEmpty {
-            let rereadRevision: Int64 = try {
-                let store = try CredentialStore(storeURL: storeURL, secretURL: secretURL)
-                guard let raw = try? store.value(for: sessionRevisionField) else { return 0 }
-                return Int64(raw) ?? 0
-            }()
-            guard rereadRevision == foundRevision else {
-                throw CredentialWriteError.revisionConflict(
-                    expected: foundRevision, found: rereadRevision)
+        // A reread that FAILS to open is not a revision-0 store — when the
+        // first read succeeded at a nonzero revision the likely cause is a
+        // later Keychain refusal; abort with the typed error instead of a
+        // false conflict (or an unverified blind write).
+        if storeExisted, !quarantined {
+            let reread = try readRawFields()
+            if !reread.isEmpty {
+                if let rereadStore = try? CredentialStore(
+                    storeURL: storeURL, secretURL: secretURL, keychain: keychain)
+                {
+                    let rereadRevision: Int64 = {
+                        guard let raw = try? rereadStore.value(for: sessionRevisionField)
+                        else { return 0 }
+                        return Int64(raw) ?? 0
+                    }()
+                    guard rereadRevision == foundRevision else {
+                        throw CredentialWriteError.revisionConflict(
+                            expected: foundRevision, found: rereadRevision)
+                    }
+                } else if foundRevision > 0,
+                    reread.values.contains(where: {
+                        $0.hasPrefix(EnvelopeFlavor.os.rawValue)
+                    })
+                {
+                    throw CredentialWriteError.keychainAccessDenied
+                }
             }
         }
 
         try Self.writeAtomically0600(
             try JSONEncoder().encode(fields), to: storeURL)
-        if !secretExisted {
-            try Self.writeAtomically0600(secretData, to: secretURL)
+        // An os-sealed store never touches a secret FILE — its key lives
+        // in the Keychain already; writing one would shadow the real
+        // source. A freshly generated env secret goes to the CLI's
+        // colocated location (see the virgin-path comment above).
+        if let freshSecret {
+            try Self.writeAtomically0600(
+                freshSecret,
+                to: storeURL.deletingLastPathComponent()
+                    .appendingPathComponent(Self.colocatedSecretFileName))
         }
         return ZaiLoginSaveResult(
             storeLacksProjectLocation: !fields.keys.contains {
                 $0.hasPrefix(projectKeyLocationFieldPrefix)
             },
-            quarantinedUnreadableStore: storeExisted && !secretExisted)
+            quarantinedUnreadableStore: quarantined)
     }
 
     /// Quarantine name for a store written aside because its secret file
@@ -529,6 +713,102 @@ extension CredentialStore {
                 domain: NSPOSIXErrorDomain, code: Int(errorCode),
                 userInfo: [NSLocalizedDescriptionKey: "could not replace store file: \(reason)"])
         }
+    }
+}
+
+// MARK: - Keychain os-secret seam (CLI co-tenancy)
+
+/// Typed failures of `KeychainReading` (file scope — Swift forbids
+/// nested types in protocols).
+enum KeychainSecretFailure: Error, Equatable {
+    /// No item for the account — the CLI never stored (or removed) it.
+    case itemNotFound
+    /// The item exists but access was refused (ACL / user deny).
+    case accessDenied
+    /// The item exists but its password is not a usable 32-byte key.
+    case unavailable
+}
+
+/// Reads the CLI's Keychain-held os-flavor secret: the zcode CLI stores
+/// the 32-byte AES key as a base64url password under service
+/// "ZCode Credential Encryption", account = SHA-256 hex of the store
+/// file's absolute path. Injectable so store tests never touch the real
+/// Keychain; the live reader is inert inside the isolated test host.
+protocol KeychainReading: Sendable {
+    /// Raw key bytes for `account`.
+    func osSecretKey(account: String) throws -> Data
+}
+
+struct LiveKeychain: KeychainReading {
+    static let service = "ZCode Credential Encryption"
+
+    /// Process-wide probe cache: the store loader runs on every status
+    /// tick (~20 s) and several times per chain build, so an
+    /// ACL-protected item would otherwise prompt on EVERY probe. Positive
+    /// results cache for the process lifetime; denials cache per account
+    /// so a refusal can never become a prompt loop. Keyed by account (=
+    /// the store-path digest). Key bytes only — never logged.
+    private static let cacheLock = NSLock()
+    private nonisolated(unsafe) static var cachedKeys: [String: Data] = [:]
+    private nonisolated(unsafe) static var deniedAccounts: Set<String> = []
+
+    func osSecretKey(account: String) throws -> Data {
+        // Never probe the login Keychain from the isolated test host.
+        if AppPaths.isolatedBase != nil { throw KeychainSecretFailure.itemNotFound }
+        Self.cacheLock.lock()
+        if let cached = Self.cachedKeys[account] {
+            Self.cacheLock.unlock()
+            return cached
+        }
+        if Self.deniedAccounts.contains(account) {
+            Self.cacheLock.unlock()
+            throw KeychainSecretFailure.accessDenied
+        }
+        Self.cacheLock.unlock()
+
+        let key = try tryProbe(account: account)
+
+        Self.cacheLock.lock()
+        Self.cachedKeys[account] = key
+        Self.cacheLock.unlock()
+        return key
+    }
+
+    private func tryProbe(account: String) throws -> Data {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        let denied: Bool
+        switch status {
+        case errSecSuccess:
+            denied = false
+        case errSecItemNotFound:
+            throw KeychainSecretFailure.itemNotFound
+        case errSecAuthFailed, errSecInteractionNotAllowed, errSecUserCanceled:
+            denied = true
+        default:
+            throw KeychainSecretFailure.unavailable
+        }
+        if denied {
+            Self.cacheLock.lock()
+            Self.deniedAccounts.insert(account)
+            Self.cacheLock.unlock()
+            throw KeychainSecretFailure.accessDenied
+        }
+        guard let data = item as? Data else { throw KeychainSecretFailure.unavailable }
+        // Keychain passwords are the password string's UTF-8 bytes; the
+        // CLI stores a 43-char base64url string. Tolerate a raw 32-byte
+        // item too.
+        if data.count == 32 { return data }
+        if let password = String(data: data, encoding: .utf8),
+            let key = Base64URL.decode(password), key.count == 32
+        { return key }
+        throw KeychainSecretFailure.unavailable
     }
 }
 

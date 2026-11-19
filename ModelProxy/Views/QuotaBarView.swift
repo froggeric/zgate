@@ -66,13 +66,6 @@ enum QuotaDisplayState: Equatable, Sendable {
         fraction.map { "\(Int((($0) * 100).rounded()))%" }
     }
 
-    /// Menu-bar title, spec §6 "ZΓ 63%" style. No data renders the bare
-    /// mark so the item stays legible without implying an empty quota.
-    var menuBarTitle: String {
-        guard let percentText else { return "ZΓ" }
-        return "ZΓ \(percentText)"
-    }
-
     /// Remaining weekly fraction for the menu-bar ring: the weekly window
     /// row when the snapshot carried one, clamped into 0...1; the legacy
     /// top-level fraction otherwise. nil only in the no-data state.
@@ -173,7 +166,7 @@ final class QuotaStatusModel {
     }
 
     /// Starts the background re-read tick. Idempotent; cheap enough to run
-    /// for the process lifetime (the menu-bar title needs it even while the
+    /// for the process lifetime (the menu-bar ring needs it even while the
     /// popover is closed). The loop holds the model weakly and exits once
     /// the model is gone, so no deinit/cancel hop is needed.
     func start() {
@@ -258,7 +251,7 @@ struct QuotaBarView: View {
                 }
                 if showsCaption, let fetchedAt {
                     Text("as of \(Self.timeFormatter.string(from: fetchedAt))")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -271,19 +264,19 @@ struct QuotaBarView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: "circle.dashed")
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 Text("Quota data unavailable")
-                    .font(.footnote)
+                    .font(.callout)
                     .fontWeight(.medium)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text("routing unaffected")
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundStyle(.tertiary)
             }
             Text("ZGate polls z.ai's quota monitor with the API key from your Claude settings (~/.claude/settings.json). Until a poll succeeds, no percentage is shown — proxying and usage-based routing keep working.")
-                .font(.caption)
+                .font(.subheadline)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -303,21 +296,21 @@ struct QuotaBarView: View {
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text(Self.kindLabel(window.kind))
-                    .font(.footnote.weight(.medium))
+                    .font(.callout.weight(.medium))
                 Text(percent)
-                    .font(.footnote.monospacedDigit().weight(.medium))
-                    // Digits stay primary/secondary for contrast at 10pt;
+                    .font(.body.monospacedDigit().weight(.medium))
+                    // Digits stay primary/secondary for contrast at 13pt;
                     // the level tint lives on the capsule below.
                     .foregroundStyle(stale ? Color.secondary : Color.primary)
                 if stale {
                     Text("last known")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.tertiary)
                 }
                 Spacer()
                 if let countdown {
                     Text("resets in \(countdown)")
-                        .font(.caption.monospacedDigit())
+                        .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -330,7 +323,7 @@ struct QuotaBarView: View {
                         .frame(width: max(proxy.size.width * window.fractionRemaining, 4))
                 }
             }
-            .frame(height: 5)
+            .frame(height: 6)
             .opacity(stale ? 0.6 : 1)
         }
         .accessibilityElement(children: .combine)
@@ -352,19 +345,19 @@ struct QuotaBarView: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Text(state.percentText ?? "")
-                    .font(.footnote.monospacedDigit().weight(.medium))
-                    // Digits stay primary/secondary for contrast at 10pt;
+                    .font(.body.monospacedDigit().weight(.medium))
+                    // Digits stay primary/secondary for contrast at 13pt;
                     // the level tint lives on the capsule below.
                     .foregroundStyle(stale ? Color.secondary : Color.primary)
                 if stale {
                     Text("last known")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.tertiary)
                 }
                 Spacer()
                 if showsCaption, let fetchedAt {
                     Text("as of \(Self.timeFormatter.string(from: fetchedAt))")
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -377,7 +370,7 @@ struct QuotaBarView: View {
                         .frame(width: max(proxy.size.width * fraction, 4))
                 }
             }
-            .frame(height: 6)
+            .frame(height: 7)
             .opacity(stale ? 0.6 : 1)
         }
         .accessibilityElement(children: .combine)

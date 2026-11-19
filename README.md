@@ -93,16 +93,20 @@ packages: swift-nio, async-http-client.)
 ### 2. Sign in (in the app)
 
 ZGate reads credentials from the zcode store — by default the **shared
-store** at `~/.zcode`, the same one the ZCode GUI and CLI use (Settings →
-General → Credentials can switch to an isolated scratch store instead). If
-you are already logged into the ZCode GUI or CLI, ZGate uses that session
-as-is.
+store** the ZCode GUI and CLI use (`~/.zcode/v2/credentials.json`;
+Settings → General → Credentials can switch to an isolated scratch store
+instead). If you are already logged into the ZCode GUI or CLI, ZGate uses
+that session as-is: the CLI seals its store with a macOS **Keychain**
+secret, and ZGate reads it through the same Keychain — expect **one
+access prompt on first use** (click Always Allow; denying it is a typed,
+recoverable error, never a loop).
 
 Otherwise sign in from the app: the credential row's **Sign In** button
 (popover, or Settings → General → Credentials) opens the z.ai approval page
 in your browser; ZGate picks the session up live — no terminal command, no
-restart. The old copyable terminal command remains as a fallback in the
-login alert.
+restart. The in-app login writes the shared store in the flavor it already
+uses, so a CLI login on the same machine keeps working. The copyable
+terminal command remains as a fallback in the login alert.
 
 Interactive login is needed about **once per 180 days** (or on revocation):
 while ZGate runs, a background keeper renews the short-lived tokens
@@ -111,8 +115,10 @@ automatically (see [Credentials & login status](#credentials--login-status)).
 ### 3. Launch ZGate
 
 `open /Applications/ZGate.app` — the **ZΓ** status item appears in the menu
-bar (no dock icon). Its icon is a **quota ring**: the arc is your remaining
-weekly quota, clockwise from 12 o'clock. Listeners start at launch.
+bar (no dock icon). It is icon-only: a **quota ring with the ZΓ mark
+inside** — the arc is your remaining weekly quota, clockwise from 12
+o'clock. The exact percentage lives in the popover (and the VoiceOver
+label). Listeners start at launch.
 Optional: Settings → General → **Launch at Login** (SMAppService
 registers/unregisters the login item).
 
@@ -135,8 +141,9 @@ tells the truth. Set the tier aliases too — see
 - **A few seconds of latency on the very first relay request**: ZGate builds
   its V4 signing session (handshake + key derivation) once, on demand. Later
   requests are fast.
-- **If no login is available yet**, the credential row shows red
-  ("login expired — sign in") instead: click Sign In, complete the browser
+- **If no login is available yet**, the credential row shows red instead
+  ("sign in to use the relay" on a fresh install, "login expired — sign
+  in" once a stored login has lapsed): click Sign In, complete the browser
   approval, and the row flips to green without restarting ZGate. From then
   on the keeper keeps the ladder renewed.
 
@@ -150,7 +157,8 @@ always current:
 | ● signed in · N min left | plan token healthy; renewed before it lapses |
 | ● renewing | a renewal is in flight or retrying (backoff) |
 | ● authorizing… | an in-app login is waiting for browser approval |
-| ● login expired — sign in | the ladder is dead: click Sign In (red, persistent; the menu-bar icon badges too) |
+| ● sign in to use the relay | no stored login yet (fresh install): click Sign In (red, persistent; the menu-bar icon badges too) |
+| ● login expired — sign in | a stored login lapsed: click Sign In (red, persistent; the menu-bar icon badges too) |
 | ● degraded (unsigned) | the last request was served by the unsigned fail-open path — working, but not healthy |
 
 - **Auto-renewal**: while ZGate runs, a background keeper mints each new
@@ -208,14 +216,15 @@ server's last 500 output lines.
   the key it authenticates with is read from your Claude settings file
   (`~/.claude/settings.json`, `env.ANTHROPIC_AUTH_TOKEN`) at poll time —
   ZGate stores only the path, never the key, and never logs it. If the
-  settings file is missing or has no token, the bar stays empty (bare `ZΓ`)
-  and quota-gated rules are skipped; routing is unaffected. Last-known
+  settings file is missing or has no token, the ring stays dashed and
+  quota-gated rules are skipped; routing is unaffected. Last-known
   values are kept and dimmed when a poll fails while data exists.
 
 ## Quota & billing behavior
 
-The menu bar's `ZΓ <N>%` and the popover's quota windows are the **only
-user-visible billing surface** — the API quota windows (weekly + 5-hour)
+The menu bar's quota ring (ZΓ mark inside; exact percentages via the
+popover and the VoiceOver label) and the popover's quota windows are the
+**only user-visible billing surface** — the API quota windows (weekly + 5-hour)
 polled from z.ai's monitor API. Those windows meter **everything z.ai
 serves you**: direct API calls authenticated by the key in your
 `~/.claude/settings.json` **and every request ZGate relays** — relayed
@@ -276,10 +285,11 @@ Gatekeeper prompts on any machine.
       claude -p "say OK"` replies `OK` through the signed relay
 - [ ] Request log rows for that round-trip are visible in the popover's
       traffic view (full E2E proof: [`docs/e2e-checklist.md`](docs/e2e-checklist.md))
-- [ ] The menu bar shows `ZΓ <N>%` within a minute of launch (your weekly
-      quota remaining, polled from z.ai's monitor API — needs the API key in
-      your `~/.claude/settings.json`, which Claude Code itself put there)
-      and the ring arc fills to match
+- [ ] Within a minute of launch the menu-bar ring arc fills to match your
+      weekly quota remaining (the ZΓ mark sits inside the ring; the exact
+      percentage is in the popover — polled from z.ai's monitor API, which
+      needs the API key in your `~/.claude/settings.json`, where Claude
+      Code itself put it)
 - [ ] Quitting from the popover leaves no listeners behind
       (`lsof -nP -iTCP:<port>` is empty)
 
@@ -301,7 +311,7 @@ Gatekeeper prompts on any machine.
   back while its probe (`127.0.0.1:<splash port>`) fails and resume automatically when
   it answers again — start it from Settings → Splash; no ZGate restart
   needed.
-- **Quota bar stays empty (bare `ZΓ`):** the monitor poll couldn't
+- **Quota ring stays dashed:** the monitor poll couldn't
   authenticate — check that `~/.claude/settings.json` has
   `env.ANTHROPIC_AUTH_TOKEN` set (Claude Code writes it when configured for
   the z.ai API). The next poll (within 30 min, or popover → Refresh) picks

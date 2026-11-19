@@ -37,7 +37,7 @@ struct OptionInfoButton: View {
             }
             .font(.callout)
             .padding(16)
-            .frame(width: 320, alignment: .leading)
+            .frame(width: 340, alignment: .leading)
         }
     }
 }

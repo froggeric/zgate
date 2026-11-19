@@ -76,7 +76,7 @@ struct LogViewerView: View {
                 }
             }
         }
-        .frame(height: 200)
+        .frame(height: 230)
         .background(.background)
     }
 
@@ -153,23 +153,23 @@ struct LogEntryRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 4) {
             Text(Self.timeFormatter.string(from: entry.timestamp))
-                .font(.caption.monospaced())
+                .font(.subheadline.monospaced())
                 .foregroundStyle(.secondary)
-                .frame(width: 60, alignment: .leading)
+                .frame(width: 68, alignment: .leading)
 
             Text("[\(entry.category)]")
-                .font(.caption.monospaced())
+                .font(.subheadline.monospaced())
                 .foregroundStyle(.secondary)
-                .frame(width: 60, alignment: .leading)
+                .frame(width: 68, alignment: .leading)
 
             Text(entry.level.rawValue.uppercased())
-                .font(.caption2.monospaced())
+                .font(.subheadline.monospaced())
                 .fontWeight(.semibold)
                 .foregroundStyle(levelColor)
-                .frame(width: 50, alignment: .leading)
+                .frame(width: 62, alignment: .leading)
 
             Text(entry.message)
-                .font(.caption.monospaced())
+                .font(.subheadline.monospaced())
                 .lineLimit(nil)
         }
     }

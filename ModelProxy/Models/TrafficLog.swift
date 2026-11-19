@@ -160,9 +160,13 @@ struct TrafficEntry: Identifiable, Sendable {
     }
 
     /// Decode speed: output tokens over the streaming window (duration
-    /// minus TTFT). "—" when not derivable — including NON-STREAMED
-    /// responses, where the first body byte arrives with the complete body
-    /// (ttft ~ duration) and a "speed" would be fiction.
+    /// minus TTFT), as a BARE number ("935") — the unit lives in the
+    /// popover column header ("tok/s"), so the cell must not repeat it;
+    /// accessibility consumers append a spoken unit themselves (see
+    /// StatusPopover's TrafficRowView summary). "—" when not derivable —
+    /// including NON-STREAMED responses, where the first body byte arrives
+    /// with the complete body (ttft ~ duration) and a "speed" would be
+    /// fiction.
     var tokensPerSecondDisplayText: String {
         guard requestKind.shouldDisplayTPS,
               let outputTokens, outputTokens > 0,
@@ -170,7 +174,7 @@ struct TrafficEntry: Identifiable, Sendable {
               let ttft,
               ttft < 0.9 * duration else { return "—" }
         let streamSeconds = max(duration - ttft, 0.05)
-        return "\(Int((Double(outputTokens) / streamSeconds).rounded()))/s"
+        return "\(Int((Double(outputTokens) / streamSeconds).rounded()))"
     }
 
     /// Compact output-token count ("1.2k"); "—" when unavailable.
@@ -205,6 +209,10 @@ struct TrafficEntry: Identifiable, Sendable {
         return "\(Int(Double(outputTokens) / duration))"
     }
 
+    /// Model-level spoken summary. NOTE: the popover's traffic row renders
+    /// its OWN summary (stream-window tok/s, " tok/s" unit) — this
+    /// whole-duration variant is kept for non-UI consumers; the two
+    /// intentionally compute different rates.
     var accessibilitySummary: String {
         switch requestKind {
         case .webSearchBridge(let searchCount):

@@ -20,7 +20,7 @@ struct GeneralTabView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Launch at Login")
                         Text("ZGate will start automatically when you log in.")
-                            .font(.footnote)
+                            .font(.callout)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -41,7 +41,7 @@ struct GeneralTabView: View {
 
                 if let link = URL(string: configStore.config.webSearch.provider.registrationURL) {
                     Link("Get API Key", destination: link)
-                        .font(.footnote)
+                        .font(.callout)
                 }
             }
 
@@ -75,7 +75,7 @@ struct GeneralTabView: View {
                     .foregroundStyle(chip.color)
                 if let retry = credentialModel.lastLoginOutcome?.retryText {
                     Text(retry)
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -176,7 +176,7 @@ struct GeneralTabView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Feedback & Support")
                     Text("Opens your mail app with the app and macOS version filled in. No configuration, API keys, or request data is included.")
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
 
@@ -206,7 +206,7 @@ struct GeneralTabView: View {
         switch configStore.config.webSearch.provider {
         case .forwardAsIs:
             Text("The web_search tool will be forwarded to the vendor unchanged.")
-                .font(.footnote)
+                .font(.callout)
                 .foregroundStyle(.secondary)
         case .brave:
             apiKeyField("Brave API Key", binding: binding(\.braveAPIKey))

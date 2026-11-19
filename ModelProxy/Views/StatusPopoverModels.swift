@@ -51,9 +51,19 @@ final class CredentialAlertPresenter {
 /// carries material someone must transcribe. Never a token, key, or
 /// signature value.
 enum ReloginAlertContent: Sendable {
-    /// The exact command (single line; wrapped only by display).
-    static let command =
-        "ZCODE_DATA_BASE_DIR=$HOME/.zcode-scratch-v3 ZCODE_CREDENTIAL_SECRET_FILE=$HOME/.zcode-scratch-v3/secret.txt node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai"
+    /// The exact command (single line; wrapped only by display). Sourced
+    /// from `CredentialStore.loginRemedy` — the shared-default form with
+    /// no dev-machine env vars — so the alert, Settings → Advanced, and
+    /// the typed-error remedies can never disagree.
+    static let command = CredentialStore.loginRemedy
+
+    /// Base-aware form for surfaces that know the selected store base:
+    /// the bare command for the shared default, or the
+    /// ZCODE_DATA_BASE_DIR-prefixed form for an isolated base so the CLI
+    /// writes where ZGate reads.
+    static func command(for base: URL?) -> String {
+        CredentialStore.loginRemedy(forBase: base)
+    }
 
     /// Alert title.
     static let title = "ZCode Login Required"

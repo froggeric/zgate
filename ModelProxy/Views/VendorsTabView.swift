@@ -23,7 +23,7 @@ struct VendorsTabView: View {
                                 Text(vendor.name)
                                     .fontWeight(.medium)
                                 Text(vendor.baseURL)
-                                    .font(.footnote)
+                                    .font(.callout)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -36,7 +36,6 @@ struct VendorsTabView: View {
                                 deletingVendor = vendor
                             }
                             .buttonStyle(.bordered)
-                            .controlSize(.small)
                             .accessibilityLabel("Delete \(vendor.name)")
                         }
                         .padding(.vertical, 2)

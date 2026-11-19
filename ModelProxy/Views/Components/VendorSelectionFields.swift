@@ -67,7 +67,7 @@ struct VendorModelField: View {
                     }
                 } label: {
                     Image(systemName: "chevron.down")
-                        .font(.footnote)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .frame(width: vendorSelectionMenuIconWidth, height: 24)
                         .contentShape(Rectangle())

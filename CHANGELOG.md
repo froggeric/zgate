@@ -4,7 +4,68 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
-## [2.8.7] — 2026-11-19
+## [2.8.8] — 2026-11-19
+
+### 2026-11-19 — Fresh-install login fix, icon-only menu bar, accessible text scale
+
+- **Fresh-install login fixed — two stacked defects.** First, the in-app
+  Sign In posted its OAuth init to the wrong origin (`api.z.ai` → nginx
+  404): the browser flow had never opened on ANY machine (development
+  installs were masked by the 180-day biz-session cache). The origin is
+  now the CLI's own `zcode.z.ai/api/v1`, a non-200 init surfaces as
+  "Sign-in service unreachable" instead of a bare "client error", and the
+  flow is regression-pinned to the CLI base. Second, the shared store
+  base was one directory level wrong (`~/.zcode/.zcode/v2` — a path the
+  CLI never writes; it writes `~/.zcode/v2`), and CLI logins were
+  unreadable anyway: the CLI seals its store with a macOS Keychain secret
+  (`enc:v2:os:` envelopes), which ZGate did not know. ZGate now resolves
+  the CLI's colocated `credential-secret` file, the legacy `secret.txt`,
+  and the Keychain secret — **prompting at most once per login grant**
+  (successful reads are cached for the process; a denial is remembered,
+  never re-prompted) — and **adopts an existing CLI session as-is**.
+  Store writes preserve co-tenancy in BOTH orderings: a login over an
+  existing store re-seals it with the store's own flavor (an os-sealed
+  CLI store is never re-keyed to a secret file, and keychain
+  refusal/unavailability aborts with a typed error instead of
+  quarantining a live CLI login), while a ZGate-FIRST login on a virgin
+  machine writes the secret to the CLI's own colocated
+  `credential-secret` (as a base64url string — a file the CLI resolves
+  without env vars), so the CLI keeps working afterwards. Previously that
+  path quarantined CLI stores and left the chain location-less (every
+  request 502) — and the pre-fix code would have destroyed the CLI login
+  on the user's exact fresh-install scenario. The login alert's terminal
+  fallback no longer hardcodes dev-machine scratch paths (and follows the
+  selected store base), and a machine that never logged in reads "sign in
+  to use the relay" instead of a wrong "login expired".
+- **The menu bar is icon-only: the ZΓ brand mark now lives inside the
+  quota ring.** The `ZΓ 63%` title text is gone; the glyph is drawn
+  inside an enlarged ring, shares every ring state (dashed no-data, stale
+  dimming), and disappears with the ring whenever a fault symbol
+  replaces the icon. The exact percentage remains glanceable in the
+  popover and is spoken by the VoiceOver label ("weekly quota N%
+  remaining"). Rendering is a deterministic 4x raster (no deprecated
+  lockFocus), ink-centered on the glyph's device-metrics box, and pinned
+  by geometry + rasterized-ink tests.
+- **Accessible text scale.** On macOS, footnote/caption/caption2 are ALL
+  exactly 10 pt, and the app's small text was entirely those styles —
+  the earlier caption2→caption pass moved nothing. The ladder is now
+  tertiary 11 pt (subheadline), secondary 12 pt (callout), primary
+  values 13 pt (body — the quota percent and the traffic row's model
+  included), across the popover, Settings, every sheet, and both log
+  viewers; dense table headers and cells (traffic, statistics, the debug
+  log viewer) deliberately hold the 11 pt tertiary floor. The fixed
+  widths tuned for 10 pt (popover 400→440 pt, traffic/log columns,
+  viewports, the vendor sheet) grew to match, so nothing clips or
+  truncates harder.
+- **Recent Requests headers can no longer drift off their columns.** The
+  column header now lives INSIDE the scroll container as a pinned
+  section header (with a material background), so any scrollbar inset
+  applies to header and rows alike in every scrollbar state — the old
+  outside-the-scroll header sat a gutter to the right of the data on
+  machines with persistent scrollbars.
+- **tok/s cells show the bare number** ("935", not "935/s") — the unit
+  lives in the column header. VoiceOver labels speak the unit only when
+  a value exists ("— tok/s" would announce a unit for nothing).
 
 ### 2026-11-19 — Apple HIG design pass + the quota ring
 

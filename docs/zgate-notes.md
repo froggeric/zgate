@@ -653,3 +653,89 @@ same change on controller instruction (touch list extended):
 2. `LocalTarget.defaultModel` is now `local/qwen3.8-27b-q8` (its two test
    consumers reference the constant, so no assertion churn), and the
    Settings → About splash help text names the new rule target.
+
+## Wave 5 — five-fix pass (2026-11-19, main-thread + investigation workflow)
+
+- **Fresh-install login (root cause, live-verified):** ZaiLoginClient posted
+  OAuth init to `api.z.ai` (nginx 404 on both verbs) — the in-app login NEVER
+  completed anywhere; dev machines were masked by biz-session.cache (180 d
+  JWT acquired 2026-11-18). Fix: origin `zcode.z.ai/api/v1` (CLI bundle
+  `tka`, live-probed 200 with the exact parsed shape), typed
+  `ZaiLoginError.http`, status surfaced as "Sign-in service unreachable".
+  Second defect: `CredentialStore.sharedBase` pointed at `~/.zcode` with
+  layout `<base>/.zcode/v2` → the nonexistent `~/.zcode/.zcode/v2`; the
+  CLI's default data base is `$HOME` (store `$HOME/.zcode/v2/credentials.json`,
+  verified on disk; zbridge's `STORE_PATH = DATA_BASE/.zcode/v2` agrees).
+  Third: CLI stores are Keychain-sealed — `enc:v2:os:` envelopes, key = raw
+  32 B keychain password (service "ZCode Credential Encryption", account =
+  sha256hex(absolute store path), verified live), fingerprint =
+  sha256(key)·first-24-hex for BOTH flavors. CredentialStore now resolves
+  secret candidates (colocated `credential-secret` → `secret.txt` →
+  Keychain via injectable `KeychainReading`), adopts a CLI session as-is,
+  and saveZaiLogin re-seals an existing readable store with ITS flavor/key
+  (os → same keychain key, never a secret file) instead of quarantining;
+  keychain DENIAL on an os store aborts with a typed error rather than
+  destroying the CLI login. Alert command single-sourced to
+  `CredentialStore.loginRemedy` (the old literal hardcoded
+  `~/.zcode-scratch-v3`). Chip copy splits: "● sign in to use the relay"
+  (never logged in) vs "● login expired — sign in".
+- **Menu bar icon-only**: `menuBarTitle` deleted; ZΓ drawn inside an
+  enlarged ring (diameter 13→15, stroke 2→1.75, auto-fit
+  `QuotaRingSpec.fittedMarkFontSize`, cap-height centered, 0.5 pt grid,
+  black+alpha template discipline). Fault symbols still swap the whole
+  image — ZΓ disappears with the ring by construction. Percent stays in
+  the popover + accessibilityLabel.
+- **Text scale**: footnote/caption/caption2 are all 10 pt on macOS (why the
+  4bb4822 caption2→caption pass changed nothing) — ladder now
+  subheadline/callout/body across all views; popover 400→440, matched
+  column widths (48/46/34), grown viewports, `.controlSize(.small)`
+  removed from list buttons.
+- **Traffic table**: header pinned INSIDE the ScrollView (LazyVStack
+  `pinnedViews` + thinMaterial background) — scrollbar insets hit header
+  and rows equally; `tokensPerSecondDisplayText` drops "/s" (unit lives in
+  the header); the row a11y summary appends " tok/s".
+- Suite: 481/481 in 33 suites (was 474; +7: mark auto-fit, icon render
+  smoke, origin pin, http-error mapping, os read, os save adoption,
+  keychain-deny abort).
+
+### Wave 5 review round (adversarial 3-lens workflow + pixel check)
+
+Findings fixed (login lens): (1) ZGate-FIRST virgin login wrote env
+envelopes + `$HOME/secret.txt` — a path/format the CLI can never resolve
+(bundle: CLI reads env vars or the COLOCATED `<store-dir>/credential-secret`
+only, and refuses to mint a fresh key when any `enc:v2:` envelope exists —
+its own login then fails with `credential_write_failed`). Virgin writes now
+land the secret at the colocated `credential-secret` as an ASCII base64url
+STRING (the CLI hashes the file's UTF-8 bytes; raw random bytes are invalid
+UTF-8). (2) The read path probed the Keychain on every ~20 s status tick —
+an ACL-protected item would prompt forever; LiveKeychain now caches
+successful reads process-wide and remembers denials per account (prompt at
+most once per grant). (3) The pre-write CAS reread mislabeled a failed
+reread as revision 0 → false revisionConflict; a failing reread over an os
+store now aborts with keychainAccessDenied. (4) Keychain `unavailable`
+statuses fell through to quarantine (destroying a live CLI login for
+environmental failures) → new typed `keychainUnavailable` abort. (5) The
+remedy command ignored the selected store base → `loginRemedy(forBase:)`
+emits `ZCODE_DATA_BASE_DIR=<base>` for non-default bases (alert + Settings
+both use it).
+
+Pixel round (numeric raster scans, not eyeballs): drawMark's `draw(at:)`
+anchors the line box BOTTOM-left (not the baseline) — mark sat 2.0 pt high;
+anchor now drops one descender. Horizontal centering uses the
+device-metrics ink box (advance width left the mark 0.9 pt left; now 0.00).
+image() renders into a 4x NSBitmapImageRep (rep.size set BEFORE context
+creation — the context captures the scale at creation; setting it after
+squeezes the drawing into the corner). lockFocus (deprecated, halo-prone)
+is gone. Mark ink verified 9.25×5.75 pt centered (9.00, 8.75) in the 18 pt
+canvas; geometry constants + rasterized-ink margins now test-pinned.
+Vision-agent's "mark undersized to 5.6 pt" claim was REFUTED numerically
+(measurement always passed the font; ink bbox confirms 8 pt).
+
+Text-scale round (compliance lens): ~20 secondary-copy sites promoted
+subheadline→callout and the traffic model label callout→body; dense table
+headers/cells (traffic, statistics, debug log viewer) deliberately hold
+11 pt. a11y: the " tok/s" suffix is skipped for the "—" placeholder.
+
+Suite after review round: see git history (was 481/481 pre-review; +6:
+geometry pins, ink raster, colocated-secret virgin, keychain-unavailable
+abort, base-aware remedy, unavailable retry copy).

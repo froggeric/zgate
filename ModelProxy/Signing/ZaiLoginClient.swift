@@ -26,6 +26,11 @@ enum ZaiLoginOutcome: Equatable, Sendable {
 enum ZaiLoginError: Error, Equatable {
     /// `pollUntilTerminal` ran before a successful `begin()`.
     case notStarted
+    /// An endpoint answered a non-200 status — wrong origin, outage, or a
+    /// hostile proxy. Carries the stage and status code only. (2.8(7)
+    /// shipped origin `api.z.ai`, whose nginx 404 surfaced as a shape
+    /// mismatch — this case keeps origin drift diagnosable.)
+    case http(stage: String, status: Int)
     /// An endpoint answered outside the protocol shape (no recovery).
     case malformed(stage: String, reason: String)
 }
@@ -46,7 +51,11 @@ enum ZaiLoginError: Error, Equatable {
 actor ZaiLoginClient {
 
     struct Configuration {
-        var origin = "https://api.z.ai"
+        /// OAuth init/poll base. The CLI bundle pins this origin
+        /// (`tka = "https://zcode.z.ai/api/v1"`; live-verified 2026-11-19:
+        /// init → 200 {flow_id, authorize_url, poll_interval_sec}, while
+        /// api.z.ai/oauth/* → nginx 404).
+        var origin = "https://zcode.z.ai/api/v1"
         var session: URLSession = .shared
         var requestTimeout: TimeInterval = 15
         /// Overall poll cap — the bundle's `EDc = 300` default.
@@ -114,8 +123,11 @@ actor ZaiLoginClient {
     func begin() async throws {
         let body = try JSONSerialization.data(withJSONObject: ["provider": "zai"])
         let (status, json) = try await post(path: "/oauth/cli/init", body: body)
+        guard status == 200 else {
+            throw ZaiLoginError.http(stage: "init", status: status)
+        }
         let data = (json?["data"] as? [String: Any]) ?? (json ?? [:])
-        guard status == 200,
+        guard
             let flowID = data["flow_id"] as? String,
             let authorize = data["authorize_url"] as? String,
             let url = URL(string: authorize)

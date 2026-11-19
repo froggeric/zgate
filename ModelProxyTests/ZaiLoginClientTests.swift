@@ -218,6 +218,27 @@ struct ZaiLoginClientTests {
         #expect(url?.absoluteString == Wire.authorizeURL)
     }
 
+    // MARK: - Origin + HTTP-status mapping (2026-11-19 login fix)
+
+    @Test func productionOriginIsTheCLIOAuthBase() {
+        // Regression: 2.8(7) shipped api.z.ai — nginx 404 on every init,
+        // so the in-app login never completed anywhere (dev machines were
+        // masked by the biz-session cache).
+        #expect(ZaiLoginClient.Configuration().origin == "https://zcode.z.ai/api/v1")
+    }
+
+    @Test func nonOKInitThrowsTypedHTTPErrorNotShapeMismatch() async throws {
+        let mock = LoginMock()
+        mock.initResponse = { _ in (404, [:]) }
+        ZaiLoginURLProtocol.mock = mock
+        let clock = VirtualClock(Self.baseDate)
+
+        let client = ZaiLoginClient(configuration: makeConfiguration(clock: clock))
+        await #expect(throws: ZaiLoginError.http(stage: "init", status: 404)) {
+            try await client.begin()
+        }
+    }
+
     // MARK: - Poll ladder (AC: pending → ready at the advertised interval)
 
     @Test func pollPendingThenReadyYieldsCredentials() async throws {

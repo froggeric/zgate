@@ -60,14 +60,14 @@ private struct ClientRowSection: View {
 
             if !portText.isEmpty && !portIsValid {
                 Text("Port must be 1024–65535; the change applies when you press Return.")
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.red)
             }
 
             // Port change banner (DP-002: port change needs manual Stop/Start)
             if portChanged {
                 Text("Port change takes effect after stopping and restarting the proxy.")
-                    .font(.footnote)
+                    .font(.callout)
                     .foregroundStyle(.orange)
             }
 
@@ -119,7 +119,7 @@ private struct ClientRowSection: View {
             LabeledContent("Quick start") {
                 HStack(spacing: 6) {
                     Text(envExportCommand)
-                        .font(.footnote.monospaced())
+                        .font(.callout.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
