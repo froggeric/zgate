@@ -4,8 +4,9 @@ import Observation
 // MARK: - Cadence
 
 /// Check timing (spec §3.4): a launch check only when the last check is
-/// missing or older than 6 h, then a 24 h repeat — ≤3 unauthenticated API
-/// calls per cycle, well inside GitHub's 60/h anonymous budget.
+/// missing or older than 6 h, then a 24 h repeat — 2 unauthenticated API
+/// calls per cycle (splash + ZGate latest), well inside GitHub's 60/h
+/// anonymous budget.
 enum UpdateCadence {}
 
 nonisolated extension UpdateCadence {
@@ -173,11 +174,13 @@ final class UpdateCenter {
             return await SplashInstaller.installedVersion(binaryPath: binaryPath)
         }
         /// `CFBundleShortVersionString` (marketing "2.8") +
-        /// `CFBundleVersion` (build "9") → (2, 8, 9).
-        var currentZGateVersion: @Sendable () -> (Int, Int, Int) = {
+        /// `CFBundleVersion` (build "9") → (2, 8, 9). nil when unreadable
+        /// or unparseable — never a fabricated fallback version (a failed
+        /// read must not invent an update alert).
+        var currentZGateVersion: @Sendable () -> (Int, Int, Int)? = {
             let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
             let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
-            return ZGateVersion.parse(tag: "v\(short).\(build)") ?? (0, 0, 0)
+            return ZGateVersion.parse(tag: "v\(short).\(build)")
         }
     }
 
@@ -214,6 +217,7 @@ final class UpdateCenter {
             await checkNow(splash: splashChecksEnabled)
         }
         let deps = self.deps
+        repeatTask?.cancel()  // double-start guard: never two repeat loops
         repeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await deps.sleep(UpdateCadence.repeatInterval)
@@ -290,7 +294,13 @@ final class UpdateCenter {
             return
         }
         settings.lastZGateTag = release.tag_name
-        let current = deps.currentZGateVersion()
+        guard let current = deps.currentZGateVersion() else {
+            // Running version unreadable — availability is unknowable, so
+            // degrade honestly instead of fabricating an update (a failed
+            // read must never alert).
+            zgateState = .cannotCheck
+            return
+        }
         if ZGateVersion.isNewer(latest, than: current) {
             zgateState = .available(tag: release.tag_name, current: "\(current.0).\(current.1).\(current.2)")
         } else {

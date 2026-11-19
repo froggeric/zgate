@@ -58,7 +58,7 @@ import Testing
     private func makeCenter(
         stub: FetchStub,
         installed: String? = "1.6.1-m1.1",
-        current: (Int, Int, Int) = (2, 8, 9),
+        current: (Int, Int, Int)? = (2, 8, 9),
         now: Date = Date(timeIntervalSince1970: 1_700_000_000)
     ) -> UpdateCenter {
         UpdateCenter(deps: UpdateCenter.Deps(
@@ -166,6 +166,19 @@ import Testing
         let center = makeCenter(stub: stub)
         await center.checkNow(splash: false)
         #expect(center.zgateState == .cannotCheck)
+        #expect(!center.hasActiveAlert)
+    }
+
+    /// Review fix 1: a failed current-version read must never fabricate an
+    /// update alert — unparseable running version + valid latest → the
+    /// honest degraded state, no alert.
+    @Test func unparseableCurrentVersionNeverAlerts() async {
+        let stub = FetchStub()
+        stub.serve(zgateFixture(tag: "v2.9.0"), for: UpdateCenter.zgateReleasesURL)
+        let center = makeCenter(stub: stub, current: nil)
+        await center.checkNow(splash: false)
+        #expect(center.zgateState == .cannotCheck)
+        #expect(!center.zgateAlert)
         #expect(!center.hasActiveAlert)
     }
 
