@@ -21,7 +21,10 @@ import Testing
     }
 
     @Test func seededProfileMatchesCurrentInvocation() {
-        let argv = SplashSettings.defaultSeeded().activeProfile!.launchArguments()
+        // Cache flags live in machine-level `storage` since 2026-11-19
+        // (spec §3.6) — the effective serve argv is unchanged.
+        let seeded = SplashSettings.defaultSeeded()
+        let argv = seeded.activeProfile!.serveArguments(port: seeded.port, storage: seeded.storage)
         #expect(argv == [
             "serve",
             "--model", "local/qwen3.8-27b-q8",
@@ -29,7 +32,8 @@ import Testing
             "--draft-model", "/Volumes/ssd/ai/cache/misc/hub/models--incoai--Qwen3.8-27B-DFlash2/snapshots/015e795645c74b1a0eeef3b570031fb62e769bc5",
             "--mmproj", "/Volumes/ssd/ai/llm-models/froggeric/Qwen3.8-27B-GGUF/mmproj-F16.gguf",
             "--persistent-cache", "--cache-dir", "/Volumes/ssd/ai/cache/splash",
-            "--max-cache-disk", "20G"])
+            "--max-cache-disk", "20G",
+            "--port", "8123"])
     }
 
     @Test func absentSplashKeyDecodesNil() throws {

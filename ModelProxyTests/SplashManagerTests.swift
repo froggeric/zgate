@@ -359,6 +359,50 @@ func writeSplashStub(ignoreTerm: Bool = false) throws -> URL {
         await parked.terminateFromApp()
     }
 
+    // MARK: Launch env (Task 4, spec §3.6)
+
+    /// beginStart passes the inherited environment plus HF_HUB_CACHE when
+    /// storage.modelCacheLocation is set. The stub script dumps its env and
+    /// argv to a file under a temp dir; the spawned process must show BOTH
+    /// the override AND the inherited PATH.
+    @Test func launchInjectsHFCacheEnv() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("splash-env-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dump = dir.appendingPathComponent("launch.txt").path
+        let stub = dir.appendingPathComponent("stub.sh")
+        try #"""
+        #!/bin/sh
+        env > 'DUMP'
+        printf '%s\n' "$@" >> 'DUMP'
+        while :; do sleep 0.05; done
+        """#
+        .replacingOccurrences(of: "DUMP", with: dump)
+        .write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: stub.path)
+
+        let m = SplashManager(
+            binaryPathProvider: { stub }, clock: ManualClock(), probe: { _ in true })
+        var settings = SplashSettings(keepRunning: true, profiles: [SplashProfile(name: "p", model: "m")])
+        settings.storage = SplashStorage(modelCacheLocation: "/v/hub")
+        m.applySettings(settings)
+        try await m.start(profile: settings.activeProfile!)
+
+        // Bounded real wait for the dump (the stub writes it before looping).
+        let deadline = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: dump), Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let lines = try String(contentsOfFile: dump, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(lines.contains("HF_HUB_CACHE=/v/hub"))
+        #expect(lines.contains { $0.hasPrefix("PATH=") })   // inherited env survives
+
+        try await m.stop()
+        #expect(m.state == .stopped)
+    }
+
     // MARK: Test-context suppression guard (Task 7, pure predicate)
 
     @Test func shouldSuperviseAllowsPlainEnvironment() {

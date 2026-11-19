@@ -290,7 +290,13 @@ final class SplashManager {
         do {
             let p = Process()
             p.executableURL = try effectiveBinaryPath()
-            p.arguments = profile.serveArguments(port: settings?.port ?? 8123)
+            p.arguments = profile.serveArguments(
+                port: settings?.port ?? 8123, storage: settings?.storage)
+            // Storage override (spec §3.6): HF_HUB_CACHE rides the inherited
+            // environment; without this the child sees ZGate's env verbatim.
+            if let env = settings?.storage?.environment {
+                p.environment = ProcessInfo.processInfo.environment.merging(env) { _, new in new }
+            }
             let out = Pipe(), err = Pipe()
             p.standardOutput = out; p.standardError = err
             Self.wire(pipe: out, into: self)

@@ -17,6 +17,10 @@ final class SplashTabModel {
     var keepRunning: Bool
     var binaryPathOverride: String?
     var port: Int
+    /// Machine-level storage settings carried through save round-trips
+    /// until the Storage UI (spec §3.6) gains real fields — dropping them
+    /// here would silently lose the flags migration 8 lifted.
+    var storage: SplashStorage?
     static let portRange = 1024...65535
     private let persist: @MainActor (SplashSettings) -> Void
 
@@ -31,13 +35,15 @@ final class SplashTabModel {
         self.keepRunning = s.keepRunning
         self.binaryPathOverride = s.binaryPathOverride
         self.port = s.port
+        self.storage = s.storage
         self.persist = persist
     }
 
     func settings() -> SplashSettings {
         SplashSettings(
             keepRunning: keepRunning, activeProfileID: activeProfileID,
-            profiles: profiles, binaryPathOverride: binaryPathOverride, port: port)
+            profiles: profiles, binaryPathOverride: binaryPathOverride, port: port,
+            storage: storage)
     }
 
     /// Ports outside the valid range don't apply — the view disables

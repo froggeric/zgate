@@ -206,6 +206,24 @@ final class ConfigStore {
                 }
             }
         }
+        // Migration 8 (spec §3.6, 2026-11-19): one-shot lift of cache flags
+        // from the ACTIVE profile's extraArgs into splash.storage so the
+        // Storage UI is truthful. Other profiles keep theirs (extraArgs
+        // still win per-profile). Guarded by `storage == nil` — a fresh
+        // seed already carries storage, so only hand-written configs run it.
+        if config.splash?.storage == nil {
+            var settings = config.splash ?? SplashSettings()
+            let idx = settings.profiles.firstIndex(where: { $0.id == settings.activeProfileID })
+                ?? (settings.activeProfileID == nil ? settings.profiles.indices.first : nil)
+            if let idx {
+                let lifted = SplashStorage.lift(from: &settings.profiles[idx].extraArgs)
+                if lifted.persistentCache || lifted.cacheDir != nil
+                    || lifted.maxCacheDisk != nil || lifted.maxCacheDiskWrites != nil {
+                    settings.storage = lifted
+                    config.splash = settings
+                }
+            }
+        }
         return config
     }
 

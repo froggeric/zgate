@@ -338,6 +338,30 @@ extension AppConfig {
         #expect(disabledQwen.allSatisfy { $0.targetModel == "local/qwen3.8-27b-q8" })
         #expect(!disabledQwen.isEmpty)
     }
+
+    // MARK: - Migration 8 (splash storage lift, 2026-11-19)
+
+    /// Migration 8: one-shot lift of the owner's hand-written cache flags
+    /// (spec §2/§3.6) out of the ACTIVE profile's extraArgs into
+    /// splash.storage. `applyMigrations` mutates its class argument in place,
+    /// so the one-shot check compares the splash VALUE across a second pass.
+    @Test func migration8LiftsActiveProfileCacheFlags() {
+        var cfg = AppConfig.makeDefault()
+        cfg.splash?.storage = nil
+        // active profile carries the owner's hand-written flags (spec §2)
+        if let i = cfg.splash?.profiles.firstIndex(where: { $0.id == cfg.splash?.activeProfileID }) {
+            cfg.splash?.profiles[i].extraArgs = ["--persistent-cache", "--cache-dir", "/v/s", "--max-cache-disk", "20G"]
+        }
+        let out = ConfigStore.applyMigrations(cfg)
+        #expect(out.splash?.storage?.cacheDir == "/v/s")
+        #expect(out.splash?.storage?.maxCacheDisk == "20G")
+        let active = out.splash!.profiles.first { $0.id == out.splash!.activeProfileID }!
+        #expect(!active.extraArgs.contains("--persistent-cache"))
+        // one-shot: running again changes nothing
+        let snapshot = out.splash
+        _ = ConfigStore.applyMigrations(out)
+        #expect(out.splash == snapshot)
+    }
 }
 
 // MARK: - Credential store base setting (item 2)
