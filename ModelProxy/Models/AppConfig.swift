@@ -71,6 +71,9 @@ final class AppConfig: Codable {
     /// Splash supervision settings; absent in pre-splash configs, seeded by
     /// `makeZGateDefaultRouting` on first launch.
     var splash: SplashSettings?
+    /// Update-check preferences + last-seen/dismissed tags (spec §3.4/§4);
+    /// nil in pre-update configs until first write.
+    var update: UpdateSettings?
     /// Credential-store data base (item 2, login-flow wave): nil = the
     /// GUI/CLI shared default (`$HOME/.zcode`); an absolute path string
     /// (tilde-expanded) selects another base — notably the legacy
@@ -88,6 +91,7 @@ final class AppConfig: Codable {
         modelPricingOverrides: [String: ModelPrice] = [:],
         webSearch: WebSearchConfig = WebSearchConfig(),
         splash: SplashSettings? = nil,
+        update: UpdateSettings? = nil,
         credentialStoreBase: String? = nil
     ) {
         self.vendors = vendors
@@ -97,6 +101,7 @@ final class AppConfig: Codable {
         self.modelPricingOverrides = modelPricingOverrides
         self.webSearch = webSearch
         self.splash = splash
+        self.update = update
         self.credentialStoreBase = credentialStoreBase
     }
 
@@ -110,6 +115,7 @@ final class AppConfig: Codable {
         case modelPricingOverrides
         case webSearch
         case splash
+        case update
         case credentialStoreBase
     }
 
@@ -126,6 +132,7 @@ final class AppConfig: Codable {
         modelPricingOverrides = (try? container.decode([String: ModelPrice].self, forKey: .modelPricingOverrides)) ?? [:]
         webSearch = (try? container.decode(WebSearchConfig.self, forKey: .webSearch)) ?? WebSearchConfig()
         splash = try? container.decode(SplashSettings.self, forKey: .splash)
+        update = try? container.decode(UpdateSettings.self, forKey: .update)
         // Absent in every pre-wave config — nil = shared default store.
         credentialStoreBase = try? container.decodeIfPresent(String.self, forKey: .credentialStoreBase)
     }
@@ -142,6 +149,9 @@ final class AppConfig: Codable {
         try container.encode(webSearch, forKey: .webSearch)
         if let splash {
             try container.encode(splash, forKey: .splash)
+        }
+        if let update {
+            try container.encode(update, forKey: .update)
         }
         if let credentialStoreBase {
             try container.encode(credentialStoreBase, forKey: .credentialStoreBase)

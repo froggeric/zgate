@@ -57,15 +57,25 @@ nonisolated extension SplashChip {
 // MARK: - Version
 
 enum SplashVersion: Sendable {
-    /// `Splash 1.6.1-m1` → [1, 6, 1]. The `-m1` fork suffix does not affect
-    /// ordering (spec §3.2). nil when unparseable.
+    /// `Splash 1.6.1-m1.1` → [1, 6, 1, 1]: numeric core plus the fork patch
+    /// as a 4th component (spec §3.4, Review Focus #1 —
+    /// 1.6.1-m1 < 1.6.1-m1.1 < 1.6.2-m1). `-m1` alone contributes nothing
+    /// (1.6.1-m1 == [1, 6, 1]). nil when unparseable.
     static func parse(_ output: String) -> [Int]? {
         let tokens = output.split(whereSeparator: { $0.isWhitespace })
         guard let idx = tokens.firstIndex(of: "Splash"), idx + 1 < tokens.count else { return nil }
-        let core = tokens[idx + 1].split(separator: "-").first?
+        var parts = tokens[idx + 1].split(separator: "-").first?
             .split(separator: ".").compactMap { Int($0) } ?? []
-        return core.isEmpty ? nil : core
+        guard !parts.isEmpty else { return nil }
+        if let patch = tokens[idx + 1].split(separator: "-").dropFirst()
+            .first?.split(separator: ".").last.flatMap({ Int($0) }), patch > 0 {
+            parts.append(patch)
+        }
+        return parts
     }
+
+    /// Bare tag form: parseTag("1.6.1-m1.1") == parse("Splash 1.6.1-m1.1").
+    static func parseTag(_ tag: String) -> [Int]? { parse("Splash " + tag) }
 
     /// Lexicographic over dotted numbers; shorter prefix loses when equal
     /// (1.6 < 1.6.1).

@@ -19,6 +19,15 @@ import Testing
         #expect(SplashVersion.parse("nope") == nil)
     }
 
+    // Fork patch as a 4th component (spec §3.4, Review Focus #1).
+    @Test func forkPatchOrders() {
+        #expect(SplashVersion.isOlder(SplashVersion.parse("Splash 1.6.1-m1")!, than: SplashVersion.parse("Splash 1.6.1-m1.1")!))
+        #expect(SplashVersion.isOlder(SplashVersion.parse("Splash 1.6.1-m1.1")!, than: SplashVersion.parse("Splash 1.6.2-m1")!))
+        #expect(!SplashVersion.isOlder(SplashVersion.parse("Splash 1.6.1-m1.1")!, than: SplashVersion.parse("Splash 1.6.1-m1")!))
+        #expect(SplashVersion.parse("Splash 1.6.1")! == [1, 6, 1])
+        #expect(SplashVersion.parseTag("1.7.0") == [1, 7, 0])
+    }
+
     @Test func brewArguments() {
         #expect(SplashInstaller.brewArguments(installed: false)
                 == ["/opt/homebrew/bin/brew", "install", "incoai/tap/splash"])
