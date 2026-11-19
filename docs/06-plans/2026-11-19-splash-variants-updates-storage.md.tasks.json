@@ -4,13 +4,13 @@
     {
       "id": 0,
       "subject": "Task 1: SplashChip variant table + per-chip resolution",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** One source of truth for per-chip facts (binary name, repo slug, releases URL, macOS gate) and a resolution order that finds the official `splash` binary on M3+ and the fork's `~/.local/bin` fallback.\n\n**Files:**\n- Modify: ModelProxy/Services/SplashInstaller.swift (extend SplashChip at :5-30; add latestRelease(for:) beside latestForkRelease :123)\n- Modify: ModelProxy/Services/SplashManager.swift:142-155 (resolvedBinaryPath)\n- Test: ModelProxyTests/SplashVariantTests.swift (new)\n\n**Acceptance Criteria:**\n- binaryName splash-m1/splash, repoSlug paperniuk|incoai, releasesURL(for:) builds the right api.github.com URL (nil chip → fork)\n- macOSSupportsSplash true for 26.4/27.2, false for 26.3/15.7\n- resolvedBinaryPath probes override → /opt/homebrew/bin/<name> → ~/.local/bin/<name> → app-support bin/<name> with the chip's name in every hop; stale override falls through\n- Full suite green\n\n**Verify:** xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ZGateTests/SplashVariantTests\n\n```json:metadata\n{\"files\": [\"ModelProxy/Services/SplashInstaller.swift\", \"ModelProxy/Services/SplashManager.swift\", \"ModelProxyTests/SplashVariantTests.swift\"], \"verifyCommand\": \"xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ZGateTests/SplashVariantTests\", \"acceptanceCriteria\": [\"variant table + macOS gate\", \"per-chip resolution order incl. ~/.local/bin hop\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 1,
       "subject": "Task 2: splash vendor baseURL follows port",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0],
       "description": "**Goal:** Kill the hardcoded 127.0.0.1:8123 desync — routing targets for the splash vendor derive from SplashSettings.port (spec §6.1).\n\n**Files:**\n- Modify: ModelProxy/Models/AppConfig.swift (pure helper near makeZGateDefaultRouting :200)\n- Modify: ModelProxy/Proxy/ProxyServer.swift (apply at the routing-snapshot build in start(config:))\n- Test: ModelProxyTests/SplashPortSyncTests.swift (new)\n\n**Acceptance Criteria:**\n- syncingSplashVendor rewrites only the local splash row; others untouched\n- ProxyServer.start builds routing from synced vendors, in-memory only, nothing persisted\n- port 9999 → qwen lever target baseURL http://127.0.0.1:9999\n- Full suite green\n\n**Verify:** xcodebuild test … -only-testing:ZGateTests/SplashPortSyncTests\n\n```json:metadata\n{\"files\": [\"ModelProxy/Models/AppConfig.swift\", \"ModelProxy/Proxy/ProxyServer.swift\", \"ModelProxyTests/SplashPortSyncTests.swift\"], \"verifyCommand\": \"xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ZGateTests/SplashPortSyncTests\", \"acceptanceCriteria\": [\"vendor baseURL follows configured port in routing table\"], \"modelTier\": \"standard\"}\n```"
     },
