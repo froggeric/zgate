@@ -269,4 +269,18 @@ extension AppConfig {
         config.splash = SplashSettings.defaultSeeded()
         return config
     }
+
+    /// Spec §6.1: the stored splash vendor baseURL (default 8123) goes stale
+    /// the moment the user changes the port. Pure in-memory rewrite used to
+    /// build routing; NEVER persisted (the stored row keeps its default).
+    static func syncingSplashVendor(_ vendors: [Vendor], splashPort: Int?) -> [Vendor] {
+        let port = splashPort ?? 8123
+        return vendors.map { v in
+            guard v.name.lowercased().contains("splash"),
+                  v.baseURL.contains("127.0.0.1") else { return v }
+            var out = v
+            out.baseURL = "http://127.0.0.1:\(port)"
+            return out
+        }
+    }
 }

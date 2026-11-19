@@ -109,13 +109,17 @@ struct RoutingSnapshot: Sendable {
     /// - Parameters:
     ///   - config: full AppConfig (provides global modelMappings + vendor lookup)
     ///   - clientConfig: the ClientConfig whose port received the request
-    init(from config: AppConfig, for clientConfig: ClientConfig) {
+    ///   - vendors: vendor rows to route against; nil = `config.vendors`.
+    ///     ProxyServer passes the splash-port-synced array (spec §6.1) so the
+    ///     stored row's seeded 8123 default never leaks into routing.
+    init(from config: AppConfig, for clientConfig: ClientConfig, vendors syncedVendors: [Vendor]? = nil) {
+        let vendors = syncedVendors ?? config.vendors
         var mappings: [String: [RouteTarget]] = [:]
         for mapping in config.modelMappings {
             guard mapping.isEnabled else {
                 continue
             }
-            guard let vendor = config.vendors.first(where: { $0.id == mapping.targetVendorID }) else {
+            guard let vendor = vendors.first(where: { $0.id == mapping.targetVendorID }) else {
                 continue
             }
             let primary = RouteTarget(
@@ -139,7 +143,7 @@ struct RoutingSnapshot: Sendable {
 
             // Build backup target if configured and compatible.
             if let backupVendorID = mapping.backupTargetVendorID,
-               let backupVendor = config.vendors.first(where: { $0.id == backupVendorID }),
+               let backupVendor = vendors.first(where: { $0.id == backupVendorID }),
                backupVendor.compatibleClientID == nil || backupVendor.compatibleClientID == clientConfig.id {
                 let backup = RouteTarget(
                     baseURL: backupVendor.baseURL,
@@ -171,12 +175,12 @@ struct RoutingSnapshot: Sendable {
         self.passthroughBaseURL = clientConfig.defaultUpstream
         self.unmappedPolicy = clientConfig.unmappedPolicy
         self.ruleTable = ClassRuleTable(
-            from: config.modelMappings, vendors: config.vendors, clientID: clientConfig.id)
+            from: config.modelMappings, vendors: vendors, clientID: clientConfig.id)
 
         // Resolve fallback vendor for .routeAll at build time.
         if clientConfig.unmappedPolicy == .routeAll,
            let vid = clientConfig.fallbackVendorID,
-           let vendor = config.vendors.first(where: { $0.id == vid }) {
+           let vendor = vendors.first(where: { $0.id == vid }) {
             let resolvedModel: String? = {
                 guard let m = clientConfig.fallbackTargetModel, !m.isEmpty else { return nil }
                 return m

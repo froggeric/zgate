@@ -201,10 +201,15 @@ final class ProxyServer {
         // built below — routers capture the provider at construction (Task 6
         // lifecycle note), so this is the one point where the splash probe
         // connects to the router's health conditions.
+        // Spec §6.1: the splash vendor's derived target (routing baseURL,
+        // health-probe port) follows the configured `splash.port` — the
+        // stored vendor row keeps its seeded 8123 default (in-memory sync
+        // only, never persisted).
+        let vendors = AppConfig.syncingSplashVendor(config.vendors, splashPort: config.splash?.port)
         if localHealthMonitor == nil {
             localHealthMonitor = LocalHealthMonitor()
         }
-        localHealthMonitor?.configure(vendors: config.vendors)
+        localHealthMonitor?.configure(vendors: vendors)
         localHealthMonitor?.startProbing()
         if healthProvider == nil {
             healthProvider = localHealthMonitor
@@ -216,8 +221,10 @@ final class ProxyServer {
             quotaProvider = quotaService
         }
 
+        // Spec §6.1: routing targets for the splash vendor follow the
+        // configured `splash.port` (same synced array the health probe uses).
         for clientCfg in config.clients {
-            let snapshot = RoutingSnapshot(from: config, for: clientCfg)
+            let snapshot = RoutingSnapshot(from: config, for: clientCfg, vendors: vendors)
             let router = RequestRouter(
                 snapshot: snapshot,
                 healthProvider: healthProvider,
@@ -365,12 +372,16 @@ final class ProxyServer {
         // The credential-store selector rides along live (no restart): the
         // relay loader re-resolves through the box on every attempt.
         storeBaseBox.set(CredentialStore.resolveBase(config.credentialStoreBase))
-        localHealthMonitor?.configure(vendors: config.vendors)
+        // Same splash-port sync as `start` (spec §6.1): hot-reload routing
+        // and the health probe must not resurrect the stored row's stale
+        // 8123 when the port changed.
+        let vendors = AppConfig.syncingSplashVendor(config.vendors, splashPort: config.splash?.port)
+        localHealthMonitor?.configure(vendors: vendors)
         for slot in listeners {
             guard let clientCfg = config.clients.first(where: { $0.clientName == slot.clientName }) else {
                 continue
             }
-            let newSnapshot = RoutingSnapshot(from: config, for: clientCfg)
+            let newSnapshot = RoutingSnapshot(from: config, for: clientCfg, vendors: vendors)
             Task {
                 await slot.router.updateSnapshot(newSnapshot)
             }
