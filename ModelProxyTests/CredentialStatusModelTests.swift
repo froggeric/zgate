@@ -396,6 +396,9 @@ struct CredentialStatusModelTests {
             ZaiLoginOutcome.failed(status: "service unreachable").retryText
                 == "Sign-in service unreachable — retry")
         #expect(
+            ZaiLoginOutcome.failed(status: "flow expired").retryText
+                == "Sign-in window expired — retry")
+        #expect(
             ZaiLoginOutcome.failed(status: "keychain access denied").retryText
                 == "Keychain access denied — retry")
         #expect(

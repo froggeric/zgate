@@ -26,10 +26,11 @@ enum ZaiLoginOutcome: Equatable, Sendable {
 enum ZaiLoginError: Error, Equatable {
     /// `pollUntilTerminal` ran before a successful `begin()`.
     case notStarted
-    /// An endpoint answered a non-200 status — wrong origin, outage, or a
-    /// hostile proxy. Carries the stage and status code only. (2.8(7)
-    /// shipped origin `api.z.ai`, whose nginx 404 surfaced as a shape
-    /// mismatch — this case keeps origin drift diagnosable.)
+    /// An endpoint answered a non-200 status — wrong origin, outage, a
+    /// hostile proxy, or (poll stage) a permanent client rejection.
+    /// Carries the stage and status code only. (2.8(7) shipped origin
+    /// `api.z.ai`, whose nginx 404 surfaced as a shape mismatch — this
+    /// case keeps origin drift diagnosable.)
     case http(stage: String, status: Int)
     /// An endpoint answered outside the protocol shape (no recovery).
     case malformed(stage: String, reason: String)
@@ -41,7 +42,9 @@ enum ZaiLoginError: Error, Equatable {
 /// `authorizeURL` (the UI opens it in the default browser) →
 /// `GET /oauth/cli/poll/{flow_id}` with the same bearer at the
 /// server-advertised interval until `ready`/`failed`, 300 s overall cap,
-/// 408/429/5xx tolerated. No local callback server, no custom scheme, no
+/// 408/429/5xx tolerated (other 4xx abort immediately — the flow is
+/// permanently rejected, e.g. `invalid_flow` after the server-side
+/// expiry). No local callback server, no custom scheme, no
 /// node dependency. On `ready`, a configured `storeBase` persists the
 /// credential set through the store's envelope write path.
 ///
@@ -104,6 +107,12 @@ actor ZaiLoginClient {
     /// Stage of the missing-location warning (`.refreshFailed` after a
     /// ready persist that produced a location-less store).
     static let missingLocationStage = "location"
+
+    /// The provider key the ready payload nests the OAuth access token
+    /// under (`data.zai.access_token` — the CLI bundle's `aka` parser
+    /// indexes the provider object by `providerId ?? "zai"`,
+    /// re-verified 2026-11-19; the token is never at the data top level).
+    static let providerKey = "zai"
 
     /// Warning copy for that event — fixed display strings, never token
     /// material: ZGate cannot resolve the project location itself (the
@@ -182,6 +191,20 @@ actor ZaiLoginClient {
                 }
                 return outcome
             }
+            // A 4xx other than the transient 408/429 is permanent — most
+            // notably 400 {"code":3004,"msg":"invalid_flow"}, the answer
+            // once the flow passes its server-side expires_at (300 s,
+            // live-verified 2026-11-19). Retrying can never succeed, so
+            // fail fast (the CLI aborts on any non-2xx) instead of
+            // silently burning the window.
+            if (400..<500).contains(status), status != 408, status != 429 {
+                if (json?["code"] as? Int) == 3004
+                    || (json?["msg"] as? String) == "invalid_flow"
+                {
+                    return .failed(status: "flow expired")
+                }
+                throw ZaiLoginError.http(stage: "poll", status: status)
+            }
             // Pending answers and 408/429/5xx: retry at the advertised
             // interval, bounded by the overall cap.
             let elapsedMs = currentMs() - startMs
@@ -192,14 +215,20 @@ actor ZaiLoginClient {
         }
     }
 
-    /// The poll body: `data.status` pending / ready / failed (auth_failed);
-    /// the ready payload carries accessToken / token / user. Tolerant of
-    /// the payload sitting at the top level instead of under `data`.
-    /// Returns nil for pending/unknown shapes (keep polling).
+    /// The poll body: `data.status` pending / failed (auth_failed); the
+    /// ready payload nests the OAuth access token under the provider key
+    /// (`data.zai.access_token`, the `accessToken` spelling tolerated —
+    /// the CLI bundle's `aka` parser) alongside top-level `token` (the
+    /// zcode identity JWT) and `user`. Tolerant of the payload sitting at
+    /// the top level instead of under `data`. Returns nil for
+    /// pending/unknown shapes (keep polling).
     private static func parsePoll(_ json: [String: Any]?) -> ZaiLoginOutcome? {
         guard let json else { return nil }
         let data = (json["data"] as? [String: Any]) ?? json
-        let accessToken = (data["accessToken"] as? String) ?? ""
+        let provider = data[providerKey] as? [String: Any]
+        let accessToken =
+            (provider?["access_token"] as? String)
+            ?? (provider?["accessToken"] as? String) ?? ""
         if !accessToken.isEmpty {
             let userJSON = (data["user"] ).flatMap {
                 (try? JSONSerialization.data(withJSONObject: $0))

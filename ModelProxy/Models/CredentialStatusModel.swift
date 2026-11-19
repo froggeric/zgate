@@ -175,6 +175,7 @@ extension ZaiLoginOutcome {
         case let .failed(status):
             switch status {
             case "service unreachable": return "Sign-in service unreachable — retry"
+            case "flow expired": return "Sign-in window expired — retry"
             case "keychain access denied": return "Keychain access denied — retry"
             case "keychain unavailable": return "Keychain unavailable — retry"
             default: return "Login failed — retry"

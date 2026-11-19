@@ -179,12 +179,18 @@ struct ZaiLoginClientTests {
         return configuration
     }
 
+    /// The REAL ready wire shape (CLI bundle aka, re-verified against
+    /// /Applications/ZCode.app 2026-11-19): the OAuth access token nests
+    /// under the provider key `zai`, never at the data top level. The
+    /// pre-fix fixture pinned a synthetic top-level accessToken that the
+    /// server never sends — tests passed while production login could not
+    /// recognize ready.
     private func readyBody() -> [String: Any] {
         [
             "status": "ready",
-            "accessToken": Wire.accessToken,
             "token": Wire.identityToken,
-            "user": ["id": "synthetic-user", "name": "Synthetic"],
+            "user": ["user_id": "synthetic-user", "name": "Synthetic"],
+            "zai": ["access_token": Wire.accessToken],
         ]
     }
 
@@ -315,6 +321,72 @@ struct ZaiLoginClientTests {
         let outcome = try await client.pollUntilTerminal()
 
         #expect(outcome == .failed(status: "auth_failed"))
+        #expect(clock.sleeps.isEmpty)
+    }
+
+    @Test func pollReadyAcceptsAccessTokenVariantInsideProviderObject() async throws {
+        // The CLI's ready parser tolerates both key spellings inside the
+        // provider object (aka: access_token ?? accessToken).
+        let mock = LoginMock()
+        mock.pollResponses = [
+            (200, ["data": [
+                "status": "ready",
+                "token": Wire.identityToken,
+                "user": ["user_id": "synthetic-user"],
+                "zai": ["accessToken": Wire.accessToken],
+            ]]),
+        ]
+        ZaiLoginURLProtocol.mock = mock
+        let clock = VirtualClock(Self.baseDate)
+
+        let client = ZaiLoginClient(configuration: makeConfiguration(clock: clock))
+        try await client.begin()
+        let outcome = try await client.pollUntilTerminal()
+
+        guard case let .ready(credentials) = outcome else {
+            Issue.record("expected ready, got \(outcome)")
+            return
+        }
+        #expect(credentials.accessToken == Wire.accessToken)
+        #expect(credentials.zcodeJwtToken == Wire.identityToken)
+    }
+
+    @Test func pollInvalidFlowFailsFastAsExpired() async throws {
+        // Live-verified 2026-11-19: once the flow passes its server-side
+        // expires_at (300 s), the poll endpoint answers
+        // 400 {"code":3004,"msg":"invalid_flow"}. Retrying can never
+        // succeed — fail fast instead of silently burning the window.
+        let mock = LoginMock()
+        mock.pollResponses = [
+            (200, ["data": ["status": "pending"]]),
+            (400, ["code": 3004, "msg": "invalid_flow"]),
+        ]
+        ZaiLoginURLProtocol.mock = mock
+        let clock = VirtualClock(Self.baseDate)
+
+        let client = ZaiLoginClient(configuration: makeConfiguration(clock: clock))
+        try await client.begin()
+        let outcome = try await client.pollUntilTerminal()
+
+        #expect(outcome == .failed(status: "flow expired"))
+        #expect(mock.requests(matching: "/oauth/cli/poll/").count == 2)
+        #expect(clock.sleeps.count == 1)
+    }
+
+    @Test func pollOtherClientErrorsFailFastInsteadOfRetrying() async throws {
+        // The CLI aborts on any non-2xx that isn't transient; a 4xx other
+        // than 408/429 is a permanent rejection and must surface as a typed
+        // poll error, not a silent retry to the overall cap.
+        let mock = LoginMock()
+        mock.pollResponses = [(403, [:])]
+        ZaiLoginURLProtocol.mock = mock
+        let clock = VirtualClock(Self.baseDate)
+
+        let client = ZaiLoginClient(configuration: makeConfiguration(clock: clock))
+        try await client.begin()
+        await #expect(throws: ZaiLoginError.http(stage: "poll", status: 403)) {
+            _ = try await client.pollUntilTerminal()
+        }
         #expect(clock.sleeps.isEmpty)
     }
 
