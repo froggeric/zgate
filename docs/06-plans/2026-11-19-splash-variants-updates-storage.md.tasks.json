@@ -72,7 +72,7 @@
     {
       "id": 10,
       "subject": "Task 11: About credits + update toggles",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [4, 6],
       "description": "**Goal:** Spec §5 remainder: splash repo credits in About (both repos, Apache-2.0), Check-for-Updates row, two update-settings toggles in General.\n\n**Files:**\n- Modify: ModelProxy/Views/SettingsView.swift (AboutTabView :934-989)\n- Modify: ModelProxy/Views/GeneralTabView.swift (aboutSection :171-193)\n\n**Acceptance Criteria:**\n- Credits: 'Splash — local inference engine by Inco (Apache-2.0)' → github.com/incoai/splash; 'Splash M1/M2 port by paperniuk & contributors (Apache-2.0)' → github.com/paperniuk/splash; descriptive text stays\n- About Updates section: state line (up to date / <tag> available / cannot check), Check Now…, Install… when zgateAlert + prod install\n- General toggles bound to config.update (autoCheck, splashAutoApply) with save\n- Full suite green\n\n**Verify:** full xcodebuild test suite green\n\n```json:metadata\n{\"files\": [\"ModelProxy/Views/SettingsView.swift\", \"ModelProxy/Views/GeneralTabView.swift\"], \"verifyCommand\": \"xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS'\", \"acceptanceCriteria\": [\"credits rows present\", \"updates row + toggles functional\"], \"modelTier\": \"mechanical\"}\n```"
     },
