@@ -4,6 +4,52 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
+## [2.8.7] — 2026-11-19
+
+### 2026-11-19 — Apple HIG design pass + the quota ring
+
+- **The menu-bar icon is now a quota ring**: a template ring gauge whose
+  arc is your remaining weekly quota (clockwise from 12 o'clock), with the
+  `ZΓ <N>%` title kept for the exact number. A dashed ring means "no data
+  yet" (never 0%); a dimmed arc means "last known — poll failing". Fault
+  states still outrank the ring: pause symbol while paused, hourglass
+  while launching, ⚠ on error or when a login is needed. VoiceOver reads
+  the whole item as one label ("ZGate, running, weekly quota N%
+  remaining"). The ring geometry is unit-tested; rendering was
+  pixel-verified at menu-bar size in both light and dark appearances.
+- **Accessibility fixes**: icon-only controls meet macOS hit-target
+  minimums; Reduce Motion now disables the automatic scroll animations in
+  the traffic table and log viewer; the double-dimmed auxiliary traffic
+  rows are full-contrast again; the warning-band quota percent renders in
+  primary text (yellow digits at 10pt failed contrast); green is reserved
+  for process-up status and the quota scale (HTTP 2xx codes no longer
+  paint the traffic list green).
+- **macOS convention fixes**: the Settings button uses the system
+  `SettingsLink` (the manual window-finding dance is gone); all buttons
+  use system styles (custom bezels deleted); vendor selection is a real
+  pop-up button instead of a fake text field; every edit sheet takes
+  Return-to-save / Escape-to-cancel; buttons that open another view carry
+  an ellipsis ("Add Rule…", "Add Vendor…", "Sign In…", "Send Feedback…");
+  the "Targets" tab is renamed **Vendors** to match everything inside it.
+- **Interaction fixes**: a corrupt config.json resets to a session banner
+  instead of a launch-time alert; the re-login alert is short (the
+  terminal command stays one click away via Copy Command — no more
+  transcribing from unselectable alert text); deleting a splash profile
+  asks first (with an active-profile warning); the quota refresh button
+  shows an in-flight spinner and disables; the Clients port field
+  validates visibly and its quick-start command shares the popover's env
+  line formatter (same host, same actual bound port); a disabled vendor
+  Save now says why next to the field.
+- **Dead code removed**: `RoutingTabView.swift` (456 lines of superseded
+  editor) and the custom `ButtonStyles.swift`.
+
+### 2026-11-18 — credential store hardening (rides this train)
+
+- **Secret-less store quarantine**: a credential store whose secrets file
+  is missing no longer wedges login permanently — ZGate quarantines the
+  unusable store and writes a clean one on save, and warns when the saved
+  store lacks a project-key location.
+
 ## [2.7.6] — 2026-11-18
 
 ### 2026-11-18 — login flow: visible status, in-app sign-in, auto-renewal
