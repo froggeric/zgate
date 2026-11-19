@@ -135,4 +135,90 @@ struct UpdateAlertUITests {
         await center.checkNow(splash: false)   // bumps lastCheckAt → persist
         #expect(persisted?.autoCheck == false)
     }
+
+    // MARK: - Fix round 1
+
+    /// Controller ruling: dismissal suppresses ALERTS (badge + popover
+    /// banner, both `zgateAlert`-gated) but not the About capability —
+    /// after dismissing tag T, About still offers the install action
+    /// because the state verdict stays `.available` (a `zgateAlert` gate
+    /// would dead-end: only a newer tag re-arms the alert).
+    @Test("About offers the install action for any available release — dismissal gates alerts, not capability")
+    @MainActor
+    func aboutInstallOfferedRegardlessOfDismissal() async {
+        let zgateFixture = Data(
+            #"{"tag_name":"v2.9.0","assets":[{"name":"ZGate-v2.9.0.zip","browser_download_url":"https://example.com/ZGate-v2.9.0.zip","digest":"sha256:\#(String(repeating: "ab", count: 32))"}]}"#
+                .utf8)
+        let center = UpdateCenter(deps: UpdateCenter.Deps(
+            fetch: { url in
+                if url == UpdateCenter.zgateReleasesURL { return zgateFixture }
+                throw URLError(.notConnectedToInternet)
+            },
+            installedSplashVersion: { _ in nil },
+            currentZGateVersion: { (2, 8, 9) }))
+
+        await center.checkNow(splash: false)
+        #expect(center.zgateAlert)
+        center.dismissZGate(tag: "v2.9.0")
+        #expect(!center.zgateAlert)   // alert surfaces off…
+        #expect(AboutTabView.aboutInstallOffered(center.zgateState))   // …capability on
+
+        // Non-available verdicts offer nothing.
+        #expect(!AboutTabView.aboutInstallOffered(.unknown))
+        #expect(!AboutTabView.aboutInstallOffered(.upToDate))
+        #expect(!AboutTabView.aboutInstallOffered(.cannotCheck))
+    }
+
+    /// Parks one fetch call until the test releases it, so the suite can
+    /// observe mid-flight state (`isChecking`) at a deterministic point —
+    /// no clock, no polling deadline. Lock-guarded like FetchStub: the
+    /// fetch seam is @Sendable.
+    private final class ParkedFetch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        var isParked: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return continuation != nil
+        }
+
+        func park() async {
+            await withCheckedContinuation { c in
+                lock.lock()
+                continuation = c
+                lock.unlock()
+            }
+        }
+
+        func release() {
+            lock.lock()
+            let c = continuation
+            continuation = nil
+            lock.unlock()
+            c?.resume()
+        }
+    }
+
+    /// `isChecking` (the Check Now disable source) brackets a full
+    /// checkNow cycle: false before, true while the check parks in its
+    /// fetch, false again on every exit path (defer).
+    @Test("isChecking brackets a checkNow run")
+    @MainActor
+    func isCheckingBracketsCheckNow() async {
+        let park = ParkedFetch()
+        let center = UpdateCenter(deps: UpdateCenter.Deps(
+            fetch: { _ in
+                await park.park()
+                throw URLError(.notConnectedToInternet)
+            },
+            installedSplashVersion: { _ in nil },
+            currentZGateVersion: { (2, 8, 9) }))
+        #expect(!center.isChecking)
+        async let done = center.checkNow(splash: false)
+        while !park.isParked { await Task.yield() }   // deterministic mid-flight point
+        #expect(center.isChecking)
+        park.release()   // fetch throws → degraded cycle → defer clears
+        await done
+        #expect(!center.isChecking)
+    }
 }

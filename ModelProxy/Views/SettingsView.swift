@@ -1002,10 +1002,11 @@ struct AboutTabView: View {
                     Button("Check Now…") {
                         Task { await updateCenter.checkNow() }
                     }
-                    .disabled(installFlow.busy)
+                    .disabled(updateCenter.isChecking || installFlow.busy)
                     .accessibilityHint("Checks both splash and ZGate releases immediately.")
                     Spacer()
-                    if updateCenter.zgateAlert, case .available(let tag, _) = updateCenter.zgateState {
+                    if Self.aboutInstallOffered(updateCenter.zgateState),
+                       case .available(let tag, _) = updateCenter.zgateState {
                         if ZGateInstallFlow.prodInstall(appUpdate) {
                             Button(installFlow.busy ? "Restarting…" : "Install…") {
                                 installFlow.request(tag: tag)
@@ -1073,5 +1074,18 @@ struct AboutTabView: View {
         case .cannotCheck: return "cannot check — repo unreachable or private"
         case .failed(let reason): return "update failed — \(reason)"
         }
+    }
+
+    /// Pure, tested form of the action gating (controller ruling, fix
+    /// round 1): per-tag dismissal suppresses ALERTS — the menu-bar
+    /// badge and the popover banner, both `zgateAlert`-gated — but not
+    /// the CAPABILITY, so About offers the install action for ANY
+    /// `.available` verdict, dismissed or not. Gating on `zgateAlert`
+    /// here would dead-end a dismissed tag: Check Now cannot re-arm it
+    /// (only a newer tag re-alerts), leaving "T available" with no
+    /// install action.
+    nonisolated static func aboutInstallOffered(_ state: UpdateCenter.ZGateUpdateState) -> Bool {
+        if case .available = state { return true }
+        return false
     }
 }

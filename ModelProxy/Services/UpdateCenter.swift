@@ -139,6 +139,10 @@ final class UpdateCenter {
 
     private(set) var splashState: SplashUpdateState = .unknown
     private(set) var zgateState: ZGateUpdateState = .unknown
+    /// True while a checkNow cycle is in flight — the About tab's
+    /// "Check Now…" disable source (observable by design, unlike the
+    /// deliberately non-observable `applying` flag).
+    private(set) var isChecking = false
 
     var hasActiveAlert: Bool { splashAlert || zgateAlert }
     var splashAlert: Bool {
@@ -304,8 +308,11 @@ final class UpdateCenter {
     /// or `splash: false` for a ZGate-only refresh), then ZGate. Persists
     /// the last-seen tags and `lastCheckAt` — degraded cycles included,
     /// which is what prevents a retry storm after a failed check. Ends by
-    /// re-evaluating auto-apply against the fresh verdict.
+    /// re-evaluating auto-apply against the fresh verdict. `isChecking`
+    /// brackets the whole run (defer-cleared on every path).
     func checkNow(splash: Bool = true, chip: SplashChip? = SplashChip.current) async {
+        isChecking = true
+        defer { isChecking = false }
         self.chip = chip
         if splash {
             await checkSplash(chip: chip)
