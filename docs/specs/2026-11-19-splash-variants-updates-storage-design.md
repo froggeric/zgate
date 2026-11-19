@@ -431,7 +431,9 @@ struct SplashStorage: Codable, Equatable, Sendable {
 
 ## 11. Open items / deployment prerequisites
 
-- **User action:** flip `froggeric/zgate` to public (locked decision 4).
+- ~~User action: flip `froggeric/zgate` to public~~ **DONE 2026-11-19** —
+  anonymous `releases/latest` verified live (tag `v2.8.9`, asset
+  `ZGate-2.8.9.zip`); repo history was secret-scanned clean the same day.
 - Release flow unchanged otherwise (notarize → zip after staple → tag
   `v{m}.{b}` → asset `ZGate-<v>.zip`). The updater relies on the
   existing `digest` field — no appcast, no signing keys to manage.
