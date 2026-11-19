@@ -6,9 +6,11 @@ macOS menu bar app - transparent local API proxy for multi-vendor model routing.
 > 项目 `ZGate.xcodeproj`。源码目录 `ModelProxy/`、os_log subsystem `com.modelproxy.app`、
 > 日志文件名仍是旧名 —— 同一个 app，不是两个。
 >
-> **App Store 2.5 已过审并发布**（2026-08-29T01:13:31Z，中国区仍在架）。合规约束与发布清单在
-> `docs/10-app-store-connect/README.md`。⛔ 下次发布前必做：三个 ASC URL 切 norvyn.com
-> （清单在同一份 README；ASC store metadata 属上游 model-proxy 开发流程，不在本仓库）。
+> **分发渠道：仅 GitHub Releases — ZGate 不是 App Store app**（用户确认 2026-11-19）。
+> App Store 上的 2.5 是**上游 model-proxy** 的发布，其合规文档 `docs/10-app-store-connect/`
+> 仅为上游参考，**不驱动本仓库的发布流程**（无需 ASC 提交、无需 URL 切换）。本仓库的
+> 发布流程：Release build → `scripts/notarize.sh`（签名+公证+staple）→ zip → GitHub
+> Release → `scripts/release-swap.sh` 换本地实例。
 
 ## Document Truth Source
 
