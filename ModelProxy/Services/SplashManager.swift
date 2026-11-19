@@ -143,15 +143,26 @@ final class SplashManager {
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)
         .first!.appendingPathComponent("ZGate", isDirectory: true)
 
-    /// Binary resolution (spec §3.1): override → /opt/homebrew/bin/splash-m1
-    /// → app-support fallback dir. Override pointing at a missing file is
-    /// ignored (falls through) so a stale override never bricks launches.
-    nonisolated static func resolvedBinaryPath(override: String? = nil) -> String {
-        let fm = FileManager.default
-        if let override, fm.fileExists(atPath: override) { return override }
-        let homebrew = "/opt/homebrew/bin/splash-m1"
-        if fm.fileExists(atPath: homebrew) { return homebrew }
-        return fallbackBinDir.appendingPathComponent("bin/splash-m1").path
+    /// Binary resolution (spec §3.1): override (if present) →
+    /// /opt/homebrew/bin/<chip binary> → ~/.local/bin/<chip binary> (the
+    /// fork installer's fallback) → app-support bin/<chip binary>. A stale
+    /// override falls through so it can never brick launches.
+    nonisolated static func resolvedBinaryPath(
+        override: String? = nil,
+        chip: SplashChip? = SplashChip.current,
+        fileExists: @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        homebrewBinDir: String = "/opt/homebrew/bin",
+        localBinDir: String? = NSHomeDirectory() + "/.local/bin"
+    ) -> String {
+        if let override, fileExists(override) { return override }
+        let name = (chip ?? .forkM1M2).binaryName
+        let homebrew = "\(homebrewBinDir)/\(name)"
+        if fileExists(homebrew) { return homebrew }
+        if let localBinDir {
+            let local = "\(localBinDir)/\(name)"
+            if fileExists(local) { return local }
+        }
+        return fallbackBinDir.appendingPathComponent("bin/\(name)").path
     }
 
     /// Test-context suppression (owner ruling 2026-11-16: this machine cannot

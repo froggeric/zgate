@@ -7,7 +7,7 @@ enum SplashChip: String, Sendable, Equatable {
 
     /// `sysctl -n machdep.cpu.brand_string` → chip family. Apple M-series
     /// with generation ≤ 2 → fork; ≥ 3 → official; anything else → nil.
-    static func from(brandString: String) -> SplashChip? {
+    nonisolated static func from(brandString: String) -> SplashChip? {
         let s = brandString.lowercased()
         guard let mRange = s.range(of: "apple m") else { return nil }
         let rest = s[mRange.upperBound...]
@@ -16,7 +16,7 @@ enum SplashChip: String, Sendable, Equatable {
         return generation <= 2 ? .forkM1M2 : .officialM3Plus
     }
 
-    static func currentBrandString() -> String? {
+    nonisolated static func currentBrandString() -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/sbin/sysctl")
         p.arguments = ["-n", "machdep.cpu.brand_string"]
@@ -26,6 +26,31 @@ enum SplashChip: String, Sendable, Equatable {
         p.waitUntilExit()
         return String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+// `nonisolated`: pure per-chip facts + subprocess probe, consumed from any
+// isolation (binary resolution runs off the main actor).
+nonisolated extension SplashChip {
+    /// Binary this chip family runs (fork shim vs brew formula command).
+    var binaryName: String { self == .officialM3Plus ? "splash" : "splash-m1" }
+    /// Repo whose releases/latest answers for this chip (spec §3.1).
+    var repoSlug: String { self == .officialM3Plus ? "incoai/splash" : "paperniuk/splash" }
+    /// Detected once per process; nil = unknown → callers treat as fork
+    /// (same rule as SplashTabModel.installVariant).
+    static let current: SplashChip? =
+        SplashChip.from(brandString: SplashChip.currentBrandString() ?? "")
+
+    static func releasesURL(for chip: SplashChip?) -> URL {
+        URL(string: "https://api.github.com/repos/\((chip ?? .forkM1M2).repoSlug)/releases/latest")!
+    }
+
+    /// Both splash repos require macOS 26.4 (install-m1.sh gate; official
+    /// device check). ZGate runs on 15.7+, so this gates only splash
+    /// install/update UI and auto-apply, never the app itself.
+    static func macOSSupportsSplash(_ v: OperatingSystemVersion) -> Bool {
+        if v.majorVersion > 26 { return true }
+        return v.majorVersion == 26 && v.minorVersion >= 4
     }
 }
 
@@ -122,6 +147,12 @@ struct SplashInstaller: Sendable {
     /// "unknown latest", never a wrong verdict.
     func latestForkRelease() async -> SplashRelease? {
         guard let data = try? await deps.fetch(Self.releasesURL) else { return nil }
+        return try? JSONDecoder().decode(SplashRelease.self, from: data)
+    }
+
+    /// Latest release for the chip's repo (spec §3.1); nil on ANY failure.
+    func latestRelease(for chip: SplashChip?) async -> SplashRelease? {
+        guard let data = try? await deps.fetch(SplashChip.releasesURL(for: chip)) else { return nil }
         return try? JSONDecoder().decode(SplashRelease.self, from: data)
     }
 
