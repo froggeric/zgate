@@ -131,7 +131,8 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 ```
 
 8787 is the default Claude Code port on fresh installs (Codex listens on
-8789; 8788 is reserved by zbridge on this machine). If the configured port
+8789; 8788 is reserved by zbridge — this fork's retired Node.js predecessor —
+on this machine). If the configured port
 is taken, ZGate advances to the next free port — the popover line always
 tells the truth. Set the tier aliases too — see
 [Claude Code tier aliases](#claude-code-tier-aliases).

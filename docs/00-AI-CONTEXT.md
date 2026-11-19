@@ -1,49 +1,69 @@
-# ModelProxy - AI Context
+# ZGate - AI Context
 
-> AI assistant entry document for this project.
+> AI assistant entry document for this project. Fork of
+> [model-proxy](https://github.com/n0rvyn/model-proxy) (upstream README kept
+> at `README.upstream.md`); app renamed ModelProxy → ZGate on 2026-11-18
+> (source dir `ModelProxy/` and test names kept).
 
 ## One-line Description
 
-macOS menu bar app that acts as a transparent local API proxy, routing model requests from Claude Code / Codex to different AI providers based on model ID.
+macOS menu bar app: transparent local API proxy routing Claude Code / Codex
+requests to the **signed zcode relay** (z.ai GLM models — direct endpoint,
+full V4 signing chain in Swift) or a local model server (Splash), by model ID.
 
 ## Core Features
 
 ### Local HTTP Proxy
 
-Listens on localhost, intercepts Anthropic-format API requests, routes to the correct vendor endpoint based on model ID matching.
+Listens on localhost, intercepts Anthropic-format API requests, routes via
+exact-match mappings then class rules in config order (conditions: time
+window / quota / health), terminal catch-all last — no request is dropped.
 
 **Key Files:**
-- `ModelProxy/Proxy/ProxyServer.swift` - NIO HTTP server, request routing
-- `ModelProxy/Proxy/RequestRouter.swift` - Model ID matching and endpoint resolution
-- `ModelProxy/Proxy/ResponseRelay.swift` - Response forwarding (streaming + non-streaming)
+- `ModelProxy/Proxy/ProxyServer.swift` - NIO HTTP server
+- `ModelProxy/Proxy/RequestRouter.swift` / `RoutingSnapshot.swift` - model matching, class rules, failover
+- `ModelProxy/Proxy/ResponseRelay.swift` - response forwarding (streaming + non-streaming)
+
+### Signed zcode relay (direct endpoint)
+
+The sole GLM vendor POSTs straight to
+`https://zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages` — never through
+the local ZCode CLI/GUI (no local proxy port exists; the app is a credential
+source only). Full ClientRequestSigningV4 chain in Swift; unsigned requests
+are never sent (the relay 401s them). Decision record:
+`docs/03-decisions/2026-11-15-direct-endpoint-relay-connection.md`.
+
+**Key Files:**
+- `ModelProxy/Proxy/RelayTarget.swift` - relay forward target, per-request signing, failure policy
+- `ModelProxy/Signing/SigningClient.swift`, `CryptoCore.swift` - store decrypt → z/login → token mint → handshake → Ed25519
+- `ModelProxy/Signing/ZaiLoginClient.swift`, `CredentialKeeper.swift`, `BizSessionCache.swift` - in-app OAuth, renewal
+- `ModelProxy/Services/CredentialStore.swift` - shared zcode credential store access
 
 ### Configuration
 
-Manages vendors, model mappings, and client-specific settings (Claude Code / Codex).
+Manages vendors, model mappings, routing rules, and client-specific settings
+(Claude Code / Codex).
 
 **Key Files:**
-- `ModelProxy/Models/AppConfig.swift` - Top-level config model
-- `ModelProxy/Models/Vendor.swift` - Vendor definition (endpoint, API key, models)
-- `ModelProxy/Models/ClientConfig.swift` - Per-client settings (port, tier mappings)
+- `ModelProxy/Models/AppConfig.swift` - top-level config model, default routing
+- `ModelProxy/Models/Vendor.swift` - vendor definition (endpoint, vendorKind, models)
+- `ModelProxy/Models/ClientConfig.swift` - per-client settings (port, tier mappings)
 
 ### Menu Bar UI
 
-System tray status, traffic log, token stats.
+Status, quota ring, traffic log, token stats.
 
 **Key Files:**
-- `ModelProxy/App/ModelProxyApp.swift` - App entry, MenuBarExtra
-- `ModelProxy/Views/StatusPopover.swift` - Main popover view
-- `ModelProxy/Views/SettingsView.swift` - Settings window
+- `ModelProxy/App/ModelProxyApp.swift` - app entry, MenuBarExtra
+- `ModelProxy/Views/StatusPopover.swift` - main popover view
+- `ModelProxy/Views/SettingsView.swift` - settings window
 
 ## Tech Stack
 
-| Technology | Version | Purpose |
-|-----------|---------|---------|
-| macOS | 15.6+ (Sequoia) | Minimum support |
-| Swift | 6 | Language |
-| SwiftUI | - | UI framework |
-| SwiftNIO | 2.x | HTTP proxy server |
-| UserDefaults | - | Config persistence |
+macOS 15.7+ (Sequoia) minimum, Swift 6, SwiftUI, SwiftNIO (proxy server),
+AsyncHTTPClient (upstream), JSON file persistence in
+`~/Library/Application Support/ZGate/` (API keys in config.json, not
+Keychain; no SwiftData / Core Data).
 
 ## Key Paths
 
@@ -51,12 +71,16 @@ System tray status, traffic log, token stats.
 |---------|-----------|
 | App entry | `ModelProxy/App/ModelProxyApp.swift` |
 | Proxy server | `ModelProxy/Proxy/ProxyServer.swift` |
+| Relay target + signing | `ModelProxy/Proxy/RelayTarget.swift`, `ModelProxy/Signing/` |
 | Config models | `ModelProxy/Models/` |
 | Views | `ModelProxy/Views/` |
 
 ## Document Index
 
-- Project brief: `docs/01-discovery/project-brief.md`
 - Architecture: `docs/02-architecture/`
-- Dev guide / plans: `docs/06-plans/`
-- Features: `docs/05-features/`
+- Decisions (ADRs): `docs/03-decisions/` — start with `2026-11-15-direct-endpoint-relay-connection.md`
+- Features: `docs/05-features/`; dev plans: `docs/06-plans/`; changelog: `docs/07-changelog/`
+- Lessons learned: `docs/09-lessons-learned/`
+- Signing deep-dive: `docs/signing-notes.md`; build log: `docs/zgate-notes.md`
+- E2E verification + metering doctrine: `docs/e2e-checklist.md` (AC4 addenda)
+- App Store / compliance: `docs/10-app-store-connect/`; crystals: `docs/11-crystals/`

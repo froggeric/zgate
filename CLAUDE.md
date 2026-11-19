@@ -89,12 +89,18 @@ read it directly with `ls`/`head` (verified 2026-11-19):
 
 ```
 ~/Library/Application Support/ZGate/
-  ├── logs/modelproxy-YYYY-MM-DD.log   (daily log; NO request/response bodies, by policy)
   ├── config.json                      (vendors, keys)
-  ├── lineages.json                    (branch/lineage cache)
-  ├── quota-history-*.json / token-stats-*.json
+  ├── token-stats-YYYY-MM-DD.json      (daily relayed-token totals; inputTokens is FOLDED = fresh + cache reads)
+  ├── quota-history-YYYY-MM-DD.json    (weekly-window remaining-fraction polls; {timestampMs, fraction} only)
+  ├── biz-session.cache                (signing biz JWT; credential material, never log it)
   └── bin/
 ```
+
+- **No `logs/` directory exists on the current install** (verified 2026-11-19;
+  AppLogger/AppLogManager file logging is not active here) and `lineages.json`
+  is created lazily only when lineages are recorded — do not expect either on
+  disk. The traffic log is an in-memory 500-entry ring (TrafficLog), so
+  per-call timestamps/call counts are NOT recoverable from disk.
 
 - **2026-11-18 rename migration:** one-time move of the legacy
   `.../Application Support/ModelProxy/` dir happens in `ModelProxy/App/AppPaths.swift`

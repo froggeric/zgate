@@ -206,6 +206,56 @@ again withheld from this committed file; probe report:
 - **Minted plan-token TTL measured ≈ 52 min** (fixed server-anchored
   expiry) — not the ≈3 h the zbridge notes assumed.
 
+## AC4 addendum (2026-11-19) — first full reset-window audit
+
+Audit of the first complete weekly window since the 2026-11-17 doctrine,
+cross-checking ZGate's local metering (token-stats / quota-history in
+Application Support) against live monitor-API pulls (quota/limit +
+model-usage, polled 15:07 CET).
+
+- **The weekly window re-anchored EARLY.** Previous anchor (per the
+  2026-11-17 audit): next reset Thu 2026-11-20 21:49:46 CET. Observed:
+  quota-history drops 0.01 → 0.99 between 16:11 and 16:16 CET on
+  **Wed 2026-11-18** (nextResetTime now Wed 2026-11-25 16:15:56 CET —
+  exactly 7 d after the new anchor). The window was cut ~2 d 5 h short,
+  right as it hit ~1% remaining. Mechanism user-confirmed 2026-11-19: a
+  manually spent **weekly-reset bonus** (the plan carries a few; the
+  window had emptied) — not a z.ai-side early reset. The anchor follows
+  bonus spends: `nextResetTime` = bonus spend + 7 d, and the "resets
+  Thursdays ~20:49" rule of thumb is dead — read `nextResetTime` from
+  the API, not the calendar. Planning note: under sustained load the
+  window can empty days before its reset (it did here); the bonuses are
+  the buffer for exactly that.
+- **Relay-metered reconfirmed at window scale:** ~230M raw tokens / ~2.5k
+  calls (97% GLM-5.3) relayed in the 22.9 h since reset drew the weekly
+  window 1% → 15% used. ZGate-side folded input (~226M) matches monitor
+  raw within the known counter-semantics gap (monitor counts all server
+  attempts; ZGate counts usage-parsed streams).
+- **Lazy sync reconfirmed:** the window read 0.99 for ~5 h of active
+  post-reset relay traffic before draining overnight in 1-pct steps.
+- **NEW — folded-input per 1 pct is stable across cache mixes:** 11-18:
+  ~20 pct consumed vs 266.5M folded glm-5.3 input ≈ 13.3M/pct; 11-19:
+  6 pct vs 84.2M ≈ 14.0M/pct (±5%) — despite cache-read share going
+  83% → 97%. If cache reads metered at a discount, the 97%-cache day
+  would show far more tokens per pct. First behavioral confirmation at
+  weekly-window scale that **cache reads meter at ≈ full input price**
+  (supports DP-003 / README doctrine).
+- **The 2/3 (150% bonus) ratio — CLOSED as unverifiable (2026-11-19,
+  user ruling):** zero direct-API traffic occurs in normal operation
+  (everything is relayed), so no passive baseline exists; the monitor
+  exposes percentages only (no absolute window magnitude); and the one
+  decisive experiment (a paired direct-vs-relay probe, the AC4 method)
+  was ruled not worth spending quota on. Treat relay metering as 1.0×
+  for planning (worst case); the 2/3 lore stays unconfirmed.
+- **No peak signal either way:** monitor buckets show 0 calls
+  02:00–11:00 Paris on 11-19 (idle), so the flat quota window through the
+  07:00–11:00 peak says nothing about the 3× peak multiplier.
+- **ZGate stats blind spots (on the record):** vendor-side cacheRead is
+  lost on every app relaunch (TokenStatsStore.load restores vendor records
+  without it; sourceModelUsage keeps it — trust the source side); daily
+  files roll at midnight, not at the quota reset; no per-call data on
+  disk (see CLAUDE.md Runtime Inspection).
+
 ## Test results (this run)
 
 (Pre-v2.1 run — under v2.1, `ac2a` no longer exists and `ac2b` is
