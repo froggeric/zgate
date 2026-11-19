@@ -63,7 +63,7 @@
 ```swift
 import Testing
 import Foundation
-@testable import ModelProxy
+@testable import ZGate
 
 @Suite struct SplashVariantTests {
     // -- variant table --
@@ -220,7 +220,7 @@ In `SplashManager.swift`, replace `resolvedBinaryPath` (:149-155) — keep the z
 ```swift
 import Testing
 import Foundation
-@testable import ModelProxy
+@testable import ZGate
 
 @Suite struct SplashPortSyncTests {
     private func qwenLeverConfig(port: Int?) -> AppConfig {
@@ -331,7 +331,7 @@ and thread `vendors` into the snapshot construction (the same variable `config.v
 ```swift
 import Testing
 import Foundation
-@testable import ModelProxy
+@testable import ZGate
 
 @Suite struct SplashTarballInstallerTests {
     /// Makes <dir>/pkg/inner/hello.txt, tars it the way the repos ship
@@ -611,7 +611,7 @@ and delete the `SplashAssetPicker`/`installedAt` references plus the `binaryPath
 ```swift
 import Testing
 import Foundation
-@testable import ModelProxy
+@testable import ZGate
 
 @Suite struct SplashStorageTests {
     @Test func defaultsEmitNothing() {
