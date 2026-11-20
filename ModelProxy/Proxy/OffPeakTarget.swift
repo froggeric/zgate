@@ -690,9 +690,9 @@ enum OffPeakTarget {
         channel: any Channel,
         context: Context?,
         trafficLog: TrafficLog? = nil,
+        tokenStatsStore: TokenStatsStore? = nil,
         requestID: String
     ) async -> State? {
-        let startedAt = Date.now
         let config = context?.configuration() ?? OffPeakConfig()
 
         // Health: always answered locally, reports the toggle as-is.
@@ -721,6 +721,50 @@ enum OffPeakTarget {
             return nil
         }
 
+        // No context = surface disabled, same local 404 shape (a nil
+        // context already failed the enabled gate above — kept so the
+        // delegate never has to re-check).
+        guard let context else {
+            await ProxyForwarder.sendAnthropicError(
+                channel: channel, status: .notFound, type: "not_found_error",
+                message: "The off-peak async surface is disabled.")
+            return nil
+        }
+
+        return await serve(
+            head: head,
+            body: body,
+            channel: channel,
+            context: context,
+            targetModel: nil,
+            trafficLog: trafficLog,
+            tokenStatsStore: tokenStatsStore,
+            vendorID: nil,
+            requestID: requestID)
+    }
+
+    /// The shared POST core (off-peak wave 2, Task 3): pre-flight, model
+    /// canonicalization, orchestration, cancellation bridge, traffic row —
+    /// split out of `handle` so the forwarder's routed off-peak path (Task 4)
+    /// can serve with a rule's target model and a vendor for stats. The
+    /// `/async` face calls this with `targetModel` nil (wire behavior
+    /// byte-identical to the pre-split `handle`) and `vendorID` nil — a
+    /// vendorless serve records token stats exactly like the passthrough
+    /// path: not at all.
+    static func serve(
+        head: HTTPRequestHead,
+        body: ByteBuffer,
+        channel: any Channel,
+        context: Context,
+        targetModel: String?,
+        trafficLog: TrafficLog?,
+        tokenStatsStore: TokenStatsStore?,
+        vendorID: UUID?,
+        requestID: String
+    ) async -> State? {
+        let startedAt = Date.now
+        let config = context.configuration()
+
         // Pre-flight — before ANY ticket-server call (a malformed request
         // must never leak a ticket).
         let bodyData = body.getData(at: body.readerIndex, length: body.readableBytes) ?? Data()
@@ -744,29 +788,40 @@ enum OffPeakTarget {
             return nil
         }
         // Model canonicalization (Task 5 helpers): byte-preserving
-        // top-level splice; everything else stays byte-unchanged.
+        // top-level splice; everything else stays byte-unchanged. A routed
+        // serve (Task 4) overrides the request's model with its rule
+        // target; the /async face passes nil and uses the request's own.
         var wireBody = bodyData
         var model = "unknown"
+        var rawModel: String?
         if let raw = json["model"] as? String, !raw.isEmpty {
-            let canonical = RelayTarget.canonicalModel(raw)
+            rawModel = raw
+            let effective = targetModel ?? raw
+            let canonical = RelayTarget.canonicalModel(effective)
             wireBody = ProxyForwarder.replaceModelField(in: bodyData, with: canonical).data
             model = canonical
         }
 
-        guard let context else {
-            await ProxyForwarder.sendAnthropicError(
-                channel: channel, status: .notFound, type: "not_found_error",
-                message: "The off-peak async surface is disabled.")
-            return nil
-        }
-
         let ticketClient = context.makeTicketClient()
         let settleClient = ticketClient
-        // Output tokens for the traffic row (forward()'s capture pattern —
-        // the usage callback fires during orchestration, read after it).
+        // Output tokens for the traffic row + token stats (forward()'s
+        // capture pattern — the usage callback fires during orchestration,
+        // read after it). Stats keying mirrors the forwarder exactly
+        // (ProxyForwarder's onUsage): the serving vendor, the canonical
+        // model, the RAW request model as source — and a vendorless serve
+        // records nothing, same as the passthrough path.
+        let statsModel = model
+        let sourceModelForStats = rawModel
         nonisolated(unsafe) var capturedOutputTokens: Int?
-        let onUsage: ResponseRelay.UsageCallback = { input, output, _ in
+        let onUsage: ResponseRelay.UsageCallback = { [tokenStatsStore] input, output, cacheRead in
             capturedOutputTokens = output
+            if let tokenStatsStore, let vendorID {
+                Task { @MainActor in
+                    tokenStatsStore.add(
+                        vendorID: vendorID, model: statsModel, input: input, output: output,
+                        cacheRead: cacheRead, sourceModel: sourceModelForStats)
+                }
+            }
         }
         let deps = Dependencies(
             config: config,

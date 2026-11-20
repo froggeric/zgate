@@ -115,6 +115,7 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
                         channel: channel,
                         context: offPeak,
                         trafficLog: trafficLog,
+                        tokenStatsStore: tokenStatsStore,
                         requestID: String(UUID().uuidString.prefix(8)))
                 }
                 requestHead = nil

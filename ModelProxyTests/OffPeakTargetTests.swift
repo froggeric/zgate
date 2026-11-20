@@ -891,6 +891,90 @@ struct OffPeakTargetTests {
         #expect(entries.first?.model == "GLM-5.3")
     }
 
+    // MARK: - Token stats (serve level, Task 3)
+
+    /// Day formatter matching TokenStatsStore's file name (yyyy-MM-dd).
+    private nonisolated(unsafe) static let statsDayFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        return fmt
+    }()
+
+    /// Today's on-disk token-stats snapshot, or nil when not (yet) written
+    /// (the add rides a fire-and-forget MainActor task, the persist a
+    /// detached background write — poll for it).
+    private static func todayStatsSnapshot() -> DailyTokenSnapshot? {
+        let url = AppPaths.appSupport
+            .appendingPathComponent("token-stats-\(statsDayFormatter.string(from: Date())).json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(DailyTokenSnapshot.self, from: data)
+    }
+
+    /// A vendor-keyed serve records usage in the day's stats file with the
+    /// forwarder's convention (Task 4's routed configuration): stats model =
+    /// canonical wire model, source model = the RAW request model. The
+    /// vendorless /async face (`handle`) passes vendorID nil and mirrors the
+    /// passthrough path: no stats row.
+    @Test("served async request records token usage")
+    func asyncServeRecordsTokenStats() async throws {
+        let stub = OffPeakStubServer()
+        let port = try await stub.start()
+        defer { Task { await stub.shutdown() } }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+        stub.respond = { request in
+            switch request.path {
+            case "/api/v1/off-peak/ticket/availability":
+                return .envelope(Self.availabilityTrue)
+            case "/api/v1/off-peak/ticket":
+                return .envelope(Self.takeTicket(id: "tkt-stats", state: "ready"))
+            case OffPeakTarget.dataPlanePath:
+                return Script(
+                    status: 200,
+                    headers: ["content-type": "text/event-stream"],
+                    chunks: [Data(Self.sseFrames.utf8)])
+            default:
+                return Script(status: 404, chunks: [Data(#"{"code":404}"#.utf8)])
+            }
+        }
+
+        let tokenStatsStore = await MainActor.run { TokenStatsStore() }
+        let vendorID = UUID()
+        let channel = EmbeddedChannel()
+        let state = await OffPeakTarget.serve(
+            head: asyncMessagesHead(),
+            body: bodyBuffer(Self.requestBody(model: "zai/GLM-5.3[1m]")),
+            channel: channel,
+            context: makeContext(
+                config: enabledConfig(origin: "http://127.0.0.1:\(port)"),
+                httpClient: httpClient),
+            targetModel: nil,
+            trafficLog: nil,
+            tokenStatsStore: tokenStatsStore,
+            vendorID: vendorID,
+            requestID: "t-stats")
+        #expect(state == .done)
+
+        // One row for the serving vendor under the CANONICAL model.
+        let appeared = await waitUntil {
+            Self.todayStatsSnapshot()?.usageByVendorAndModel[vendorID.uuidString]?["GLM-5.3"]
+                != nil
+        }
+        #expect(appeared)
+        let record = try #require(
+            Self.todayStatsSnapshot()?.usageByVendorAndModel[vendorID.uuidString]?["GLM-5.3"])
+        #expect(record.inputTokens > 0)
+        #expect(record.outputTokens > 0)
+
+        // Source-model attribution (mapped-route convention): the RAW
+        // request model, not the canonical wire model.
+        let sourceRecord = try #require(
+            Self.todayStatsSnapshot()?.sourceModelUsage["zai/GLM-5.3[1m]"])
+        #expect(sourceRecord.inputTokens > 0)
+        #expect(sourceRecord.outputTokens > 0)
+    }
+
     // MARK: - Orchestrator: availability wait + keepalives + happy stream
 
     @Test func orchestrateWaitsForAvailabilityWithKeepalivesThenRelaysUntouchedAndSettles()
