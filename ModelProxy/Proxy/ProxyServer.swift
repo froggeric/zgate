@@ -302,6 +302,14 @@ final class ProxyServer {
         // stored vendor row keeps its seeded 8123 default (in-memory sync
         // only, never persisted).
         let vendors = AppConfig.syncingSplashVendor(config.vendors, splashPort: config.splash?.port)
+        // Fix round 1: push the fallback edge target for the DIRECT degraded
+        // serve (class rules carry no rule backup). nil when the user
+        // removed the edge vendor — degraded admission then answers today's
+        // terminal.
+        if let relayHealth {
+            let edgeTarget = Self.fallbackEdgeRouteTarget(vendors: vendors)
+            await relayHealth.configureFallbackEdgeTarget(edgeTarget)
+        }
         if localHealthMonitor == nil {
             localHealthMonitor = LocalHealthMonitor()
         }
@@ -458,6 +466,34 @@ final class ProxyServer {
             isStopped: isStopped)
     }
 
+    /// The fallback edge's route target built from the live vendor rows
+    /// (fix round 1: the direct degraded serve). nil when no vendor points
+    /// at the pinned edge.
+    private static func fallbackEdgeRouteTarget(
+        vendors: [Vendor]
+    ) -> RoutingSnapshot.RouteTarget? {
+        guard let vendor = vendors.first(where: { ApiKeyMinter.isFallbackEdge($0.baseURL) }) else {
+            return nil
+        }
+        return RoutingSnapshot.RouteTarget(
+            baseURL: vendor.baseURL,
+            apiKey: vendor.apiKey,
+            vendorName: vendor.name,
+            vendorID: vendor.id,
+            targetModel: nil,
+            isPassthrough: false,
+            connectTimeoutSeconds: vendor.connectTimeoutSeconds,
+            readTimeoutSeconds: vendor.readTimeoutSeconds,
+            signingDomain: vendor.signingDomain,
+            replayPolicy: vendor.replayPolicy,
+            supportsThinkingBlocks: vendor.supportsThinkingBlocks,
+            supportsAnthropicCountTokens: vendor.supportsAnthropicCountTokens,
+            repairsAnthropicToolCalls: vendor.repairsAnthropicToolCalls,
+            stripsClaudeOnlyRequestFields: vendor.stripsClaudeOnlyRequestFields,
+            applyGLMCanonicalization: vendor.applyGLMCanonicalization,
+            vendorKind: vendor.vendorKind)
+    }
+
     // MARK: - Hot Reload
 
     /// Push a new routing snapshot to all listeners that match by clientName.
@@ -473,6 +509,12 @@ final class ProxyServer {
         // 8123 when the port changed.
         let vendors = AppConfig.syncingSplashVendor(config.vendors, splashPort: config.splash?.port)
         localHealthMonitor?.configure(vendors: vendors)
+        // Fix round 1: the direct degraded serve follows the live config —
+        // an added or removed edge vendor takes effect without a restart.
+        if let relayHealth {
+            let edgeTarget = Self.fallbackEdgeRouteTarget(vendors: vendors)
+            Task { await relayHealth.configureFallbackEdgeTarget(edgeTarget) }
+        }
         for slot in listeners {
             guard let clientCfg = config.clients.first(where: { $0.clientName == slot.clientName }) else {
                 continue

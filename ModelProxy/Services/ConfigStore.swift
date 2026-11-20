@@ -236,38 +236,42 @@ final class ConfigStore {
             && config.vendors[i].baseURL == "https://zcode.z.ai/api/v1/ultra-zai/anthropic" {
             config.vendors[i].baseURL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
         }
-        // Migration 10 (relay fidelity Task 7, 2026-11-20): the unsigned
-        // API-key fallback edge. Seed the vendor when absent (identified by
-        // the pinned fallback baseURL — a user-edited copy is reused, never
-        // duplicated) and attach it as the catch-all rule's backup when
-        // that rule has none. Value-gated and idempotent: an existing
-        // fallback vendor or catch-all backup (including the user's own
-        // choice) is never overwritten. As with migration 7's rows, the
-        // gate is presence-shaped: deleting the vendor or the backup lets
-        // the next launch re-seed it.
-        let fallbackID: UUID
-        if let existing = config.vendors.first(where: { ApiKeyMinter.isFallbackEdge($0.baseURL) }) {
-            fallbackID = existing.id
-        } else {
-            let fallback = Vendor(
-                name: "z.ai API key (fallback)",
-                baseURL: ApiKeyMinter.fallbackBaseURL,
-                apiKey: "",
-                connectTimeoutSeconds: 10,
-                readTimeoutSeconds: 300,
-                supportsThinkingBlocks: true,
-                stripsClaudeOnlyRequestFields: true,
-                applyGLMCanonicalization: true)
-            config.vendors.append(fallback)
-            fallbackID = fallback.id
-        }
-        if let index = config.modelMappings.firstIndex(where: {
-            $0.catchAll && $0.backupTargetVendorID == nil
-        }) {
-            config.modelMappings[index].backupTargetVendorID = fallbackID
-            if config.modelMappings[index].backupTargetModel == nil {
-                config.modelMappings[index].backupTargetModel = config.modelMappings[index].targetModel
+        // Migration 10 (relay fidelity Task 7, 2026-11-20; run-once per
+        // controller ruling fix round 1): the unsigned API-key fallback
+        // edge. FIRST application only (gated by the persisted
+        // `fallbackEdgeSeeded` marker): seed the vendor when absent
+        // (identified by the pinned fallback baseURL — a user-edited copy
+        // is reused, never duplicated) and attach it as the catch-all
+        // rule's backup when that rule has none. After the marker is set
+        // the migration never runs again — a user-removed edge vendor or
+        // cleared catch-all backup STAYS removed (AC5 held within a
+        // session before; now it holds across launches).
+        if !config.fallbackEdgeSeeded {
+            let fallbackID: UUID
+            if let existing = config.vendors.first(where: { ApiKeyMinter.isFallbackEdge($0.baseURL) }) {
+                fallbackID = existing.id
+            } else {
+                let fallback = Vendor(
+                    name: "z.ai API key (fallback)",
+                    baseURL: ApiKeyMinter.fallbackBaseURL,
+                    apiKey: "",
+                    connectTimeoutSeconds: 10,
+                    readTimeoutSeconds: 300,
+                    supportsThinkingBlocks: true,
+                    stripsClaudeOnlyRequestFields: true,
+                    applyGLMCanonicalization: true)
+                config.vendors.append(fallback)
+                fallbackID = fallback.id
             }
+            if let index = config.modelMappings.firstIndex(where: {
+                $0.catchAll && $0.backupTargetVendorID == nil
+            }) {
+                config.modelMappings[index].backupTargetVendorID = fallbackID
+                if config.modelMappings[index].backupTargetModel == nil {
+                    config.modelMappings[index].backupTargetModel = config.modelMappings[index].targetModel
+                }
+            }
+            config.fallbackEdgeSeeded = true
         }
         return config
     }

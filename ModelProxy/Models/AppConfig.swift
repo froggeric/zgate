@@ -86,6 +86,13 @@ final class AppConfig: Codable {
     /// sig message). Absent in pre-wave configs → the bundled default; only
     /// `VersionPinService` writes it (greater-only, persisted on bump).
     var relayClientVersion: String
+    /// Relay fidelity Task 7 migration marker: the fallback-edge seed
+    /// (vendor + catch-all backup) has been applied at least once.
+    /// Run-once gate (controller ruling, fix round 1): after the first
+    /// application a user-removed edge vendor STAYS removed — migration 10
+    /// never re-seeds. Encoded only when true (pre-fix configs and fresh
+    /// hand-edits stay byte-stable until the migration records itself).
+    var fallbackEdgeSeeded: Bool
 
     // MARK: - Init
 
@@ -99,7 +106,8 @@ final class AppConfig: Codable {
         splash: SplashSettings? = nil,
         update: UpdateSettings? = nil,
         credentialStoreBase: String? = nil,
-        relayClientVersion: String = RelayTarget.clientVersion
+        relayClientVersion: String = RelayTarget.clientVersion,
+        fallbackEdgeSeeded: Bool = false
     ) {
         self.vendors = vendors
         self.clients = clients
@@ -111,6 +119,7 @@ final class AppConfig: Codable {
         self.update = update
         self.credentialStoreBase = credentialStoreBase
         self.relayClientVersion = relayClientVersion
+        self.fallbackEdgeSeeded = fallbackEdgeSeeded
     }
 
     // MARK: - Codable
@@ -126,6 +135,7 @@ final class AppConfig: Codable {
         case update
         case credentialStoreBase
         case relayClientVersion
+        case fallbackEdgeSeeded
     }
 
     required init(from decoder: Decoder) throws {
@@ -155,6 +165,9 @@ final class AppConfig: Codable {
         } else {
             relayClientVersion = RelayTarget.clientVersion
         }
+        // Absent in every pre-fix config — false until migration 10 records
+        // its first application.
+        fallbackEdgeSeeded = (try? container.decodeIfPresent(Bool.self, forKey: .fallbackEdgeSeeded)) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -178,6 +191,9 @@ final class AppConfig: Codable {
         }
         if relayClientVersion != RelayTarget.clientVersion {
             try container.encode(relayClientVersion, forKey: .relayClientVersion)
+        }
+        if fallbackEdgeSeeded {
+            try container.encode(true, forKey: .fallbackEdgeSeeded)
         }
     }
 }
@@ -322,6 +338,10 @@ extension AppConfig {
                 catchAll: true),
         ]
         config.splash = SplashSettings.defaultSeeded()
+        // The default matrix IS the fallback-edge-seeded shape — record the
+        // migration marker so a fresh install's second launch never rewrites
+        // (fix round 1: migration 10 is run-once).
+        config.fallbackEdgeSeeded = true
         return config
     }
 

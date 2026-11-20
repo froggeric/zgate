@@ -13,12 +13,13 @@ extension AppConfig {
 
     private func legacyConfig() -> AppConfig {
         // Shape of the installed config BEFORE this wave: no splash section,
-        // auto rule without a peak twin (wave-0 matrix).
+        // auto rule without a peak twin (wave-0 matrix), no Task-7 marker.
         AppConfig.makeZGateDefaultRouting(AppConfig()).also { c in
             c.modelMappings.removeAll { $0.matchClass == .auto && $0.conditions?.isEmpty == false }
             // keep plain auto only
             c.modelMappings.removeAll { $0.sourceModel == "auto (peak hours)" }
             c.splash = nil
+            c.fallbackEdgeSeeded = false
         }
     }
 
@@ -442,7 +443,7 @@ extension ConfigMigrationTests {
 extension ConfigMigrationTests {
 
     /// A config in the pre-Task-7 shape: default matrix minus the fallback
-    /// vendor and the catch-all's backup.
+    /// vendor, the catch-all's backup, and the migration marker.
     private func preTask7Config() -> AppConfig {
         legacyConfig().also { c in
             c.vendors.removeAll { ApiKeyMinter.isFallbackEdge($0.baseURL) }
@@ -450,6 +451,7 @@ extension ConfigMigrationTests {
                 c.modelMappings[i].backupTargetVendorID = nil
                 c.modelMappings[i].backupTargetModel = nil
             }
+            c.fallbackEdgeSeeded = false
         }
     }
 
@@ -491,14 +493,58 @@ extension ConfigMigrationTests {
     }
 
     @Test func fallbackMigrationIsIdempotent() {
-        let once = ConfigStore.applyMigrations(preTask7Config())
+        let before = preTask7Config()
+        #expect(before.fallbackEdgeSeeded == false)
+        let once = ConfigStore.applyMigrations(before)
         let twice = ConfigStore.applyMigrations(once)
+        #expect(once.fallbackEdgeSeeded == true)  // first application records the marker
+        #expect(twice.fallbackEdgeSeeded == true)
         #expect(once.vendors.map(\.id) == twice.vendors.map(\.id))
         #expect(once.vendors.count == twice.vendors.count)
         #expect(once.modelMappings.map(\.id) == twice.modelMappings.map(\.id))
         #expect(once.modelMappings.count == twice.modelMappings.count)
         let edgeCount = twice.vendors.filter { ApiKeyMinter.isFallbackEdge($0.baseURL) }.count
         #expect(edgeCount == 1)
+    }
+
+    @Test func fallbackEdgeMigrationRunOnceUserDeletionSticks() throws {
+        // Fix round 1, ruling 2: after the first application a user-removed
+        // edge vendor and a cleared catch-all backup must STAY removed —
+        // presence-gating used to resurrect both on the next launch.
+        let applied = ConfigStore.applyMigrations(preTask7Config())
+        #expect(applied.fallbackEdgeSeeded)
+        var userRemoved = applied
+        userRemoved.vendors.removeAll { ApiKeyMinter.isFallbackEdge($0.baseURL) }
+        if let i = userRemoved.modelMappings.firstIndex(where: { $0.catchAll }) {
+            userRemoved.modelMappings[i].backupTargetVendorID = nil
+            userRemoved.modelMappings[i].backupTargetModel = nil
+        }
+
+        let relaunched = ConfigStore.applyMigrations(userRemoved)
+
+        #expect(!relaunched.vendors.contains { ApiKeyMinter.isFallbackEdge($0.baseURL) })
+        let catchAll = relaunched.modelMappings.first { $0.catchAll }
+        #expect(catchAll?.backupTargetVendorID == nil)
+        #expect(catchAll?.backupTargetModel == nil)
+        // Round-trip keeps the marker: the deletion survives the disk too.
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(relaunched))
+        #expect(decoded.fallbackEdgeSeeded)
+        #expect(!decoded.vendors.contains { ApiKeyMinter.isFallbackEdge($0.baseURL) })
+    }
+
+    @Test func fallbackEdgeMarkerEncodesOnlyWhenSet() throws {
+        // Fresh AppConfig() omits the key (byte-stable pre-fix configs);
+        // the seeded default matrix carries it (a fresh install's second
+        // launch never rewrites).
+        let plain = try String(data: JSONEncoder().encode(AppConfig()), encoding: .utf8) ?? ""
+        #expect(!plain.contains("fallbackEdgeSeeded"))
+        let seeded = try String(
+            data: JSONEncoder().encode(AppConfig.makeZGateDefaultRouting(AppConfig())),
+            encoding: .utf8) ?? ""
+        #expect(seeded.contains("fallbackEdgeSeeded"))
+        let decoded = try JSONDecoder().decode(
+            AppConfig.self, from: Data(#"{"vendors":[],"clients":[]}"#.utf8))
+        #expect(decoded.fallbackEdgeSeeded == false)
     }
 
     @Test func migrationReusesAUserEditedFallbackVendorWithoutDuplicating() {

@@ -17,8 +17,10 @@ struct RoutingSnapshot: Sendable {
         let vendorName: String
         /// Vendor UUID for token stats keying; nil for passthrough routes.
         let vendorID: UUID?
-        /// Replacement model name; nil = no model field substitution
-        let targetModel: String?
+        /// Replacement model name; nil = no model field substitution.
+        /// `var` for the direct degraded serve (fix round 1), which reuses
+        /// the matched rule's tier target on the fallback edge.
+        var targetModel: String?
         /// true = pure passthrough — proxy does not touch headers, key, or body
         let isPassthrough: Bool
         /// Per-vendor connect timeout in seconds.
@@ -87,6 +89,14 @@ struct RoutingSnapshot: Sendable {
         func withAPIKey(_ newKey: String) -> RouteTarget {
             var copy = self
             copy.apiKey = newKey
+            return copy
+        }
+
+        /// Copy with a different replacement model — the direct degraded
+        /// serve reuses the matched rule's tier target on the fallback edge.
+        func withTargetModel(_ newModel: String?) -> RouteTarget {
+            var copy = self
+            copy.targetModel = newModel
             return copy
         }
     }

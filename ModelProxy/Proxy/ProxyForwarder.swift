@@ -889,7 +889,7 @@ enum ProxyForwarder {
                     head: head, bodyData: bodyData, primaryTarget: primaryTarget, model: model,
                     router: router, httpClient: httpClient, routeState: &routeState, requestID: requestID,
                     relayContext: relayContext, relayHealth: relayHealth,
-                    allowRelayBackup: false, reason: "Relay degraded")
+                    allowRelayBackup: false, allowDirectFallback: true, reason: "Relay degraded")
                 {
                     return served
                 }
@@ -925,7 +925,7 @@ enum ProxyForwarder {
                 head: head, bodyData: bodyData, primaryTarget: primaryTarget, model: model,
                 router: router, httpClient: httpClient, routeState: &routeState, requestID: requestID,
                 relayContext: relayContext, relayHealth: relayHealth,
-                allowRelayBackup: true, reason: "Rate limited")
+                allowRelayBackup: true, allowDirectFallback: false, reason: "Rate limited")
             {
                 return served
             }
@@ -938,7 +938,7 @@ enum ProxyForwarder {
                 head: head, bodyData: bodyData, primaryTarget: primaryTarget, model: model,
                 router: router, httpClient: httpClient, routeState: &routeState, requestID: requestID,
                 relayContext: relayContext, relayHealth: relayHealth,
-                allowRelayBackup: false, reason: "Signing unavailable")
+                allowRelayBackup: false, allowDirectFallback: true, reason: "Signing unavailable")
             {
                 return served
             }
@@ -951,7 +951,7 @@ enum ProxyForwarder {
                 head: head, bodyData: bodyData, primaryTarget: primaryTarget, model: model,
                 router: router, httpClient: httpClient, routeState: &routeState, requestID: requestID,
                 relayContext: relayContext, relayHealth: relayHealth,
-                allowRelayBackup: false, reason: "Credentials expired")
+                allowRelayBackup: false, allowDirectFallback: true, reason: "Credentials expired")
             {
                 return served
             }
@@ -964,7 +964,7 @@ enum ProxyForwarder {
                 head: head, bodyData: bodyData, primaryTarget: primaryTarget, model: model,
                 router: router, httpClient: httpClient, routeState: &routeState, requestID: requestID,
                 relayContext: relayContext, relayHealth: relayHealth,
-                allowRelayBackup: false, reason: "Risk control")
+                allowRelayBackup: false, allowDirectFallback: true, reason: "Risk control")
             {
                 return served
             }
@@ -983,12 +983,16 @@ enum ProxyForwarder {
     }
 
     /// The rule's backup serve, shared by the rate-limit fallback and Task
-    /// 7's degraded fallback. nil ONLY when the rule has no backup target
-    /// at all — the caller then answers its own terminal. A relay-kind
-    /// backup runs its own signed ladder (skipped under signing
-    /// degradation — a dead chain cannot serve a signed backup); any other
-    /// backup serves through `executeUpstream` with the fallback edge's key
-    /// lifecycle applied.
+    /// 7's degraded fallback. nil ONLY when nothing served — the caller
+    /// then answers its own terminal. A relay-kind backup runs its own
+    /// signed ladder (skipped under signing degradation — a dead chain
+    /// cannot serve a signed backup); any other backup serves through
+    /// `executeUpstream` with the fallback edge's key lifecycle applied.
+    /// When the matched rule has NO usable backup (class rules carry none —
+    /// controller ruling, fix round 1) and the caller is on a degraded
+    /// admission path, the fallback edge serves DIRECTLY (no rule backup,
+    /// no config mutation); the rate-limit path keeps today's semantics
+    /// (no backup → its own terminal).
     private static func serveRuleBackup(
         head: HTTPRequestHead,
         bodyData: Data,
@@ -1001,10 +1005,15 @@ enum ProxyForwarder {
         relayContext: RelayTarget.Context,
         relayHealth: RelayHealth?,
         allowRelayBackup: Bool,
+        allowDirectFallback: Bool,
         reason: String
     ) async -> (HTTPClientResponse?, RoutingSnapshot.RouteTarget?, RelayTarget.UpstreamTerminal?)? {
-        guard let allTargets = await router.targets(for: model), allTargets.count > 1 else {
-            return nil
+        let allTargets = await router.targets(for: model)
+        guard let allTargets, allTargets.count > 1 else {
+            return await serveDirectFallback(
+                head: head, bodyData: bodyData, primaryTarget: primaryTarget,
+                httpClient: httpClient, routeState: &routeState, requestID: requestID,
+                relayHealth: relayHealth, allowDirectFallback: allowDirectFallback, reason: reason)
         }
         let backupTarget = (primaryTarget.vendorID == allTargets[0].vendorID) ? allTargets[1] : allTargets[0]
         AppLog.proxy.info(
@@ -1014,7 +1023,10 @@ enum ProxyForwarder {
             guard allowRelayBackup else {
                 AppLog.proxy.info(
                     "[Proxy] [\(requestID)] Relay-kind backup \(backupTarget.vendorName) skipped: the signing chain is the failure")
-                return nil
+                return await serveDirectFallback(
+                    head: head, bodyData: bodyData, primaryTarget: primaryTarget,
+                    httpClient: httpClient, routeState: &routeState, requestID: requestID,
+                    relayHealth: relayHealth, allowDirectFallback: allowDirectFallback, reason: reason)
             }
             // A relay backup runs its own signed ladder (no further fallback).
             switch await RelayTarget.execute(
@@ -1038,6 +1050,40 @@ enum ProxyForwarder {
         }
         return (nil, nil, RelayTarget.UpstreamTerminal(
             status: 502, anthropicType: "api_error", message: "Upstream unreachable"))
+    }
+
+    /// The DIRECT fallback-edge serve for degraded admissions with no
+    /// usable rule backup (fix round 1): the edge target comes from
+    /// RelayHealth (pushed from the live config), carries the matched
+    /// rule's tier target model, and runs the same key lifecycle as the
+    /// rule-backup serve. Not allowed (rate-limit path) or nothing
+    /// configured/usable → nil → the caller's own terminal, today's shape.
+    private static func serveDirectFallback(
+        head: HTTPRequestHead,
+        bodyData: Data,
+        primaryTarget: RoutingSnapshot.RouteTarget,
+        httpClient: HTTPClient,
+        routeState: inout RoutingSnapshot.RouteState,
+        requestID: String,
+        relayHealth: RelayHealth?,
+        allowDirectFallback: Bool,
+        reason: String
+    ) async -> (HTTPClientResponse?, RoutingSnapshot.RouteTarget?, RelayTarget.UpstreamTerminal?)? {
+        guard allowDirectFallback, let relayHealth,
+            let edgeTarget = await relayHealth.fallbackEdgeTarget()
+        else { return nil }
+        AppLog.proxy.info(
+            "[Proxy] [\(requestID)] \(reason): no usable rule backup — serving the fallback edge \(edgeTarget.vendorName) directly"
+        )
+        let serveTarget = edgeTarget.withTargetModel(primaryTarget.targetModel)
+        if let response = await Self.executeBackupUpstream(
+            head: head, bodyData: bodyData, target: serveTarget,
+            httpClient: httpClient, requestID: requestID, relayHealth: relayHealth)
+        {
+            if Int(response.status.code) < 400 { routeState.failCount = 0 }
+            return (response, serveTarget, nil)
+        }
+        return nil
     }
 
     /// One upstream serve on a rule backup. When the target is the fallback

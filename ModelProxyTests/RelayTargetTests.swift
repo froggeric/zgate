@@ -2401,7 +2401,8 @@ struct RelayTargetTests {
     }
 
     private func makeForwardFixture(
-        relayPort: Int, backupPort: Int?, fallbackEdgePort: Int? = nil
+        relayPort: Int, backupPort: Int?, fallbackEdgePort: Int? = nil,
+        matchClass: ModelClass? = nil
     ) throws -> ForwardFixture {
         let relayVendorID = UUID()
         var vendors = [Vendor(
@@ -2409,8 +2410,10 @@ struct RelayTargetTests {
             baseURL: "http://127.0.0.1:\(relayPort)/api/v1/ultra-zai/anthropic",
             apiKey: "", readTimeoutSeconds: 10, vendorKind: .relay)]
         var mapping = ModelMapping(
-            sourceModel: "claude-sonnet-5", targetModel: "glm-5.3",
-            targetVendorID: relayVendorID, isEnabled: true)
+            sourceModel: matchClass.map { "\($0.rawValue) class" } ?? "claude-sonnet-5",
+            targetModel: "glm-5.3",
+            targetVendorID: relayVendorID, isEnabled: true,
+            matchClass: matchClass)
         if fallbackEdgePort != nil {
             // The Task-7 fallback edge: keyless until the mint, canonicalized
             // models, Claude-only fields stripped.
@@ -3152,6 +3155,134 @@ struct RelayTargetTests {
         #expect(error["type"] as? String == "rate_limit_error")
         #expect(relay.requestCount == 1)
         #expect(edge.requestCount == 0)
+        finishChannel(client)
+    }
+
+    // MARK: - Fix round 1, ruling 1 (direct edge serve for class rules)
+
+    /// The route target ProxyServer pushes for the direct degraded serve.
+    private func edgeRouteTarget(port: Int) -> RoutingSnapshot.RouteTarget {
+        RoutingSnapshot.RouteTarget(
+            baseURL: "http://127.0.0.1:\(port)/api/anthropic",
+            apiKey: "",
+            vendorName: "z.ai API key (fallback)",
+            vendorID: UUID(),
+            targetModel: nil,
+            isPassthrough: false,
+            connectTimeoutSeconds: 5,
+            readTimeoutSeconds: 10,
+            signingDomain: .compatibleThirdParty,
+            replayPolicy: .portableOnly,
+            supportsThinkingBlocks: true,
+            stripsClaudeOnlyRequestFields: true,
+            applyGLMCanonicalization: true)
+    }
+
+    @Test func forwardSigningFailureOnClassRuleServesEdgeDirectly() async throws {
+        // Ruling 1: class rules carry no rule backup — a signing outage on
+        // class-routed primary traffic must degrade to the edge DIRECTLY,
+        // not terminal-502.
+        let relay = MockRelayServer(scripts: [])
+        let relayPort = try await relay.start()
+        let edge = MockRelayServer(scripts: [.json(["id": "msg_edge_direct"])])
+        let edgePort = try await edge.start()
+        defer {
+            Task { await relay.shutdown() }
+            Task { await edge.shutdown() }
+        }
+        let control = SigningControl()
+        control.failHandshakeFromCount = 0
+        let stub = EdgeMintStub()
+        let (health, _) = makeEdgeHealth(edgePort: edgePort, stub: stub)
+        await health.configureFallbackEdgeTarget(edgeRouteTarget(port: edgePort))
+        let (context, _) = try makeRelayContext(
+            control: control, directoryLabel: "fwddirect", relayHealth: health)
+        // A CLASS rule (opus), NO backup — the default matrix's tier shape.
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil, matchClass: .opus)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client, model: "glm-5.3")
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .ok)
+        #expect(sawEnd)
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["id"] as? String == "msg_edge_direct")
+
+        // The relay was never reached; the edge served the direct degrade
+        // with the minted credential and the rule's tier model,
+        // GLM-canonicalized.
+        #expect(relay.requestCount == 0)
+        #expect(stub.runs == 1)
+        let edgeRequest = try #require(edge.requests.first)
+        #expect(edgeRequest.headers["x-api-key"] == "apiKey-1.secret-1")
+        #expect(edgeRequest.headers["authorization"] == nil)
+        let sentJSON = try #require(try JSONSerialization.jsonObject(with: edgeRequest.body) as? [String: Any])
+        #expect(sentJSON["model"] as? String == "GLM-5.3")  // rule target glm-5.3 → canonical
+        finishChannel(client)
+    }
+
+    @Test func forwardQuotaExhaustedOnClassRuleNeverServesEdgeDirectly() async throws {
+        // Quota stays excluded from the direct degrade (same weekly quota
+        // pool): the 429-shaped terminal answers even with the edge
+        // configured.
+        let relay = MockRelayServer(scripts: [.json(
+            ["code": 1113, "msg": "insufficient quota"], status: 429)])
+        let relayPort = try await relay.start()
+        let edge = MockRelayServer(scripts: [.json(["id": "never_served"])])
+        let edgePort = try await edge.start()
+        defer {
+            Task { await relay.shutdown() }
+            Task { await edge.shutdown() }
+        }
+        let control = SigningControl()
+        let (health, _) = makeEdgeHealth(edgePort: edgePort, stub: EdgeMintStub())
+        await health.configureFallbackEdgeTarget(edgeRouteTarget(port: edgePort))
+        let (context, _) = try makeRelayContext(
+            control: control, directoryLabel: "fwddirectq", relayHealth: health)
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil, matchClass: .opus)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client, model: "glm-5.3")
+        let (head, _, _) = try drainClientResponse(client)
+        #expect(head.status == .tooManyRequests)
+        #expect(relay.requestCount == 1)
+        #expect(edge.requestCount == 0)
+        finishChannel(client)
+    }
+
+    @Test func forwardDegradedWithoutConfiguredEdgeKeepsTodayTerminal() async throws {
+        // No edge vendor configured (user removed it; migration 10 no longer
+        // resurrects it): degraded admission finds no direct serve and the
+        // signed-ladder terminal answers — today's behavior.
+        let relay = MockRelayServer(scripts: [])
+        let relayPort = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        control.failHandshakeFromCount = 0
+        let (health, _) = makeEdgeHealth(edgePort: 1, stub: EdgeMintStub())
+        // fallbackEdgeTarget deliberately NOT configured (nil).
+        let (context, _) = try makeRelayContext(
+            control: control, directoryLabel: "fwddirectno", relayHealth: health)
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil, matchClass: .opus)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client, model: "glm-5.3")
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .badGateway)
+        #expect(sawEnd)
+        let error = try #require(
+            (try JSONSerialization.jsonObject(with: body) as? [String: Any])?["error"] as? [String: Any])
+        #expect((error["message"] as? String)?.localizedCaseInsensitiveContains("signing") == true)
+        #expect(relay.requestCount == 0)
         finishChannel(client)
     }
 }

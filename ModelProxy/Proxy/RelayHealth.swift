@@ -79,6 +79,12 @@ actor RelayHealth {
     private var keyCooldownUntilMs: Int64?
     private var mintFailureCooldownUntilMs: Int64?
     private var mintInFlight: Task<String?, Never>?
+    /// The fallback edge's route target, pushed from the live config by
+    /// ProxyServer (nil = no edge vendor configured — the direct degraded
+    /// serve then finds nothing and today's terminal answers). Fix round 1:
+    /// class rules carry no rule backup, so degraded admission serves the
+    /// edge DIRECTLY through this target.
+    private var fallbackEdgeServeTarget: RoutingSnapshot.RouteTarget?
 
     init(configuration: Configuration = Configuration()) {
         self.configuration = configuration
@@ -188,6 +194,21 @@ actor RelayHealth {
     func isFallbackKeyCooling() -> Bool {
         if let untilMs = keyCooldownUntilMs { return currentMs() < untilMs }
         return false
+    }
+
+    // MARK: - Direct degraded serve (fix round 1)
+
+    /// Push the fallback edge's route target from the live config (start +
+    /// hot-reload). nil = the user removed the edge vendor — degraded
+    /// admission then finds no direct serve and today's terminal answers.
+    func configureFallbackEdgeTarget(_ target: RoutingSnapshot.RouteTarget?) {
+        fallbackEdgeServeTarget = target
+    }
+
+    /// The configured fallback edge target for the DIRECT degraded serve
+    /// (class rules carry no rule backup — controller ruling, fix round 1).
+    func fallbackEdgeTarget() -> RoutingSnapshot.RouteTarget? {
+        fallbackEdgeServeTarget
     }
 
     private func performMint() async -> String? {
