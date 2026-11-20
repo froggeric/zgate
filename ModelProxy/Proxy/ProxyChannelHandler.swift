@@ -32,6 +32,10 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
     /// `OffPeakTarget.handle` answers a local Anthropic-shaped 404 without
     /// contacting anything.
     private let offPeak: OffPeakTarget.Context?
+    /// Off-peak window gate (off-peak wave 2, Task 4): the availability
+    /// monitor's cached `isWindowOpen` read gates routed off-peak dispatch.
+    /// nil (monitor not wired — Task 5) keeps the window gate closed.
+    private let offPeakMonitor: (any OffPeakAvailabilityMonitoring)?
 
     // Accumulated state for the current request.
     private var requestHead: HTTPRequestHead?
@@ -50,7 +54,8 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
         webSearchForwardAsIs: Bool,
         relayContext: RelayTarget.Context? = nil,
         localHealth: LocalHealthMonitor? = nil,
-        offPeak: OffPeakTarget.Context? = nil
+        offPeak: OffPeakTarget.Context? = nil,
+        offPeakMonitor: (any OffPeakAvailabilityMonitoring)? = nil
     ) {
         self.clientName = clientName
         self.router = router
@@ -65,6 +70,7 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
         self.relayContext = relayContext
         self.localHealth = localHealth
         self.offPeak = offPeak
+        self.offPeakMonitor = offPeakMonitor
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -102,6 +108,7 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
             let relayContext = self.relayContext
             let localHealth = self.localHealth
             let offPeak = self.offPeak
+            let offPeakMonitor = self.offPeakMonitor
 
             // Off-peak async surface (relay fidelity Task 10): the `/async/`
             // family is intercepted BEFORE normal forwarding. Disabled or
@@ -139,7 +146,9 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
                     webSearchProvider: webSearchProvider,
                     webSearchForwardAsIs: webSearchForwardAsIs,
                     relayContext: relayContext,
-                    localHealth: localHealth
+                    localHealth: localHealth,
+                    offPeakContext: offPeak,
+                    offPeakMonitor: offPeakMonitor
                 )
             }
 

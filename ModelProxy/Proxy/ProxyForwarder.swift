@@ -38,7 +38,9 @@ enum ProxyForwarder {
         webSearchProvider: (any WebSearchBridgeProviding)?,
         webSearchForwardAsIs: Bool = false,
         relayContext: RelayTarget.Context? = nil,
-        localHealth: LocalHealthMonitor? = nil
+        localHealth: LocalHealthMonitor? = nil,
+        offPeakContext: OffPeakTarget.Context? = nil,
+        offPeakMonitor: (any OffPeakAvailabilityMonitoring)? = nil
     ) async {
         let requestID = String(UUID().uuidString.prefix(8))
         let startTime = Date.now
@@ -156,13 +158,15 @@ enum ProxyForwarder {
         }
 
         var preparedRequest = initialPreparedRequest
-        // Local (splash) targets skip branch coordination: the local relay
-        // streams pure passthrough (a cut ends in a terminal error event, no
-        // replayable capture), and a local model never needs cross-vendor
-        // thinking restore. The projector's vendor-ready body above still
-        // applies; dropping the context only opts this route out of in-flight
+        // Local (splash) targets and off-peak ticket-plane targets skip
+        // branch coordination: both serve through a channel-writing core
+        // with no replayable capture (a cut ends in a terminal error event),
+        // and a queued off-peak ticket may legitimately hold for minutes —
+        // an in-flight lease held across that would stall same-scope
+        // retries. The projector's vendor-ready body above still applies;
+        // dropping the context only opts these routes out of in-flight
         // dedup/replay/commit.
-        if LocalTarget.isLocalTarget(target) {
+        if LocalTarget.isLocalTarget(target) || target.vendorKind == .offPeak {
             preparedRequest = PreparedRequest(
                 bodyData: preparedRequest.bodyData,
                 context: nil,
@@ -435,17 +439,58 @@ enum ProxyForwarder {
         }
         let toolCatalog = ToolCallInputGuard.ToolCatalog.fromRequestBody(forwardBodyData)
 
-        // 4. Build and send upstream request. Relay-kind rules run the signed
-        // ladder (RelayTarget): cold starts wait for the handshake, 401s walk
-        // the reject ladder, 429s retry once then fall back / answer 529.
-        // Local (splash) targets run LocalTarget's ladder: credential-free
-        // passthrough, 5xx/transport fallback over the rule's targets, and a
-        // cut-protected stream relay.
+        // 4. Build and send upstream request. Off-peak rule targets gate onto
+        // the ticket plane (Task 4) — every gate failure serves the rule's
+        // backup instead (the cardinal rule: a routed request must never
+        // answer async_stream_required or silently wait in the queue).
+        // Relay-kind rules run the signed ladder (RelayTarget): cold starts
+        // wait for the handshake, 401s walk the reject ladder, 429s retry
+        // once then fall back / answer 529. Local (splash) targets run
+        // LocalTarget's ladder: credential-free passthrough, 5xx/transport
+        // fallback over the rule's targets, and a cut-protected stream
+        // relay.
         var relayTerminal: RelayTarget.UpstreamTerminal? = nil
         let upstreamResponse: HTTPClientResponse?
         let usedTarget: RoutingSnapshot.RouteTarget?
         let streamsViaLocalRelay: Bool
-        if target.vendorKind == .relay {
+        if target.vendorKind == .offPeak {
+            // Gates — all cached/local reads, never a request-time
+            // availability call on the hot path: surface enabled ∧ window
+            // open (polled monitor) ∧ the request opted into streaming.
+            let surfaceEnabled = offPeakContext?.configuration().enabled ?? false
+            let windowOpen = offPeakMonitor?.isWindowOpen ?? false
+            if let offPeakContext, surfaceEnabled, windowOpen, Self.requestIsStream(forwardBodyData) {
+                await OffPeakTarget.serve(
+                    head: head,
+                    body: ByteBuffer(data: forwardBodyData),
+                    channel: channel,
+                    context: offPeakContext,
+                    targetModel: target.targetModel,
+                    trafficLog: trafficLog,
+                    tokenStatsStore: tokenStatsStore,
+                    vendorID: target.vendorID,
+                    requestID: requestID)
+                // serve owns the client channel (the LocalTarget contract):
+                // its own traffic row and token stats were recorded, and the
+                // branch context was dropped for this route kind above.
+                return
+            }
+            let failedGate = !surfaceEnabled
+                ? "surface disabled"
+                : (!windowOpen ? "window closed" : "non-streaming request")
+            (upstreamResponse, usedTarget, relayTerminal) = await Self.serveOffPeakFallback(
+                head: head,
+                bodyData: forwardBodyData,
+                primaryTarget: target,
+                model: model,
+                router: router,
+                httpClient: httpClient,
+                routeState: &routeState,
+                requestID: requestID,
+                relayContext: relayContext,
+                failedGate: failedGate)
+            streamsViaLocalRelay = false
+        } else if target.vendorKind == .relay {
             (upstreamResponse, usedTarget, relayTerminal) = await Self.executeRelay(
                 head: head,
                 bodyData: forwardBodyData,
@@ -718,6 +763,18 @@ enum ProxyForwarder {
         json.removeValue(forKey: "messages")
         let shapeData = (try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])) ?? bodyData
         return String(ConversationFingerprint().sha256Hex(shapeData).prefix(16))
+    }
+
+    /// Whether the request body opted into streaming — the off-peak
+    /// ticket-plane admission gate (a non-streaming request must never
+    /// queue). Same tolerance as OffPeakTarget's pre-flight: JSON-parse,
+    /// top-level `stream == true`; malformed JSON, a non-object body, or an
+    /// absent/non-Bool field is NOT a stream request.
+    static func requestIsStream(_ data: Data) -> Bool {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return json["stream"] as? Bool == true
     }
 
     /// Reads `x-claude-code-request-class` (sent with `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`);
@@ -1084,6 +1141,72 @@ enum ProxyForwarder {
             return (response, serveTarget, nil)
         }
         return nil
+    }
+
+    /// The off-peak gate-failure serve (Task 4): the rule's backup target
+    /// serves the request — a relay-kind backup through its own signed
+    /// ladder, any other through the plain upstream send. No usable backup
+    /// (single-target rule, or the backup is itself an off-peak target —
+    /// the same closed window gates both) returns the exact 503 terminal;
+    /// the caller's terminal path writes it to the client and logs the
+    /// traffic row.
+    private static func serveOffPeakFallback(
+        head: HTTPRequestHead,
+        bodyData: Data,
+        primaryTarget: RoutingSnapshot.RouteTarget,
+        model: String,
+        router: RequestRouter,
+        httpClient: HTTPClient,
+        routeState: inout RoutingSnapshot.RouteState,
+        requestID: String,
+        relayContext: RelayTarget.Context?,
+        failedGate: String
+    ) async -> (HTTPClientResponse?, RoutingSnapshot.RouteTarget?, RelayTarget.UpstreamTerminal?) {
+        let allTargets = await router.targets(for: model)
+        let backupTarget = allTargets.flatMap { targets in
+            targets.count > 1
+                ? (primaryTarget.vendorID == targets[0].vendorID ? targets[1] : targets[0])
+                : nil
+        }
+        guard let backupTarget, backupTarget.vendorKind != .offPeak else {
+            AppLog.proxy.info(
+                "[Proxy] [\(requestID)] Off-peak gate failed (\(failedGate)) on \(primaryTarget.vendorName) with no usable backup target — answering 503"
+            )
+            return (nil, nil, RelayTarget.UpstreamTerminal(
+                status: 503,
+                anthropicType: "off_peak_unavailable",
+                message: "The off-peak window is closed and this rule has no backup target."))
+        }
+        AppLog.proxy.info(
+            "[Proxy] [\(requestID)] Off-peak gate failed (\(failedGate)) on \(primaryTarget.vendorName), serving backup \(backupTarget.vendorName)"
+        )
+        if backupTarget.vendorKind == .relay {
+            guard let relayContext else {
+                return (nil, nil, RelayTarget.UpstreamTerminal(
+                    status: 502,
+                    anthropicType: "api_error",
+                    message: "Relay vendor '\(backupTarget.vendorName)' requires signing but no signing context is configured."))
+            }
+            switch await RelayTarget.execute(
+                head: head, bodyData: bodyData, target: backupTarget,
+                httpClient: httpClient, context: relayContext, requestID: requestID)
+            {
+            case .responded(let response):
+                if Int(response.status.code) < 400 { routeState.failCount = 0 }
+                return (response, backupTarget, nil)
+            case let terminalOutcome:
+                return (nil, nil, Self.terminal(for: terminalOutcome))
+            }
+        }
+        if let response = await Self.executeUpstream(
+            head: head, bodyData: bodyData, target: backupTarget,
+            httpClient: httpClient, requestID: requestID)
+        {
+            if Int(response.status.code) < 400 { routeState.failCount = 0 }
+            return (response, backupTarget, nil)
+        }
+        return (nil, nil, RelayTarget.UpstreamTerminal(
+            status: 502, anthropicType: "api_error", message: "Upstream unreachable"))
     }
 
     /// One upstream serve on a rule backup. When the target is the fallback

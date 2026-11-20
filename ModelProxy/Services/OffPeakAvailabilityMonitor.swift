@@ -1,6 +1,14 @@
 import Foundation
 import Observation
 
+/// The forwarder's off-peak window gate (wave 2 Task 4): a cached,
+/// lock-guarded read of the polled window state. Deliberately narrow so
+/// tests stub the gate without a live monitor — and so the request hot
+/// path can never grow a request-time availability call.
+protocol OffPeakAvailabilityMonitoring: Sendable {
+    var isWindowOpen: Bool { get }
+}
+
 /// Server-driven off-peak window status, polled at a bounded cadence while
 /// the surface is enabled (wave 2). Two consumers: the UI (displayString,
 /// @Observable) and ProxyForwarder's off-peak gate (isWindowOpen, cached —
@@ -89,3 +97,5 @@ final class OffPeakAvailabilityMonitor: @unchecked Sendable {
         statusValue = new
     }
 }
+
+extension OffPeakAvailabilityMonitor: OffPeakAvailabilityMonitoring {}

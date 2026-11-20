@@ -18,8 +18,19 @@ final class TokenStatsStore {
 
     // MARK: - File URL
 
-    private static func fileURL(for date: String) -> URL {
-        AppPaths.appSupport.appendingPathComponent("token-stats-\(date).json")
+    /// Storage directory for the daily stats files. nil (production, every
+    /// pre-seam caller) = `AppPaths.appSupport`. Tests inject a per-test
+    /// directory: each store instance persists only its own in-memory
+    /// snapshot, so two concurrent instances sharing the real daily file
+    /// would clobber each other's rows (last writer wins).
+    private let storageDirectory: URL?
+
+    private var resolvedDirectory: URL {
+        storageDirectory ?? AppPaths.appSupport
+    }
+
+    private func fileURL(for date: String) -> URL {
+        resolvedDirectory.appendingPathComponent("token-stats-\(date).json")
     }
 
     private nonisolated(unsafe) static let dateFormatter: DateFormatter = {
@@ -35,10 +46,11 @@ final class TokenStatsStore {
 
     // MARK: - Init
 
-    init() {
+    init(storageDirectory: URL? = nil) {
+        self.storageDirectory = storageDirectory
         let today = Self.todayString()
         self.statsDate = today
-        self.stats = Self.load(for: today)
+        self.stats = Self.load(for: today, in: storageDirectory ?? AppPaths.appSupport)
     }
 
     // MARK: - Accumulate
@@ -81,7 +93,7 @@ final class TokenStatsStore {
             },
             sourceModelUsage: stats.sourceModelRecords
         )
-        let fileURL = Self.fileURL(for: statsDate)
+        let fileURL = self.fileURL(for: statsDate)
         Task.detached(priority: .background) {
             do {
                 let data = try JSONEncoder().encode(snapshot)
@@ -92,13 +104,13 @@ final class TokenStatsStore {
         }
     }
 
-    private static func load(for date: String) -> TokenStats {
+    private static func load(for date: String, in directory: URL) -> TokenStats {
         let fm = FileManager.default
-        if !fm.fileExists(atPath: AppPaths.appSupport.path) {
-            try? fm.createDirectory(at: AppPaths.appSupport, withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: directory.path) {
+            try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
         }
 
-        let url = fileURL(for: date)
+        let url = directory.appendingPathComponent("token-stats-\(date).json")
         guard fm.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url),
               let snapshot = try? JSONDecoder().decode(DailyTokenSnapshot.self, from: data) else {
