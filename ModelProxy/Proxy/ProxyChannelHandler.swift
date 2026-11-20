@@ -27,6 +27,11 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
     /// Splash health monitor (per-process, built by ProxyServer): wire-level
     /// successes on the local route keep the router's health entries warm.
     private let localHealth: LocalHealthMonitor?
+    /// Off-peak async surface context (relay fidelity Task 10): serves the
+    /// opt-in `/async/` route family. nil or disabled inside
+    /// `OffPeakTarget.handle` answers a local Anthropic-shaped 404 without
+    /// contacting anything.
+    private let offPeak: OffPeakTarget.Context?
 
     // Accumulated state for the current request.
     private var requestHead: HTTPRequestHead?
@@ -44,7 +49,8 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
         webSearchProvider: (any WebSearchBridgeProviding)?,
         webSearchForwardAsIs: Bool,
         relayContext: RelayTarget.Context? = nil,
-        localHealth: LocalHealthMonitor? = nil
+        localHealth: LocalHealthMonitor? = nil,
+        offPeak: OffPeakTarget.Context? = nil
     ) {
         self.clientName = clientName
         self.router = router
@@ -58,6 +64,7 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
         self.webSearchForwardAsIs = webSearchForwardAsIs
         self.relayContext = relayContext
         self.localHealth = localHealth
+        self.offPeak = offPeak
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -94,6 +101,26 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
             let webSearchForwardAsIs = self.webSearchForwardAsIs
             let relayContext = self.relayContext
             let localHealth = self.localHealth
+            let offPeak = self.offPeak
+
+            // Off-peak async surface (relay fidelity Task 10): the `/async/`
+            // family is intercepted BEFORE normal forwarding. Disabled or
+            // unknown async paths answer a local Anthropic-shaped 404-style
+            // error inside the handler — no upstream contact.
+            if OffPeakTarget.isAsyncRoute(head.uri) {
+                Task {
+                    await OffPeakTarget.handle(
+                        head: head,
+                        body: body,
+                        channel: channel,
+                        context: offPeak,
+                        trafficLog: trafficLog,
+                        requestID: String(UUID().uuidString.prefix(8)))
+                }
+                requestHead = nil
+                bodyBuffer = nil
+                return
+            }
 
             Task {
                 await ProxyForwarder.forward(

@@ -53,6 +53,45 @@ extension DebugConfig {
     }
 }
 
+// MARK: - Off-Peak Config (relay fidelity Task 10)
+
+/// Settings for the opt-in, default-OFF async relay surface
+/// (`/async/v1/messages` — the Off-Peak / Idle Plan ticket queue).
+/// Absent in every pre-wave config: tolerant per-key decode (a hand edit
+/// carrying only `{"enabled": true}` keeps the rest of the defaults — the
+/// DebugConfig lesson) and encode-if-changed below keep existing installs
+/// byte-stable until the user actually edits the section.
+struct OffPeakConfig: Hashable, Sendable {
+    /// Default-OFF: the surface answers a local 404-style error and
+    /// contacts nothing until the user opts in.
+    var enabled: Bool = false
+    /// Origin of both the ticket control plane and the data plane.
+    static let defaultOrigin = "https://zcode.z.ai"
+    var origin: String = OffPeakConfig.defaultOrigin
+    /// Bound on the whole availability+queue wait, in minutes.
+    var maxWaitMinutes: Int = 60
+    /// Status-poll floor in seconds; the server's `next_poll_after` wins
+    /// when larger.
+    var pollIntervalSeconds: Int = 5
+    /// Downstream `": keepalive"` cadence while queued/waiting.
+    var keepaliveSeconds: Int = 3
+}
+
+extension OffPeakConfig: Codable {
+    enum CodingKeys: String, CodingKey {
+        case enabled, origin, maxWaitMinutes, pollIntervalSeconds, keepaliveSeconds
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        origin = try c.decodeIfPresent(String.self, forKey: .origin) ?? OffPeakConfig.defaultOrigin
+        maxWaitMinutes = try c.decodeIfPresent(Int.self, forKey: .maxWaitMinutes) ?? 60
+        pollIntervalSeconds = try c.decodeIfPresent(Int.self, forKey: .pollIntervalSeconds) ?? 5
+        keepaliveSeconds = try c.decodeIfPresent(Int.self, forKey: .keepaliveSeconds) ?? 3
+    }
+}
+
 // MARK: - App Config
 
 /// Top-level configuration container.
@@ -93,6 +132,12 @@ final class AppConfig: Codable {
     /// never re-seeds. Encoded only when true (pre-fix configs and fresh
     /// hand-edits stay byte-stable until the migration records itself).
     var fallbackEdgeSeeded: Bool
+    /// Off-Peak async surface settings (relay fidelity Task 10). Absent in
+    /// every pre-wave config → defaults (disabled); the `relayClientVersion`
+    /// pattern — defaulted decode, encode-if-changed, no ConfigStore
+    /// migration needed (a user setting enabled=false stays false; there is
+    /// no "delete the section" UX to resurrect).
+    var offPeak: OffPeakConfig
 
     // MARK: - Init
 
@@ -107,7 +152,8 @@ final class AppConfig: Codable {
         update: UpdateSettings? = nil,
         credentialStoreBase: String? = nil,
         relayClientVersion: String = RelayTarget.clientVersion,
-        fallbackEdgeSeeded: Bool = false
+        fallbackEdgeSeeded: Bool = false,
+        offPeak: OffPeakConfig = OffPeakConfig()
     ) {
         self.vendors = vendors
         self.clients = clients
@@ -120,6 +166,7 @@ final class AppConfig: Codable {
         self.credentialStoreBase = credentialStoreBase
         self.relayClientVersion = relayClientVersion
         self.fallbackEdgeSeeded = fallbackEdgeSeeded
+        self.offPeak = offPeak
     }
 
     // MARK: - Codable
@@ -136,6 +183,7 @@ final class AppConfig: Codable {
         case credentialStoreBase
         case relayClientVersion
         case fallbackEdgeSeeded
+        case offPeak
     }
 
     required init(from decoder: Decoder) throws {
@@ -168,6 +216,9 @@ final class AppConfig: Codable {
         // Absent in every pre-fix config — false until migration 10 records
         // its first application.
         fallbackEdgeSeeded = (try? container.decodeIfPresent(Bool.self, forKey: .fallbackEdgeSeeded)) ?? false
+        // Absent in every pre-wave config — defaults (disabled). A malformed
+        // section also falls to defaults rather than failing the whole load.
+        offPeak = (try? container.decode(OffPeakConfig.self, forKey: .offPeak)) ?? OffPeakConfig()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -194,6 +245,11 @@ final class AppConfig: Codable {
         }
         if fallbackEdgeSeeded {
             try container.encode(true, forKey: .fallbackEdgeSeeded)
+        }
+        // Encode-if-changed (the relayClientVersion pattern): untouched
+        // installs stay byte-stable; a real edit persists the whole section.
+        if offPeak != OffPeakConfig() {
+            try container.encode(offPeak, forKey: .offPeak)
         }
     }
 }

@@ -94,6 +94,12 @@ final class ProxyServer {
     /// signing-unavailable 502, never an unsigned request.
     @ObservationIgnored
     private let makeSigningClient: (@Sendable () -> SigningClient)?
+    /// Off-peak async surface context (relay fidelity Task 10): built once
+    /// per process like the signing context (no network at init — the
+    /// surface is default-OFF and answers locally until enabled);
+    /// `updateRouting` refreshes its config in place.
+    @ObservationIgnored
+    private var offPeakContext: OffPeakTarget.Context?
 
     // MARK: - Init
 
@@ -293,6 +299,30 @@ final class ProxyServer {
         }
         let relayContext = self.relayContext
 
+        // Off-peak async surface (relay fidelity Task 10): one context per
+        // process over the shared server HTTP client. The zcode plan JWT
+        // re-reads the credential store through the live base box (same
+        // wiring as the endpoint-routing service); the coding-plan key is
+        // Task 7's minted credential via the relay health machine. Both
+        // answer nil when unavailable — the surface then fails its calls
+        // cleanly (the orchestrator's tolerance ladder), never unsigned.
+        if offPeakContext == nil {
+            let box = storeBaseBox
+            let health = self.relayHealth
+            let versionSource = relayContext
+            offPeakContext = OffPeakTarget.Context(
+                config: config.offPeak,
+                httpClient: client,
+                jwtProvider: {
+                    (try? CredentialStore.loadDefault(base: box.current))
+                        .flatMap { try? $0.zcodeJwtToken() }
+                },
+                credentialProvider: { await health?.fallbackKey() },
+                clientVersionProvider: { versionSource?.clientVersion ?? RelayTarget.clientVersion })
+            AppLog.proxy.info("[ProxyServer] Off-peak async context ready (default-OFF until enabled)")
+        }
+        let offPeakContext = self.offPeakContext
+
         // Local health probe (Task 7): registers BEFORE any RequestRouter is
         // built below — routers capture the provider at construction (Task 6
         // lifecycle note), so this is the one point where the splash probe
@@ -352,7 +382,8 @@ final class ProxyServer {
                                 webSearchProvider: self.webSearchProvider,
                                 webSearchForwardAsIs: self.webSearchForwardAsIs,
                                 relayContext: relayContext,
-                                localHealth: self.localHealthMonitor
+                                localHealth: self.localHealthMonitor,
+                                offPeak: offPeakContext
                             )
                         )
                     }
@@ -501,6 +532,9 @@ final class ProxyServer {
     func updateRouting(config: AppConfig) {
         self.webSearchProvider = WebSearchProviderFactory.make(from: config.webSearch)
         self.webSearchForwardAsIs = config.webSearch.provider == .forwardAsIs
+        // Off-peak async surface: the live toggle/origin takes effect on
+        // the next request (the context box is read per request).
+        offPeakContext?.updateConfiguration(config.offPeak)
         // The credential-store selector rides along live (no restart): the
         // relay loader re-resolves through the box on every attempt.
         storeBaseBox.set(CredentialStore.resolveBase(config.credentialStoreBase))
