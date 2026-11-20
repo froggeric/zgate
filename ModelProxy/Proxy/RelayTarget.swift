@@ -4,6 +4,8 @@ import NIOCore
 import NIOFoundationCompat
 import NIOHTTP1
 import AsyncHTTPClient
+import NIOPosix
+import Network
 import OSLog
 
 /// The zcode signed relay as a forward target (`vendorKind == .relay`).
@@ -57,6 +59,14 @@ enum RelayTarget {
     static let clientLanguage = "en-US"
     /// Relay 429: one retry after this backoff before fallback / 529.
     static let defaultRateLimitBackoff: TimeInterval = 1
+    /// Task 8: connect-retry ladder — total connection attempts per
+    /// `sendOnce` call (the initial send + 2 retries) for connect-phase
+    /// transport failures.
+    static let connectRetryAttempts = 3
+    /// Task 8: connect-retry backoff step — `500 ms × attempt` before each
+    /// retry (500 ms before the second attempt, 1 s before the third).
+    /// Deterministic, no jitter.
+    static let connectRetryBackoff: TimeInterval = 0.5
 
     /// zbridge `GLM_FAMILY` — canonical wire names of the GLM family.
     static let glmFamily: [String] = [
@@ -178,6 +188,12 @@ enum RelayTarget {
         /// 6 s, each ±1 s jitter, through this seam — injectable like
         /// `rateLimitBackoff` (tests record the requested delays).
         var concurrencySleeper: @Sendable (TimeInterval) async -> Void = { delay in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+        }
+        /// Task 8: the connect-retry ladder sleeps its 500 ms × attempt
+        /// backoff through this seam — injectable like `concurrencySleeper`
+        /// (tests record the requested delays instead of sleeping).
+        var connectRetrySleeper: @Sendable (TimeInterval) async -> Void = { delay in
             try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
         }
         /// True once a signing chain has been established in this process —
@@ -832,6 +848,15 @@ enum RelayTarget {
     /// identity + auth headers, no signing quartet. The URL is resolved
     /// through the endpoint-routing service first (fail-open: routing
     /// failures or no match leave the pinned URL untouched).
+    ///
+    /// Task 8 wraps the send in the connect-retry ladder: a connect-phase
+    /// transport failure (before the response head) is retried up to twice
+    /// with 500 ms × attempt backoff. Every attempt builds a FRESH
+    /// `HTTPClientRequest` — including a fresh signing quartet — over the
+    /// reusable `Data` wire body; a consumed request is never re-sent.
+    /// Non-connect errors and the third connect failure rethrow immediately:
+    /// the caller maps that to `.transportFailed`, where Task 7's degraded
+    /// admission picks up downstream (unchanged).
     private static func sendOnce(
         head: HTTPRequestHead,
         identity: SessionIdentity,
@@ -854,14 +879,75 @@ enum RelayTarget {
                 zcodeAuthorization = await endpointConfig.zcodeAuthorizationToken()
             }
         }
-        var request = HTTPClientRequest(url: urlString)
-        request.method = head.method
-        request.headers = try relayHeaders(
-            session: session, signed: signed, identity: identity,
-            zcodeAuthorization: zcodeAuthorization, clientVersion: context.clientVersion)
-        request.body = .bytes(wireBody)
-        return try await httpClient.execute(
-            request, timeout: .seconds(Int64(target.readTimeoutSeconds)))
+        for attempt in 0..<Self.connectRetryAttempts {
+            if attempt > 0 {
+                await context.connectRetrySleeper(Self.connectRetryBackoff * TimeInterval(attempt))
+            }
+            var request = HTTPClientRequest(url: urlString)
+            request.method = head.method
+            request.headers = try relayHeaders(
+                session: session, signed: signed, identity: identity,
+                zcodeAuthorization: zcodeAuthorization, clientVersion: context.clientVersion)
+            request.body = .bytes(wireBody)
+            do {
+                return try await httpClient.execute(
+                    request, timeout: .seconds(Int64(target.readTimeoutSeconds)))
+            } catch {
+                guard attempt + 1 < Self.connectRetryAttempts, isConnectPhaseFailure(error) else {
+                    throw error
+                }
+                AppLog.proxy.warning(
+                    "[Proxy] [\(requestID)] Relay connect-phase failure (attempt \(attempt + 1)/\(Self.connectRetryAttempts)): \(String(describing: error)) — retrying")
+            }
+        }
+        preconditionFailure("the connect ladder returns or throws on every attempt")
+    }
+
+    /// Task 8: conservative connect-phase classifier for the `sendOnce`
+    /// ladder. It only ever sees errors from `httpClient.execute` — failures
+    /// BEFORE the response head; mid-body IO failures happen after the head,
+    /// while streaming the response, and never reach this check. Verified
+    /// against the vendored AsyncHTTPClient/NIO checkouts AND empirically on
+    /// this stack for what actually surfaces pre-head:
+    ///
+    /// `HTTPClient(eventLoopGroupProvider: .createNew)` uses
+    /// `NIOTSEventLoopGroup` on macOS — the Network.framework transport:
+    /// - `NWError` `.dns` — hostname resolution failure (pre-head by
+    ///   definition; observed live: `-65554: NoSuchRecord`).
+    /// - `HTTPClient.NWPOSIXError` — AsyncHTTPClient's `NWErrorHandler`
+    ///   wraps every `NWError.posix` in this; only the connect-establishment
+    ///   errno set below is matched (observed live: ECONNREFUSED).
+    /// - `ChannelError.connectTimeout` — NIOTS connect timeouts, remapped by
+    ///   AsyncHTTPClient's factory to `HTTPClientError.connectTimeout`.
+    /// - `HTTPClientError.remoteConnectionClosed` — the server closed before
+    ///   any response head (AsyncHTTPClient's own state machine, identical
+    ///   on both transports).
+    ///
+    /// The NIO-socket spellings are kept for other event-loop groups
+    /// (MultiThreadedEventLoopGroup clients, e2e builds):
+    /// - `NIOConnectionError` — Happy-Eyeballs-wrapped hostname connect
+    ///   failures. The brief's "ConnectionError" is not a type that exists
+    ///   in NIO/AsyncHTTPClient; this is its vendored name.
+    /// - `ChannelError` — raw NIO channel errors.
+    /// - `IOError` is deliberately NOT matched (raw errno on the NIO path;
+    ///   the hostname path wraps those into `NIOConnectionError`).
+    ///
+    /// Never matched, on any transport: waiting-for-response timeouts
+    /// (`HTTPClientError.readTimeout`, `.deadlineExceeded`), cancellation,
+    /// TLS handshake failures (post-establishment class), and write-phase
+    /// errno (e.g. EPIPE).
+    static func isConnectPhaseFailure(_ error: Error) -> Bool {
+        if error is NIOConnectionError || error is ChannelError { return true }
+        if let nw = error as? NWError, case .dns = nw { return true }
+        if let posix = error as? HTTPClient.NWPOSIXError {
+            switch posix.errorCode {
+            case .ECONNREFUSED, .ETIMEDOUT, .ECONNRESET, .ENETUNREACH, .EHOSTUNREACH:
+                return true
+            default:
+                return false
+            }
+        }
+        return (error as? HTTPClientError).map { "\($0)".localizedCaseInsensitiveContains("connect") } == true
     }
 
     // MARK: - Headers
