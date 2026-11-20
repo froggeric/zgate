@@ -101,6 +101,20 @@ final class ProxyServer {
     /// enabled); `updateRouting` refreshes its config in place.
     @ObservationIgnored
     private(set) var offPeakContext: OffPeakTarget.Context?
+    /// Off-peak availability monitor (off-peak wave 2 Task 5): polls the
+    /// ticket plane's availability endpoint while the surface is enabled —
+    /// the forwarder's window gate (`isWindowOpen`) and the UI
+    /// (`displayString`) read its cached status. Lifecycle rides the live
+    /// toggle: built+started by `start`/`updateRouting` when enabled,
+    /// stopped when disabled, nil'd in `stop` with the context (the next
+    /// start rebuilds it).
+    private(set) var offPeakMonitor: OffPeakAvailabilityMonitor?
+    /// Test seams for the monitor's injected closures (the `quotaProvider`
+    /// pattern): non-nil overrides replace the real ticket-plane probe and
+    /// the real 300 s inter-poll sleep so wiring tests run offline on a
+    /// fast tick.
+    var offPeakProbeOverride: (@Sendable () async throws -> OffPeakAvailability)?
+    var offPeakSleepOverride: (@Sendable (TimeInterval) async throws -> Void)?
 
     // MARK: - Init
 
@@ -325,6 +339,19 @@ final class ProxyServer {
         }
         let offPeakContext = self.offPeakContext
 
+        // Availability monitor (off-peak wave 2 Task 5): polls while the
+        // surface is enabled — here for a start with it already on (the
+        // toggle flipped while stopped); `updateRouting` handles the live
+        // flip. The first poll drives the mint-on-enable chain for free
+        // (availability → authMaterial → credentialProvider →
+        // RelayHealth.fallbackKey's lazy single-flight mint).
+        if config.offPeak.enabled {
+            let monitor = makeOffPeakMonitor()
+            offPeakMonitor = monitor
+            monitor.start()
+            AppLog.proxy.info("[ProxyServer] Off-peak availability monitor polling (enabled at start)")
+        }
+
         // Local health probe (Task 7): registers BEFORE any RequestRouter is
         // built below — routers capture the provider at construction (Task 6
         // lifecycle note), so this is the one point where the splash probe
@@ -385,7 +412,8 @@ final class ProxyServer {
                                 webSearchForwardAsIs: self.webSearchForwardAsIs,
                                 relayContext: relayContext,
                                 localHealth: self.localHealthMonitor,
-                                offPeak: offPeakContext
+                                offPeak: offPeakContext,
+                                offPeakMonitor: self.offPeakMonitor
                             )
                         )
                     }
@@ -471,7 +499,12 @@ final class ProxyServer {
         // client (unlike the ticket plane's fresh-per-call clients), so it
         // dies with that client here. Nil it: the next start() rebuilds the
         // context against the new client — a surviving context would throw
-        // on every off-peak data-plane call after pause/resume.
+        // on every off-peak data-plane call after pause/resume. The
+        // availability monitor goes with it: stop its poll task and nil it,
+        // so the next start rebuilds both against the new client (no
+        // orphaned poll loop survives a pause/resume).
+        offPeakMonitor?.stop()
+        offPeakMonitor = nil
         offPeakContext = nil
 
         try? await eventLoopGroup?.shutdownGracefully()
@@ -544,6 +577,19 @@ final class ProxyServer {
         // Off-peak async surface: the live toggle/origin takes effect on
         // the next request (the context box is read per request).
         offPeakContext?.updateConfiguration(config.offPeak)
+        // The availability monitor rides the same live toggle (Task 5):
+        // enabling starts polling without a restart (build the monitor
+        // here when the start config had the surface off — the first poll
+        // drives the mint-on-enable chain); disabling stops it. Both
+        // idempotent (Task 1), so repeated saves are no-ops.
+        if config.offPeak.enabled {
+            if offPeakMonitor == nil, offPeakContext != nil {
+                offPeakMonitor = makeOffPeakMonitor()
+            }
+            offPeakMonitor?.start()
+        } else {
+            offPeakMonitor?.stop()
+        }
         // The credential-store selector rides along live (no restart): the
         // relay loader re-resolves through the box on every attempt.
         storeBaseBox.set(CredentialStore.resolveBase(config.credentialStoreBase))
@@ -567,5 +613,31 @@ final class ProxyServer {
                 await slot.router.updateSnapshot(newSnapshot)
             }
         }
+    }
+
+    // MARK: - Off-peak monitor factory
+
+    /// One availability monitor over the current seams: the injected
+    /// probe/sleep when present (tests), else the real ticket-plane chain —
+    /// a fresh ticket client per poll so the current origin is always in
+    /// effect. The context is captured weak: a poll racing `stop()`'s
+    /// teardown answers the typed unavailable error instead of touching a
+    /// dead client.
+    private func makeOffPeakMonitor() -> OffPeakAvailabilityMonitor {
+        let probe: @Sendable () async throws -> OffPeakAvailability
+        if let offPeakProbeOverride {
+            probe = offPeakProbeOverride
+        } else {
+            probe = { [weak offPeakContext] in
+                guard let ctx = offPeakContext else {
+                    throw OffPeakTicketError.malformed("off-peak context unavailable")
+                }
+                return try await ctx.makeTicketClient().availability()
+            }
+        }
+        if let offPeakSleepOverride {
+            return OffPeakAvailabilityMonitor(probe: probe, sleep: offPeakSleepOverride)
+        }
+        return OffPeakAvailabilityMonitor(probe: probe)
     }
 }
