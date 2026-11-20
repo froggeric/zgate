@@ -4,6 +4,40 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
+## Unreleased
+
+### 2026-11-20 — off-peak wave 2: Settings toggle, automatic status, rule-target routing
+
+- **Off-peak Settings toggle, no restart.** Settings → General → Off-Peak
+  gains a "Use ZCode off-peak compute" toggle with a live status line
+  ("Window open" / "Closed until HH:mm" / "Unavailable (…)") — it applies
+  immediately (no relaunch), and enabling mints the coding-plan key on the
+  first availability poll. Advanced knobs (`origin`, `maxWaitMinutes`,
+  `pollIntervalSeconds`, `keepaliveSeconds`) stay config-file-only.
+- **Automatic availability status.** While enabled, ZCode polls the
+  ticket-availability endpoint every 300 s (first poll immediately on
+  enabling; polling stops when disabled) and shows the window state in
+  the popover ("Off-Peak: Window open" / "Closed until HH:mm" /
+  "Unavailable (…)" / "Checking…" during the first poll).
+- **Rule-target routing with gated fallback.** A seeded "ZCode Off-Peak"
+  vendor (run-once migration; user deletion respected) can be attached as
+  a routing rule's primary target: window open + surface enabled +
+  `stream: true` rides the off-peak ticket plane; ANY gate failure serves
+  the rule's backup target. Non-streaming requests NEVER queue — they
+  always fall back. No (non-off-peak) backup answers a 503
+  `off_peak_unavailable`; the rule editor blocks saving an off-peak
+  primary without a backup in the first place.
+- **Colored toggle enabled-states.** An app AccentColor is defined
+  (light #087AFF / dark #0A84FF) — every toggle's enabled state is
+  colored app-wide instead of inheriting the system accent (previously
+  grey under Graphite).
+- **Token stats for rule-routed off-peak requests.** Requests served
+  through an off-peak rule record usage under the ZCode Off-Peak vendor
+  in the Statistics tab (the manual `/async` face stays stats-less, the
+  passthrough convention — traffic log only). Billing on the ticket plane
+  is UNVERIFIED: watch the quota monitor across the first auto-routed
+  window before treating it as free.
+
 ## 2.10 (1)
 
 ### 2026-11-20 — relay fidelity & resilience

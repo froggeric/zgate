@@ -99,7 +99,9 @@ bundled default (a fifth version surface; recorded in signing-notes).
 ## Off-peak async surface (default OFF)
 
 An opt-in surface for ZCode's Off-Peak / Idle Plan ticket queue — batch
-generation at off-peak rates through the SAME relay identity.
+generation at off-peak rates through the SAME relay identity. (Wave 2 —
+Settings toggle, automatic status, rule-target routing — is described in
+[`2026-11-20-offpeak-wave2.md`](2026-11-20-offpeak-wave2.md).)
 
 - **Default OFF:** `offPeak.enabled == false` (absent config = disabled).
   Every `/async/` request then answers a local Anthropic-shaped 404-style
