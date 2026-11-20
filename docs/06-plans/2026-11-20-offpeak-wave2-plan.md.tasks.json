@@ -61,12 +61,12 @@
     {
       "id": 7,
       "subject": "Task 8: Docs, README matrix, CHANGELOG draft",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         5
       ],
       "description": "**Goal:** Document the new surface truth: automatic status, rule-target routing + fallback semantics, mint-on-enable, and the unverified-billing watch note.\n\n**Files:**\n- Modify: `docs/05-features/` off-peak feature doc (locate via grep -rl \"off-peak\" docs/05-features/), `README.md` (routing matrix + v2.10 paragraph), `CHANGELOG.md` (Unreleased section)\n\n**Acceptance Criteria:**\n- Feature doc: 300 s monitor cadence + status meanings; three gates + fallback table (gate failed → backup; no backup → 503 off_peak_unavailable); non-streaming NEVER queue (2026-11-20 compaction lockout note); mint-on-enable; seeded vendor + rule attachment workflow; knobs stay config-only; billing UNVERIFIED — watch quota-history across the first auto-routed window.\n- README routing matrix off-peak row + v2.10 off-peak paragraph updated (no longer config-only/manual).\n- CHANGELOG Unreleased: toggle (no-restart), availability status + popover row, rule-target routing with fallback, colored toggles, token stats on /async.\n- No credential material in docs.\n\n**Verify:** `grep -rn \"off-peak\\|offPeak\" README.md CHANGELOG.md docs/05-features/ | wc -l` → non-zero; the four named sections present by reading.\n\n```json:metadata\n{\"files\": [\"docs/05-features/\", \"README.md\", \"CHANGELOG.md\"], \"verifyCommand\": \"grep -rn 'off-peak\\|offPeak' README.md CHANGELOG.md docs/05-features/ | wc -l\", \"acceptanceCriteria\": [\"feature doc covers cadence, gates, fallback, lockout note, mint-on-enable, billing-watch note\", \"README matrix + paragraph updated\", \"CHANGELOG Unreleased section lists all five wave-2 changes\"], \"modelTier\": \"standard\"}\n```"
     }
   ],
-  "lastUpdated": "2026-11-20T23:00:00Z"
+  "lastUpdated": "2026-11-20T23:10:00Z"
 }
