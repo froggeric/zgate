@@ -147,11 +147,12 @@ final class SplashManager {
         }
     }
 
-    /// App-support bin dir; mirrors `AppPaths.appSupport` as a nonisolated
-    /// constant so binary resolution works from any isolation.
-    private static let fallbackBinDir = FileManager.default
-        .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-        .first!.appendingPathComponent("ZGate", isDirectory: true)
+    /// App-support bin dir. Derived from `AppPaths.appSupport` (a nonisolated
+    /// computed var, so binary resolution still works from any isolation)
+    /// so every path signal applies — test-host base and the E2E rig /
+    /// live-probe `ZGATE_APP_SUPPORT_DIR` redirect alike; a staged build
+    /// must never resolve binaries out of the LIVE app-support dir.
+    private static let fallbackBinDir = AppPaths.appSupport
 
     /// Binary resolution (spec §3.1): override (if present) →
     /// /opt/homebrew/bin/<chip binary> → ~/.local/bin/<chip binary> (the

@@ -43,11 +43,13 @@ enum LineageStoreFactory {
         FileLineageStore(fileURL: defaultFileURL())
     }
 
-    static func defaultFileURL(fileManager: FileManager = .default) -> URL {
-        let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
-        return baseURL
-            .appendingPathComponent("ZGate", isDirectory: true)
+    static func defaultFileURL() -> URL {
+        // Through AppPaths.appSupport so every isolation signal applies
+        // (test-host base AND the explicit ZGATE_APP_SUPPORT_DIR redirect
+        // the E2E rig / live probes launch staged builds with — writing
+        // lineages to the LIVE dir from a staged build would violate the
+        // rig's rule 1).
+        AppPaths.appSupport
             .appendingPathComponent("lineages.json", isDirectory: false)
     }
 }

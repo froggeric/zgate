@@ -74,4 +74,15 @@ import Testing
     @Test func isolationCoversBizSessionCacheDefaultFile() {
         #expect(BizSessionCache.defaultFileURL().deletingLastPathComponent() == AppPaths.appSupport)
     }
+
+    /// The lineage store's default file rides the same resolution (fix
+    /// round 1, 2026-11-20): it used to build `…/Application Support/ZGate`
+    /// straight from `applicationSupportDirectory`, bypassing every path
+    /// signal — a staged build under `ZGATE_APP_SUPPORT_DIR` (or an isolated
+    /// test host) would have written lineages to the LIVE dir. The equality
+    /// pins the derivation through `AppPaths.appSupport`, so whatever that
+    /// resolves (test-host base, explicit redirect) is where lineages go.
+    @Test func isolationCoversLineageStoreDefaultFile() {
+        #expect(LineageStoreFactory.defaultFileURL().deletingLastPathComponent() == AppPaths.appSupport)
+    }
 }
