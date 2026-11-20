@@ -67,10 +67,15 @@ substitution to the rule's target model + GLM canonicalization applied,
 then availability wait → take → poll → unsigned data-plane POST → SSE
 relay → settle). **ANY gate failure → the rule's backup target serves**
 (a relay-kind backup through its own signed ladder; any other kind through
-the plain upstream send). No backup — or a backup that is itself an
-off-peak target — answers an Anthropic-shaped **503** type
-`off_peak_unavailable`, message "The off-peak window is closed and this
-rule has no backup target."
+`executeBackupUpstream` with the fallback edge's key lifecycle — lazy key
+resolve/mint, 401 re-mint once, 1113 key cooldown — so an edge-vendored
+backup with the seeded empty key still serves; final-review fix #2). No
+backup — or a backup that is itself an off-peak target — answers an
+Anthropic-shaped **503** type `off_peak_unavailable`, message
+"Off-peak gate failed (\<the gate that failed\>) and this rule has no
+backup target." (final-review fix #3: the terminal names the actual
+failed gate — surface disabled / window closed / non-streaming request —
+never a hardcoded "window is closed").
 
 **Non-streaming requests NEVER queue.** A non-streaming request on an
 off-peak rule always falls back to the backup — it can never receive
@@ -95,6 +100,13 @@ Requests served through an off-peak RULE record usage under the ZCode
 Off-Peak vendor (Statistics tab). The manual `/async` face records no
 token-stats row (the passthrough convention) — its usage shows in the
 traffic log only.
+
+History note (final-review fix #5, 2026-11-21): the wave-2 plan's Task 3
+originally said "token stats on `/async`". The resolved semantic is the
+one above — the manual `/async` face meters NOTHING (it mirrors the
+passthrough vendorless convention); only rule-routed off-peak traffic
+records stats rows. Do not "restore" the original Task 3 goal without a
+fresh decision.
 
 ## Colored toggle enabled-states (app AccentColor)
 

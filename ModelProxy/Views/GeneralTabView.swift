@@ -173,11 +173,21 @@ struct GeneralTabView: View {
     // MARK: - Off-Peak (off-peak wave 2 Task 6)
 
     /// The opt-in toggle for the async ticket-plane surface. The status
-    /// line under the title reads the live monitor (`displayString` on the
-    /// @Observable monitor — "Off" while disabled or before the first
-    /// poll). saveAndReload carries the flip to the running proxy: the
-    /// monitor's lifecycle rides the live toggle (Task 5), no restart.
-    /// Advanced knobs (origin/maxWait/poll/keepalive) stay config-only.
+    /// line under the title uses the popover chip's mapping while enabled
+    /// (`.idle` reads "Checking…" — the monitor's own `displayString`
+    /// would say "Off" during the first poll and falsely read as the
+    /// toggle state; final-review fix #4) and plain "Off" while disabled
+    /// or when no monitor exists. saveAndReload carries the flip to the
+    /// running proxy: the monitor's lifecycle rides the live toggle
+    /// (Task 5), no restart. Advanced knobs (origin/maxWait/poll/keepalive)
+    /// stay config-only.
+    private var offPeakStatusText: String {
+        guard configStore.config.offPeak.enabled,
+            let monitor = proxyServer.offPeakMonitor
+        else { return "Off" }
+        return OffPeakStatusChip.text(for: monitor.status)
+    }
+
     private var offPeakSection: some View {
         Section {
             Toggle(isOn: Binding(
@@ -189,7 +199,7 @@ struct GeneralTabView: View {
             )) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Use ZCode off-peak compute")
-                    Text(proxyServer.offPeakMonitor?.displayString ?? "Off")
+                    Text(offPeakStatusText)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

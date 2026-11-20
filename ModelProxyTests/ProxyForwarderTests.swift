@@ -562,9 +562,14 @@ struct ProxyForwarderTests {
 
     /// The wave-2 rule shape: `offpeak-target` maps to the seeded off-peak
     /// vendor as primary, with an optional loopback backup vendor — the
-    /// same routing-table shape ProxyServer builds per client.
+    /// same routing-table shape ProxyServer builds per client. The edge
+    /// variant (`backupAPIKey: ""`) mirrors the seeded fallback-edge row:
+    /// default vendor kind, empty stored key.
     @MainActor
-    private func makeOffPeakFixture(backupPort: Int?) throws -> OffPeakFixture {
+    private func makeOffPeakFixture(
+        backupPort: Int?, backupAPIKey: String = "backup-key-synthetic",
+        backupVendorKind: VendorKind = .anthropic
+    ) throws -> OffPeakFixture {
         let offPeakVendorID = UUID()
         var vendors = [Vendor(
             id: offPeakVendorID, name: "ZCode Off-Peak",
@@ -578,7 +583,8 @@ struct ProxyForwarderTests {
         if let backupPort {
             let backupVendor = Vendor(
                 name: "Backup Vendor", baseURL: "http://127.0.0.1:\(backupPort)",
-                apiKey: "backup-key-synthetic", readTimeoutSeconds: 10)
+                apiKey: backupAPIKey, readTimeoutSeconds: 10,
+                vendorKind: backupVendorKind)
             vendors.append(backupVendor)
             mapping.backupTargetVendorID = backupVendor.id
             mapping.backupTargetModel = "glm-4.7"
@@ -645,7 +651,8 @@ struct ProxyForwarderTests {
     private func forwardOffPeak(
         _ fixture: OffPeakFixture, httpClient: HTTPClient, channel: any Channel,
         bodyText: String, offPeakContext: OffPeakTarget.Context?,
-        offPeakMonitor: (any OffPeakAvailabilityMonitoring)?
+        offPeakMonitor: (any OffPeakAvailabilityMonitoring)?,
+        relayContext: RelayTarget.Context? = nil
     ) async {
         var body = ByteBufferAllocator().buffer(capacity: 0)
         body.writeData(Data(bodyText.utf8))
@@ -663,6 +670,7 @@ struct ProxyForwarderTests {
             requestCoordinator: fixture.requestCoordinator,
             webSearchProvider: nil,
             webSearchForwardAsIs: false,
+            relayContext: relayContext,
             offPeakContext: offPeakContext,
             offPeakMonitor: offPeakMonitor)
     }
@@ -858,10 +866,172 @@ struct ProxyForwarderTests {
         let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
         let error = try #require(json["error"] as? [String: Any])
         #expect(error["type"] as? String == "off_peak_unavailable")
-        #expect(error["message"] as? String == "The off-peak window is closed and this rule has no backup target.")
+        // Final-review fix #3: the terminal names the gate that actually
+        // failed (here a non-streaming request with the window OPEN), not a
+        // hardcoded "window is closed".
+        #expect(
+            error["message"] as? String
+                == "Off-peak gate failed (non-streaming request) and this rule has no backup target.")
         // The 503 is visible in the traffic log, and nothing upstream moved.
         let entries = await MainActor.run { fixture.trafficLog.entries }
         #expect(entries.last?.httpStatus == 503)
+        #expect(ticketPlane.recorded.isEmpty)
+        _ = try? client.finish()
+    }
+
+    // MARK: - Off-peak gate fallback, relay-plane backups (final-review fix #2)
+
+    /// In-memory mint chain (the RelayHealthTests pattern, compacted): one
+    /// API key id, an incrementing secret per full chain run. Counts runs so
+    /// the edge test can pin the lazy single mint.
+    private final class ScriptedMintChain: @unchecked Sendable {
+        private let lock = NSLock()
+        private var runCount = 0
+        private var secretIndex = 0
+
+        var runs: Int {
+            lock.lock(); defer { lock.unlock() }
+            return runCount
+        }
+
+        private func json(_ object: [String: Any]) -> Data {
+            (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
+        }
+
+        func respond(path: String) throws -> (Int, Data) {
+            if path.contains("getCustomerInfo") {
+                lock.lock(); runCount += 1; lock.unlock()
+                return (200, json(["code": 0, "data": ["organizations": [
+                    ["id": "org-1", "name": "org", "projects": [["id": "proj-1", "name": "p"]]],
+                ]]]))
+            }
+            if path.contains("/copy/") {
+                lock.lock(); secretIndex += 1; let index = secretIndex; lock.unlock()
+                return (200, json(["code": 0, "data": ["secretKey": "secret-\(index)"]]))
+            }
+            if path.hasSuffix("/api_keys") {
+                return (200, json(["code": 0, "data": ["list": [["id": "apiKey-1", "name": "k"]]]]))
+            }
+            throw NSError(domain: "ScriptedMintChain", code: 1)
+        }
+    }
+
+    /// A SigningClient that can never build a chain (no store, no location,
+    /// no cache) — the RouterTests pattern: a request reaching the signed
+    /// ladder fails fast with the signing-unavailable 502 and nothing is
+    /// sent unsigned.
+    private static func makeUnusableSigningClient() -> SigningClient {
+        var configuration = SigningClient.Configuration()
+        configuration.storeLoader = { nil }
+        configuration.initialLocation = nil
+        configuration.cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zgate-offpeak-fwd-unusable-\(UUID().uuidString).cache")
+        return SigningClient(configuration: configuration)
+    }
+
+    @Test @MainActor func routeOffPeakClosedWindowEdgeBackupMintsKeyAndServes() async throws {
+        // Final-review fix #2: an edge-vendored backup carries the seeded
+        // row's EMPTY stored key — the fallback must run the edge key
+        // lifecycle (lazy mint via RelayHealth) instead of sending the
+        // empty key as-is (a guaranteed 401).
+        let edge = DispatchStubServer()
+        edge.respond = { _ in .json(["servedBy": "edge-marker"]) }
+        let edgePort = try await edge.start()
+        let ticketPlane = DispatchStubServer()
+        let ticketPort = try await ticketPlane.start()
+        defer {
+            Task { await edge.shutdown() }
+            Task { await ticketPlane.shutdown() }
+        }
+        let httpClient = HTTPClient(eventLoopGroupProvider: .createNew)
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let fixture = try makeOffPeakFixture(backupPort: edgePort, backupAPIKey: "")
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let chain = ScriptedMintChain()
+        var minterConfiguration = ApiKeyMinter.Configuration()
+        minterConfiguration.bizJWTProvider = { "biz-jwt" }
+        minterConfiguration.execute = { request in
+            try chain.respond(path: request.url?.path ?? "")
+        }
+        var healthConfiguration = RelayHealth.Configuration()
+        healthConfiguration.minter = ApiKeyMinter(configuration: minterConfiguration)
+        healthConfiguration.fallbackEdgeBaseURL = "http://127.0.0.1:\(edgePort)"
+        let relayContext = RelayTarget.Context(
+            signingClient: Self.makeUnusableSigningClient(),
+            relayHealth: RelayHealth(configuration: healthConfiguration))
+
+        let context = OffPeakTarget.Context(
+            config: OffPeakConfig(enabled: true, origin: "http://127.0.0.1:\(ticketPort)"),
+            httpClient: httpClient,
+            jwtProvider: { "offpeak-plan-jwt" },
+            credentialProvider: { "ak-1.sk-2" })
+
+        // Window closed: the gate fails and the edge backup serves — with
+        // the MINTED credential, not the empty stored key.
+        let client = EmbeddedChannel()
+        await forwardOffPeak(
+            fixture, httpClient: httpClient, channel: client,
+            bodyText: Self.offPeakBody(stream: true),
+            offPeakContext: context, offPeakMonitor: WindowGateStub(open: false),
+            relayContext: relayContext)
+
+        let (head, body, sawEnd) = try drainOffPeakResponse(client)
+        #expect(head.status == .ok)
+        #expect(sawEnd)
+        #expect(String(data: body, encoding: .utf8)?.contains("edge-marker") == true)
+
+        let request = try #require(edge.recorded.first)
+        #expect(request.header("x-api-key") == "apiKey-1.secret-1")
+        #expect(chain.runs == 1)  // lazy mint, exactly one chain run
+        #expect(ticketPlane.recorded.isEmpty)
+        _ = try? client.finish()
+    }
+
+    @Test @MainActor func routeOffPeakClosedWindowRelayBackupRunsSignedLadder() async throws {
+        // The relay-kind backup branch: the fallback dispatches to the
+        // backup's own signed ladder (RelayTarget.execute), NOT a plain
+        // upstream send — with an unusable signing chain that answers the
+        // ladder's own signing-unavailable 502, and nothing is ever sent
+        // unsigned to the backup.
+        let backup = DispatchStubServer()
+        let backupPort = try await backup.start()
+        let ticketPlane = DispatchStubServer()
+        let ticketPort = try await ticketPlane.start()
+        defer {
+            Task { await backup.shutdown() }
+            Task { await ticketPlane.shutdown() }
+        }
+        let httpClient = HTTPClient(eventLoopGroupProvider: .createNew)
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let fixture = try makeOffPeakFixture(backupPort: backupPort, backupVendorKind: .relay)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let relayContext = RelayTarget.Context(
+            signingClient: Self.makeUnusableSigningClient())
+        let context = OffPeakTarget.Context(
+            config: OffPeakConfig(enabled: true, origin: "http://127.0.0.1:\(ticketPort)"),
+            httpClient: httpClient,
+            jwtProvider: { "offpeak-plan-jwt" },
+            credentialProvider: { "ak-1.sk-2" })
+
+        let client = EmbeddedChannel()
+        await forwardOffPeak(
+            fixture, httpClient: httpClient, channel: client,
+            bodyText: Self.offPeakBody(stream: true),
+            offPeakContext: context, offPeakMonitor: WindowGateStub(open: false),
+            relayContext: relayContext)
+
+        let (head, body, sawEnd) = try drainOffPeakResponse(client)
+        #expect(head.status == .badGateway)
+        #expect(sawEnd)
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let error = try #require(json["error"] as? [String: Any])
+        let message = try #require(error["message"] as? String)
+        #expect(message.localizedCaseInsensitiveContains("signing unavailable"))
+        // Nothing reached the backup or the ticket plane unsigned.
+        #expect(backup.recorded.isEmpty)
         #expect(ticketPlane.recorded.isEmpty)
         _ = try? client.finish()
     }

@@ -183,6 +183,9 @@ enum RulesSummary: Sendable {
 /// closed window never reads as an alarm. `.idle` (enabled, first poll
 /// still in flight) says "Checking…" — the row only renders while the
 /// surface is enabled, so "Off" would falsely read as the toggle state.
+/// `text(for:)` (no prefix) is shared with the Settings status line, which
+/// renders in BOTH toggle states and therefore wraps the mapping in its
+/// own enabled check.
 enum OffPeakStatusChip: Equatable, Sendable {
 
     struct Face: Equatable, Sendable {
@@ -190,18 +193,27 @@ enum OffPeakStatusChip: Equatable, Sendable {
         let color: Color
     }
 
-    static func face(for status: OffPeakAvailabilityMonitor.Status) -> Face {
+    /// Unprefixed status text — `.idle` reads "Checking…", for callers
+    /// that only render the line while the surface is enabled.
+    static func text(for status: OffPeakAvailabilityMonitor.Status) -> String {
         switch status {
         case .idle:
-            return .init(text: "Off-Peak: Checking…", color: .secondary)
+            return "Checking…"
         case .open:
-            return .init(text: "Off-Peak: Window open", color: .green)
+            return "Window open"
         case .closedUntil(let date):
-            return .init(
-                text: "Off-Peak: Closed until \(date.formatted(date: .omitted, time: .shortened))",
-                color: .secondary)
+            return "Closed until \(date.formatted(date: .omitted, time: .shortened))"
         case .unavailable(let reason):
-            return .init(text: "Off-Peak: Unavailable (\(reason))", color: .secondary)
+            return "Unavailable (\(reason))"
+        }
+    }
+
+    static func face(for status: OffPeakAvailabilityMonitor.Status) -> Face {
+        switch status {
+        case .open:
+            return .init(text: "Off-Peak: " + text(for: status), color: .green)
+        default:
+            return .init(text: "Off-Peak: " + text(for: status), color: .secondary)
         }
     }
 }

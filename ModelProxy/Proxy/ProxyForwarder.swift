@@ -488,6 +488,7 @@ enum ProxyForwarder {
                 routeState: &routeState,
                 requestID: requestID,
                 relayContext: relayContext,
+                relayHealth: relayContext?.relayHealth,
                 failedGate: failedGate)
             streamsViaLocalRelay = false
         } else if target.vendorKind == .relay {
@@ -1145,11 +1146,15 @@ enum ProxyForwarder {
 
     /// The off-peak gate-failure serve (Task 4): the rule's backup target
     /// serves the request — a relay-kind backup through its own signed
-    /// ladder, any other through the plain upstream send. No usable backup
-    /// (single-target rule, or the backup is itself an off-peak target —
-    /// the same closed window gates both) returns the exact 503 terminal;
-    /// the caller's terminal path writes it to the client and logs the
-    /// traffic row.
+    /// ladder, any other through `executeBackupUpstream` with the fallback
+    /// edge's key lifecycle applied (lazy key resolve/mint, 401 re-mint
+    /// once, 1113 key cooldown — final-review fix #2: the seeded edge
+    /// vendor carries an empty stored key, so a plain upstream send would
+    /// 401 forever). No usable backup (single-target rule, or the backup is
+    /// itself an off-peak target — the same closed window gates both)
+    /// returns the exact 503 terminal naming the failed gate
+    /// (final-review fix #3); the caller's terminal path writes it to the
+    /// client and logs the traffic row.
     private static func serveOffPeakFallback(
         head: HTTPRequestHead,
         bodyData: Data,
@@ -1160,6 +1165,7 @@ enum ProxyForwarder {
         routeState: inout RoutingSnapshot.RouteState,
         requestID: String,
         relayContext: RelayTarget.Context?,
+        relayHealth: RelayHealth?,
         failedGate: String
     ) async -> (HTTPClientResponse?, RoutingSnapshot.RouteTarget?, RelayTarget.UpstreamTerminal?) {
         let allTargets = await router.targets(for: model)
@@ -1175,7 +1181,7 @@ enum ProxyForwarder {
             return (nil, nil, RelayTarget.UpstreamTerminal(
                 status: 503,
                 anthropicType: "off_peak_unavailable",
-                message: "The off-peak window is closed and this rule has no backup target."))
+                message: "Off-peak gate failed (\(failedGate)) and this rule has no backup target."))
         }
         AppLog.proxy.info(
             "[Proxy] [\(requestID)] Off-peak gate failed (\(failedGate)) on \(primaryTarget.vendorName), serving backup \(backupTarget.vendorName)"
@@ -1198,9 +1204,9 @@ enum ProxyForwarder {
                 return (nil, nil, Self.terminal(for: terminalOutcome))
             }
         }
-        if let response = await Self.executeUpstream(
+        if let response = await Self.executeBackupUpstream(
             head: head, bodyData: bodyData, target: backupTarget,
-            httpClient: httpClient, requestID: requestID)
+            httpClient: httpClient, requestID: requestID, relayHealth: relayHealth)
         {
             if Int(response.status.code) < 400 { routeState.failCount = 0 }
             return (response, backupTarget, nil)
