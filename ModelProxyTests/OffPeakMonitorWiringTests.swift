@@ -2,15 +2,18 @@ import Foundation
 import Testing
 @testable import ZGate
 
-/// ProxyServer monitor wiring (off-peak wave 2 Task 5): the availability
-/// monitor's lifecycle rides the live off-peak toggle — enabling via
-/// `updateRouting` (the Settings save path) starts polling without a
-/// restart, disabling stops it, and `stop()` tears it down with the
-/// per-start context so the next `start` rebuilds it. The probe and sleep
-/// are injected through the `offPeakProbeOverride` / `offPeakSleepOverride`
-/// seams (mirrors `quotaProvider`): no network, and the 30 ms sleep makes
-/// the poll tick fast enough that a frozen call count across ~8 ticks is a
-/// direct proof the loop died — never a real 300 s wait.
+/// ProxyServer monitor wiring (off-peak wave 2 Task 5, final-review fix
+/// #1): the monitor is ALWAYS built by `start` — one stable instance per
+/// server run so every channel handler captures a real window gate at
+/// channel-init time even when the surface is off — and its polling
+/// lifecycle rides the live toggle: enabling via `updateRouting` (the
+/// Settings save path) starts polling without a restart, disabling stops
+/// it, and `stop()` tears it down with the per-start context so the next
+/// `start` rebuilds it. The probe and sleep are injected through the
+/// `offPeakProbeOverride` / `offPeakSleepOverride` seams (mirrors
+/// `quotaProvider`): no network, and the 30 ms sleep makes the poll tick
+/// fast enough that a frozen call count across ~8 ticks is a direct proof
+/// the loop died — never a real 300 s wait.
 @MainActor
 struct OffPeakMonitorWiringTests {
 
@@ -63,17 +66,22 @@ struct OffPeakMonitorWiringTests {
             try await Task.sleep(nanoseconds: 30_000_000)
         }
 
-        // Disabled at start: no monitor, no polls.
+        // Disabled at start: the monitor EXISTS (final-review fix #1 —
+        // every handler captures one stable instance at channel init, so a
+        // connection opened while off still sees a later flip) but is
+        // unstarted: .idle and zero polls.
         let config = makeConfig(enabled: false)
         await server.start(config: config)
-        #expect(server.offPeakMonitor == nil)
+        let monitor = try #require(server.offPeakMonitor)
+        #expect(monitor.status == OffPeakAvailabilityMonitor.Status.idle)
         #expect(probe.count == 0)
 
-        // Enable live (Settings save → updateRouting): monitor built and
-        // polling, status leaves .idle — no restart.
+        // Enable live (Settings save → updateRouting): the SAME instance
+        // starts polling — no restart, no rebuild (handlers' capture stays
+        // valid).
         config.offPeak.enabled = true
         server.updateRouting(config: config)
-        let monitor = try #require(server.offPeakMonitor)
+        #expect(server.offPeakMonitor === monitor)
         #expect(await waitFor(probe.count >= 1))
         #expect(await waitFor(monitor.status != OffPeakAvailabilityMonitor.Status.idle))
         #expect(monitor.isWindowOpen == true)
@@ -129,6 +137,20 @@ struct OffPeakMonitorWiringTests {
         #expect(secondMonitor !== firstMonitor)
         #expect(await waitFor(probe.count > frozen))
         #expect(await waitFor(secondMonitor.status != OffPeakAvailabilityMonitor.Status.idle))
+
+        await server.stop()
+        #expect(server.offPeakMonitor == nil)
+
+        // Restart with the surface DISABLED: the monitor is still rebuilt
+        // (stable instance for handlers) but stays unstarted — zero polls.
+        let frozenAgain = probe.count
+        let disabledConfig = makeConfig(enabled: false)
+        await server.start(config: disabledConfig)
+        let thirdMonitor = try #require(server.offPeakMonitor)
+        #expect(thirdMonitor !== secondMonitor)
+        #expect(thirdMonitor.status == OffPeakAvailabilityMonitor.Status.idle)
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        #expect(probe.count == frozenAgain)
 
         await server.stop()
         #expect(server.offPeakMonitor == nil)

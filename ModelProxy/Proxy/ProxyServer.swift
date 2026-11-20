@@ -104,10 +104,13 @@ final class ProxyServer {
     /// Off-peak availability monitor (off-peak wave 2 Task 5): polls the
     /// ticket plane's availability endpoint while the surface is enabled —
     /// the forwarder's window gate (`isWindowOpen`) and the UI
-    /// (`displayString`) read its cached status. Lifecycle rides the live
-    /// toggle: built+started by `start`/`updateRouting` when enabled,
-    /// stopped when disabled, nil'd in `stop` with the context (the next
-    /// start rebuilds it).
+    /// (`displayString`) read its cached status. ALWAYS built by `start`
+    /// (final-review fix #1: one stable instance per server run, so every
+    /// channel handler captures a real gate at channel-init time even when
+    /// the surface is off — flipping the toggle later still reaches
+    /// connections opened before it); unstarted while disabled, started /
+    /// stopped by `updateRouting` as the toggle flips, nil'd in `stop` with
+    /// the context (the next start rebuilds it).
     private(set) var offPeakMonitor: OffPeakAvailabilityMonitor?
     /// Test seams for the monitor's injected closures (the `quotaProvider`
     /// pattern): non-nil overrides replace the real ticket-plane probe and
@@ -339,15 +342,19 @@ final class ProxyServer {
         }
         let offPeakContext = self.offPeakContext
 
-        // Availability monitor (off-peak wave 2 Task 5): polls while the
-        // surface is enabled — here for a start with it already on (the
-        // toggle flipped while stopped); `updateRouting` handles the live
-        // flip. The first poll drives the mint-on-enable chain for free
-        // (availability → authMaterial → credentialProvider →
-        // RelayHealth.fallbackKey's lazy single-flight mint).
+        // Availability monitor (off-peak wave 2 Task 5): ALWAYS built with
+        // the context so every channel handler captures ONE stable instance
+        // at channel-init time — a connection opened while the surface is
+        // off must not hold a nil window gate forever after the user flips
+        // the toggle (final-review fix #1). Unstarted while disabled: a
+        // stopped monitor is inert (.idle, window closed). `updateRouting`
+        // only starts/stops it as the toggle flips; the first poll drives
+        // the mint-on-enable chain for free (availability → authMaterial →
+        // credentialProvider → RelayHealth.fallbackKey's lazy single-flight
+        // mint).
+        let monitor = makeOffPeakMonitor()
+        offPeakMonitor = monitor
         if config.offPeak.enabled {
-            let monitor = makeOffPeakMonitor()
-            offPeakMonitor = monitor
             monitor.start()
             AppLog.proxy.info("[ProxyServer] Off-peak availability monitor polling (enabled at start)")
         }
@@ -577,15 +584,14 @@ final class ProxyServer {
         // Off-peak async surface: the live toggle/origin takes effect on
         // the next request (the context box is read per request).
         offPeakContext?.updateConfiguration(config.offPeak)
-        // The availability monitor rides the same live toggle (Task 5):
-        // enabling starts polling without a restart (build the monitor
-        // here when the start config had the surface off — the first poll
-        // drives the mint-on-enable chain); disabling stops it. Both
-        // idempotent (Task 1), so repeated saves are no-ops.
+        // The availability monitor rides the same live toggle (Task 5,
+        // final-review fix #1): ONE stable instance is built per `start`
+        // (handlers capture it at channel init regardless of the toggle
+        // state), so the toggle is a pure start()/stop() — enabling polls
+        // without a restart (the first poll drives the mint-on-enable
+        // chain); disabling stops. Both idempotent (Task 1), so repeated
+        // saves are no-ops.
         if config.offPeak.enabled {
-            if offPeakMonitor == nil, offPeakContext != nil {
-                offPeakMonitor = makeOffPeakMonitor()
-            }
             offPeakMonitor?.start()
         } else {
             offPeakMonitor?.stop()
