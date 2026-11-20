@@ -162,6 +162,91 @@ def passthrough_relays_anthropic():
     return ok, f"unmapped model on passthrough client -> Anthropic {status} request_id={request_id[:14]}"
 
 
+# ---------- relay fidelity (2026-11-20 wave) ----------
+# These run against the staged config's relay vendor (empty credential store
+# → cold signing failure, no network) and the off-peak async surface (origin
+# on a dead local port). The off-peak toggle state comes from the config
+# (E2E_ASYNC_OFFPEAK for gen_config.py); each scenario discovers it via the
+# local health probe and asserts the matching behavior, so an enabled run
+# and a disabled run both exercise their own family.
+
+
+def _async_enabled():
+    status, body, _ = request("GET", "/async/v1/health", timeout=10)
+    enabled = json.loads(body or b"{}").get("enabled")
+    return status == 200 and enabled is True
+
+
+def relay_dead_store_terminal():
+    # The relay vendor's credentialStoreBase points at an empty dir: the
+    # signing chain fails cold before anything is sent (a 502 terminal, the
+    # documented never-unsigned policy) — no hang, no fallback laundering.
+    status, body, elapsed = request("POST", "/v1/messages",
+                                    {"model": "claude-relay-5", "max_tokens": 8,
+                                     "messages": [{"role": "user", "content": "x"}]},
+                                    timeout=60)
+    error = json.loads(body or b"{}").get("error", {})
+    ok = (status == 502 and error.get("type") == "api_error"
+          and "signing unavailable" in error.get("message", "").lower() and elapsed < 30)
+    return ok, (f"relay with dead store -> {status} {error.get('type')} "
+                f"'{error.get('message', '')[:60]}' in {elapsed:.1f}s")
+
+
+def async_health_reflects_toggle():
+    status, body, elapsed = request("GET", "/async/v1/health", timeout=10)
+    enabled = json.loads(body or b"{}").get("enabled")
+    ok = status == 200 and isinstance(enabled, bool) and elapsed < 2
+    return ok, f"/async/v1/health -> {status} enabled={enabled} in {elapsed * 1000:.0f} ms"
+
+
+def async_local_answers_match_toggle():
+    if _async_enabled():
+        # Enabled: pre-flight rejects stream:false BEFORE any ticket call
+        # (the dead origin would answer differently — a connection refused
+        # ladder — so the exact local reject proves no contact happened).
+        status, body, elapsed = request("POST", "/async/v1/messages",
+                                        {"model": "GLM-5.3", "max_tokens": 8, "stream": False,
+                                         "messages": [{"role": "user", "content": "x"}]},
+                                        timeout=30)
+        error = json.loads(body or b"{}").get("error", {})
+        ok = (status == 400 and error.get("type") == "async_stream_required" and elapsed < 5)
+        return ok, f"stream:false pre-flight -> {status} {error.get('type')} in {elapsed * 1000:.0f} ms"
+    # Disabled: every /async POST answers the local 404-shaped error, zero
+    # upstream contact.
+    status, body, elapsed = request("POST", "/async/v1/messages",
+                                    {"model": "GLM-5.3", "max_tokens": 8, "stream": True,
+                                     "messages": [{"role": "user", "content": "x"}]},
+                                    timeout=30)
+    error = json.loads(body or b"{}").get("error", {})
+    ok = (status == 404 and error.get("type") == "not_found_error"
+          and "disabled" in error.get("message", "").lower() and elapsed < 5)
+    return ok, f"disabled surface -> {status} {error.get('type')} in {elapsed * 1000:.0f} ms"
+
+
+def async_control_plane_failure_aborts():
+    # Enabled-only: stream:true walks into the ticket orchestration, whose
+    # every control call hits the dead origin (127.0.0.1:9); the tolerance
+    # ladder (3 consecutive failures) must abort with the 529-shaped error —
+    # as a real HTTP error before the first keepalive, or as an SSE error
+    # event once keepalives opened the 200 head (dual-mode terminal).
+    if not _async_enabled():
+        return True, "surface disabled in this config — run with E2E_ASYNC_OFFPEAK=1 for the ladder"
+    status, body, elapsed = request("POST", "/async/v1/messages",
+                                    {"model": "GLM-5.3", "max_tokens": 8, "stream": True,
+                                     "messages": [{"role": "user", "content": "x"}]},
+                                    timeout=120)
+    text = body.decode("utf-8", errors="replace")
+    if status == 529:
+        error = json.loads(body or b"{}").get("error", {})
+        ok = (error.get("type") == "overloaded_error"
+              and "control plane failed" in error.get("message", ""))
+        detail = f"{status} {error.get('message', '')[:60]}"
+    else:
+        ok = (status == 200 and "overloaded_error" in text and "control plane failed" in text)
+        detail = f"200 SSE error event: {'…' if 'control plane failed' in text else text[:60]!r}"
+    return ok and elapsed < 90, f"dead control plane aborts -> {detail} in {elapsed:.1f}s"
+
+
 def cc_text():
     s = run_cc("cc_text", "Reply with exactly: PONG", "claude-sonnet-5", "")
     ok = cc_succeeded(s) and "PONG" in (s["result"] or {}).get("result", "")
@@ -252,6 +337,8 @@ def websearch():
 SCENARIOS = [
     head_probe, count_tokens_forwarded, count_tokens_local_404, malformed_body_fast,
     concurrent_same_session_isolated, identical_retry_joined, passthrough_relays_anthropic,
+    relay_dead_store_terminal, async_health_reflects_toggle, async_local_answers_match_toggle,
+    async_control_plane_failure_aborts,
     cc_text, cc_tools, cc_strip_vendor, cc_no_thinking_vendor, cc_subagents, cc_continue,
 ]
 OPT_IN = [websearch]

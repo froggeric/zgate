@@ -52,6 +52,19 @@ import Testing
         #expect(AppPaths.appSupport.deletingLastPathComponent() != liveAppSupportParent)
     }
 
+    /// `ZGATE_APP_SUPPORT_DIR` (the E2E rig / live-probe redirect) is the
+    /// highest-priority path signal — it must work without any isolation
+    /// marker, ignore empty values, and never fire for this host (which
+    /// does not set it).
+    @Test func explicitAppSupportOverrideParsing() {
+        #expect(
+            AppPaths.overrideDir(environment: ["ZGATE_APP_SUPPORT_DIR": "/tmp/rig-home"])?.path
+                == "/tmp/rig-home")
+        #expect(AppPaths.overrideDir(environment: ["ZGATE_APP_SUPPORT_DIR": ""]) == nil)
+        #expect(AppPaths.overrideDir(environment: [:]) == nil)
+        #expect(AppPaths.appSupportOverride == nil)
+    }
+
     @Test func isolationCoversCredentialStoreDefaultBase() throws {
         let isolated = try #require(AppPaths.isolatedBase)
         #expect(CredentialStore.defaultBase.path.hasPrefix(isolated.path))

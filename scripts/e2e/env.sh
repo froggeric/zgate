@@ -9,11 +9,26 @@ E2E_ROOT="${MP_E2E_ROOT:-${TMPDIR%/}/modelproxy-e2e}"
 E2E_PORT="${MP_E2E_PORT:-19090}"
 E2E_PASSTHROUGH_PORT="${MP_E2E_PASSTHROUGH_PORT:-19092}"
 E2E_BUNDLE_ID="local.zgate.mac.e2e"
-# The E2E build is not sandboxed, so AppPaths.appSupport resolves here (the App Store app uses its container).
-E2E_APP_SUPPORT="$HOME/Library/Application Support/ZGate"
+# The E2E build's own container. The app is launched with
+# ZGATE_APP_SUPPORT_DIR=$E2E_APP_SUPPORT (AppPaths' highest-priority redirect)
+# so the staged build never reads or writes the live
+# ~/Library/Application Support/ZGate — required since the non-sandboxed
+# installed build and the E2E build would otherwise share one config.json
+# (pre-2026-11-20 the rig wrote the live directory behind a marker file and
+# could not run at all next to a live install).
+E2E_APP_SUPPORT="${MP_E2E_APP_SUPPORT:-$E2E_ROOT/app-support}"
 E2E_MARKER="$E2E_APP_SUPPORT/.modelproxy-e2e"
+# Empty credential-store base handed to the app via the staged config's
+# credentialStoreBase: the relay vendor's signing chain then fails cold
+# locally (no ~/.zcode read, no zcode.z.ai traffic) — the dead-signing
+# scenario's precondition.
+E2E_CREDENTIAL_STORE="$E2E_ROOT/credential-store"
 E2E_PID_FILE="$E2E_ROOT/app.pid"
 E2E_MODEL="${MP_E2E_MODEL:-deepseek-flash}"
+# Off-peak async surface in the staged config: 1 = enabled (origin pointed
+# at a dead local port — the control-plane-failure ladder), 0 = disabled
+# (default-OFF answers). Scenario families for each state; see gen_config.py.
+E2E_ASYNC_OFFPEAK="${E2E_ASYNC_OFFPEAK:-1}"
 
 e2e_log_file() {
     echo "$E2E_APP_SUPPORT/logs/modelproxy-$(date +%F).log"

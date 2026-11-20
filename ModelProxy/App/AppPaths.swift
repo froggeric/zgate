@@ -39,7 +39,29 @@ enum AppPaths {
             || environment["XCTestConfigurationFilePath"] != nil
     }
 
+    /// Explicit app-support redirect — the HIGHEST-priority path signal.
+    /// The E2E rig and live probes launch a staged build with
+    /// `ZGATE_APP_SUPPORT_DIR=<dir>` so it reads and writes its own
+    /// container instead of the user's live
+    /// `~/Library/Application Support/ZGate` — required since the installed
+    /// build is not sandboxed either and both would otherwise share one
+    /// config.json (the rig's marker check used to be the only guard, and
+    /// it could not run at all next to a live install). Empty/unset =
+    /// live paths, exactly like before.
+    nonisolated static func overrideDir(environment: [String: String]) -> URL? {
+        guard let raw = environment["ZGATE_APP_SUPPORT_DIR"], !raw.isEmpty else { return nil }
+        return URL(fileURLWithPath: raw, isDirectory: true)
+    }
+
+    /// Resolved lazily from the process environment on the FIRST path read
+    /// (same pattern as `isolatedBase`).
+    nonisolated static let appSupportOverride: URL? =
+        overrideDir(environment: ProcessInfo.processInfo.environment)
+
     nonisolated static var appSupport: URL {
+        if let appSupportOverride {
+            return appSupportOverride
+        }
         if let isolatedBase {
             return isolatedBase.appendingPathComponent("ZGate", isDirectory: true)
         }
@@ -65,10 +87,11 @@ enum AppPaths {
     /// legacy dir is left untouched for manual inspection). Rollback to a
     /// pre-rename app re-seeds defaults — the emergency path accepts that.
     static func migrateLegacyDirIfNeeded() {
-        // An isolated test host must never move production directories
-        // (into the temp base or out of it) — the migration is a live-run
-        // one-time move only.
-        guard isolatedBase == nil else { return }
+        // An isolated test host — or an explicitly redirected launch (rig,
+        // probes) — must never move production directories (into the temp
+        // base or out of it): the migration is a live-run one-time move
+        // only.
+        guard isolatedBase == nil, appSupportOverride == nil else { return }
         let fm = FileManager.default
         guard fm.fileExists(atPath: legacyAppSupport.path),
               !fm.fileExists(atPath: appSupport.path) else { return }

@@ -49,6 +49,10 @@ Work files go to `${TMPDIR%/}/modelproxy-e2e` (override with `MP_E2E_ROOT`). A f
 | `concurrent_same_session_isolated` | same session, same messages, different system prompt → two upstream calls, no shared response |
 | `identical_retry_joined` | an identical concurrent retry still joins the in-flight call |
 | `passthrough_relays_anthropic` | an unmapped model on the passthrough client reaches Anthropic and its error comes back unmodified |
+| `relay_dead_store_terminal` | a relay vendor whose credential store is empty fails cold with the 502 signing-unavailable terminal (never unsigned, never hangs) |
+| `async_health_reflects_toggle` | `GET /async/v1/health` answers locally with the off-peak toggle as-is |
+| `async_local_answers_match_toggle` | enabled: `stream:false` is rejected pre-flight (`async_stream_required`, no ticket contact); disabled: every `/async` POST gets the local 404-shaped error |
+| `async_control_plane_failure_aborts` | enabled: a dead ticket origin (127.0.0.1:9) aborts through the 3-failure tolerance ladder with the 529-shaped error |
 | `cc_text` | plain Claude Code turn through a mapped vendor |
 | `cc_tools` | multi-turn Read / Edit / Bash with branch reuse |
 | `cc_strip_vendor` | Strip Claude-Only Request Fields removes fields and the vendor still answers |
@@ -59,11 +63,28 @@ Work files go to `${TMPDIR%/}/modelproxy-e2e` (override with `MP_E2E_ROOT`). A f
 
 The isolated config maps the Claude 5 models to DeepSeek on vendor "DeepSeek" (defaults),
 `claude-sonnet-4-6` to "DeepSeek Strip" (strip on, count tokens off) and `claude-opus-4-7` to "DeepSeek
-NoThinking". See `gen_config.py`.
+NoThinking". `claude-relay-5` maps to a relay-kind vendor whose `credentialStoreBase` points at an
+empty rig directory (dead signing chain), and the off-peak async surface is enabled with its origin
+on `127.0.0.1:9` (dead). See `gen_config.py`.
+
+The off-peak scenarios discover the toggle state through `/async/v1/health` and assert the matching
+family, so cover both halves with two runs:
+
+```bash
+scripts/e2e/up.sh && scripts/e2e/scenarios.sh --only async_health_reflects_toggle,async_local_answers_match_toggle,async_control_plane_failure_aborts && scripts/e2e/down.sh
+E2E_ASYNC_OFFPEAK=0 scripts/e2e/up.sh && scripts/e2e/scenarios.sh --only async_health_reflects_toggle,async_local_answers_match_toggle && scripts/e2e/down.sh
+```
+
+**Known gaps (2026-11-20, relay fidelity wave):** the `agent/configs` endpoint-routing origin, the
+signing-plane origin, and the fallback-key mint origin are hardcoded production constants (only
+tests inject them), so the rig cannot stub them. Fail-open mapping refresh, the degraded→edge
+serve, and the full async happy path (take → data plane → settle with live credentials) are covered
+by the unit suite (`ModelProxyTests`) — a rig pass needs configurable origins or hosts-file surgery,
+neither in scope this wave.
 
 ## Rules
 
-1. **Never test against the installed app.** The E2E build uses bundle ID `com.90percent.ModelProxy.e2e`, runs without the App Sandbox and listens on 19090 / 19092. The installed copy keeps its own container and port 9090. Without the sandbox, config and logs live in `~/Library/Application Support/ZGate`. `up.sh` creates that folder with a marker file and refuses to touch one it did not create.
+1. **Never test against the installed app.** The E2E build uses bundle ID `local.zgate.mac.e2e`, runs without the App Sandbox and listens on 19090 / 19092; the installed copy keeps its own container and port 9090. The staged build is launched with `ZGATE_APP_SUPPORT_DIR` pointing at `$E2E_ROOT/app-support` (`AppPaths`' highest-priority redirect), so its config, logs and caches live there — never in the live `~/Library/Application Support/ZGate`. `up.sh` still marker-guards that folder and refuses to touch one it did not create.
 2. **Never mix with your own Claude Code.** `cc.sh` starts from an empty environment (`env -i`) with its own `CLAUDE_CONFIG_DIR`, workspace and dummy API key. Do not run Claude Code against the E2E ports with your normal settings.
 3. **Run `down.sh` when finished.** `config.json` holds the keys in plaintext, and `capture/` holds full prompts.
 4. **Web search spends real quota.** Google Custom Search's free tier is 100 queries a day. Before the bridge fix, one failing run retried 12+ times and used it all up. Keep `--websearch` opt-in, run it once, and trust the watchdog.
