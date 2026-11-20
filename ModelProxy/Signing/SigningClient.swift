@@ -259,16 +259,6 @@ actor SigningClient {
         return try await build.value
     }
 
-    /// Relay headers carrying the minted project token — both from the same
-    /// source (Task 1: `authorization` = "Bearer " + token, `x-api-key` = raw).
-    func relayAuthHeaders() async throws -> [String: String] {
-        let session = try await ensureSession()
-        return [
-            "authorization": "Bearer \(session.projectToken)",
-            "x-api-key": session.projectToken,
-        ]
-    }
-
     /// Task 5 calls this on a relay 401. Two consecutive rejects move the
     /// client to `needsRehandshake` (the next `ensureSession` rebuilds).
     func noteRelayRejection() {

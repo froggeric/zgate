@@ -439,23 +439,6 @@ struct SigningClientTests {
         expectUnsealFailure("not base64", projectToken: token, apiKeyId: ChainFixtures.apiKeyId, cipherB64: "!!!!")
     }
 
-    // MARK: - Relay auth headers (AC: source-of-value mapping)
-
-    @Test func relayAuthHeadersMapProjectTokenToBothHeaders() async throws {
-        let mock = SigningMock()
-        installMock(mock)
-        let directory = try makeTempDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let client = try await makeBuiltClient(cacheDirectory: directory, mock: mock)
-        let session = try await client.ensureSession()
-        let headers = try await client.relayAuthHeaders()
-
-        #expect(headers["authorization"] == "Bearer \(session.projectToken)")
-        #expect(headers["x-api-key"] == session.projectToken)
-        #expect(headers.count == 2)
-    }
-
     // MARK: - Reject ladder (AC: two consecutive 401s → needsRehandshake)
 
     @Test func twoConsecutiveRejectsNeedRehandshakeThenRecover() async throws {
