@@ -227,7 +227,7 @@ final class OffPeakAvailabilityMonitor: @unchecked Sendable {
 **Acceptance Criteria:**
 - [ ] `enum VendorKind` gains `case offPeak` (rawValue `"offPeak"`) with a why-first doc comment: ticket-plane target, configured API key unused, origin comes from `OffPeakConfig`.
 - [ ] Migration 11 in `ConfigStore`'s migration chain: FIRST application only (gated by `offPeakVendorSeeded`): if no vendor with `vendorKind == .offPeak` exists, append one; set the marker. Second application with the marker set does nothing — including NOT resurrecting a user-deleted row.
-- [ ] Seeded row: `Vendor(name: "ZCode Off-Peak", baseURL: OffPeakConfig.defaultOrigin, apiKey: "", connectTimeoutSeconds: 15, readTimeoutSeconds: 4500, supportsThinkingBlocks: true, stripsClaudeOnlyRequestFields: true, applyGLMCanonicalization: true, vendorKind: .offPeak)` (read timeout = `maxWaitMinutes` 60 × 60 + 30 min headroom, matching the async plane's bound in `OffPeakTarget.swift:72`).
+- [ ] Seeded row: `Vendor(name: "ZCode Off-Peak", baseURL: OffPeakConfig.defaultOrigin, apiKey: "", connectTimeoutSeconds: 15, readTimeoutSeconds: 5400, supportsThinkingBlocks: true, stripsClaudeOnlyRequestFields: true, applyGLMCanonicalization: true, vendorKind: .offPeak)` (read timeout = `maxWaitMinutes` 60 × 60 + 30 min headroom = 5400 s, matching the async plane's bound in `OffPeakTarget.swift:72`).
 - [ ] `RoutingSnapshot(from:for:)` resolves a rule whose `targetVendorID` is the off-peak vendor to a `RouteTarget` with `vendorKind == .offPeak` and the rule's `targetModel` — no snapshot code change expected (it copies `vendor.vendorKind` at :169); the test pins the flow.
 - [ ] A rule whose off-peak vendor row was deleted is skipped by the snapshot (existing guard at RoutingSnapshot.swift:150) — pinned by test.
 - [ ] Decoding a legacy config without `offPeakVendorSeeded` defaults the marker false; encoding omits it when false (mirror the `fallbackEdgeSeeded` wire shape).
@@ -283,7 +283,7 @@ if !config.offPeakVendorSeeded {
             baseURL: OffPeakConfig.defaultOrigin,
             apiKey: "",
             connectTimeoutSeconds: 15,
-            readTimeoutSeconds: 4500,
+            readTimeoutSeconds: 5400,
             supportsThinkingBlocks: true,
             stripsClaudeOnlyRequestFields: true,
             applyGLMCanonicalization: true,
