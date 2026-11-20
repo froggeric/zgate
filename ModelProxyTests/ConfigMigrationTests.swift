@@ -626,7 +626,7 @@ extension ConfigMigrationTests {
         #expect(seeded.baseURL == OffPeakConfig.defaultOrigin)
         #expect(seeded.apiKey.isEmpty)  // ticket plane: auth is the plan-JWT chain, not a stored key
         #expect(seeded.connectTimeoutSeconds == 15)
-        #expect(seeded.readTimeoutSeconds == 4500)  // the async plane's long-wait bound
+        #expect(seeded.readTimeoutSeconds == 5400)  // maxWait 60 min × 60 + 30 min headroom (OffPeakTarget's data-plane bound)
         // Seeding is inert: no rule gains the vendor as target or backup —
         // the row changes no routing until the user attaches it to a rule.
         #expect(once.modelMappings.allSatisfy {

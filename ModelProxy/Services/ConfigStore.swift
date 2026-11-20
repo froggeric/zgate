@@ -290,7 +290,7 @@ final class ConfigStore {
                     baseURL: OffPeakConfig.defaultOrigin,
                     apiKey: "",
                     connectTimeoutSeconds: 15,
-                    readTimeoutSeconds: 4500,
+                    readTimeoutSeconds: 5400,
                     supportsThinkingBlocks: true,
                     stripsClaudeOnlyRequestFields: true,
                     applyGLMCanonicalization: true,
