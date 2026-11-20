@@ -224,17 +224,22 @@ final class ConfigStore {
                 }
             }
         }
-        // Migration 9 (relay fidelity wave, 2026-11-20): repin the relay
-        // vendor from the RESOLVED ultra URL to the CLI's baked-in
-        // PRE-routing URL — endpoint routing (agent/configs) now maps
-        // zcode-plan → the live ultra target per request, exactly like the
-        // official CLI. Exact-value gate: only the old default rewrites, a
-        // user-edited URL survives; idempotent by construction (the new
-        // value never matches the gate again).
+        // Migration 9 (relay fidelity wave 2026-11-20; REVERTED same day by
+        // live probe A): the wave first repinned the relay vendor from the
+        // RESOLVED ultra URL to the CLI's baked-in PRE-routing URL
+        // (zcode-plan), expecting agent/configs to map it per request. The
+        // live probe showed the server's mapping table carries NO
+        // zcode-plan entry (its entries map the PUBLIC api hosts —
+        // api.z.ai/api/anthropic and open.bigmodel.cn/api/anthropic — INTO
+        // the relay), so a zcode-plan-pinned vendor fails open to its own
+        // URL and the relay 401-rejects it deterministically; the identical
+        // signed request against ultra-zai answers 200. This migration now
+        // HEALS any config the reverted build repinned: exact-value gate,
+        // user-edited URLs survive, idempotent by construction.
         for i in config.vendors.indices
         where config.vendors[i].vendorKind == .relay
-            && config.vendors[i].baseURL == "https://zcode.z.ai/api/v1/ultra-zai/anthropic" {
-            config.vendors[i].baseURL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
+            && config.vendors[i].baseURL == "https://zcode.z.ai/api/v1/zcode-plan/anthropic" {
+            config.vendors[i].baseURL = "https://zcode.z.ai/api/v1/ultra-zai/anthropic"
         }
         // Migration 10 (relay fidelity Task 7, 2026-11-20; run-once per
         // controller ruling fix round 1): the unsigned API-key fallback

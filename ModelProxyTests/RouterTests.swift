@@ -551,7 +551,7 @@ struct RouterTests {
         let vendors = try #require(json["vendors"] as? [[String: Any]])
         #expect(vendors.count == 3)
         let relay = try #require(vendors.first { ($0["name"] as? String) == "zcode relay" })
-        #expect(relay["baseURL"] as? String == "https://zcode.z.ai/api/v1/zcode-plan/anthropic")
+        #expect(relay["baseURL"] as? String == "https://zcode.z.ai/api/v1/ultra-zai/anthropic")
         #expect(relay["vendorKind"] as? String == "relay")
         #expect(relay["apiKey"] as? String == "")
         let splash = try #require(vendors.first { ($0["name"] as? String) == "splash (local)" })

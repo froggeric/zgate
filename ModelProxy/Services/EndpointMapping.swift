@@ -7,8 +7,11 @@ import Foundation
 /// or malformed `agent/configs` response must never half-apply. `resolve`
 /// then matches a request URL whose origin (scheme/host/port, 443 default)
 /// equals the entry's and whose path equals `from`'s or extends it at a
-/// segment boundary (the CLI's prefix rewrite: `…/zcode-plan/anthropic`
-/// maps `…/zcode-plan/anthropic/v1/messages` → `…/ultra-zai/anthropic/v1/messages`,
+/// segment boundary (the CLI's prefix rewrite — live table 2026-11-20:
+/// `https://api.z.ai/api/anthropic/v1/messages` maps to
+/// `https://zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages`, and
+/// `open.bigmodel.cn/api/anthropic` to the `ultra` target; the wave's
+/// zcode-plan pin was reverted after the live table showed no such entry),
 /// query preserved). No match → nil; the caller serves the original URL
 /// (fail-open).
 struct EndpointMapping: Equatable, Sendable {

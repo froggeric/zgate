@@ -304,14 +304,17 @@ extension AppConfig {
     /// the signing chain), splash is a local server.
     static func makeZGateDefaultRouting(_ config: AppConfig) -> AppConfig {
         var config = config
-        // PRE-routing URL (relay fidelity wave, 2026-11-20): the CLI's own
-        // provider table pins zcode-plan/anthropic and lets agent/configs
-        // map it to the live ultra target at request time. 2.9 and earlier
-        // pinned the RESOLVED ultra-zai URL; ConfigStore migration 9 repins
-        // existing installs.
+        // Relay pin (relay fidelity wave, 2026-11-20, probe-A outcome): the
+        // wave first moved the default to the CLI's pre-routing URL
+        // (zcode-plan/anthropic) expecting agent/configs to map it per
+        // request — the live probe showed the server's mapping table has no
+        // zcode-plan entry and the relay 401s that URL, while ultra-zai
+        // (a live mapping `to` value) answers 200 with the same signed
+        // face. The RESOLVED ultra URL stays the pin; ConfigStore
+        // migration 9 heals any config the reverted build repinned.
         let relay = Vendor(
             name: "zcode relay",
-            baseURL: "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
+            baseURL: "https://zcode.z.ai/api/v1/ultra-zai/anthropic",
             apiKey: "",
             connectTimeoutSeconds: 10,
             readTimeoutSeconds: 300,
