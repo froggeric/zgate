@@ -27,7 +27,6 @@
     "x-client-sig": "WmlqI/xkdxnwW+gSQ9…+0Bw==(88)",
     "x-client-nonce": "742c139a89c9c5840e…43af3c(32)",
     "x-app-id": "zcode",
-    "x-client-pow": "fa84a05fe5801bc23b…000063(32)",
-    "x-api-key": "eyJ0eXAiOiJKV1QiLC…IIHVqM(463)"
+    "x-client-pow": "fa84a05fe5801bc23b…000063(32)"
   }
 }

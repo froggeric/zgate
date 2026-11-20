@@ -7,6 +7,12 @@ wire evidence: `docs/signing-notes.md` § "Task-11 live probes"). Everything
 here is relay-path behavior — mapped vendors (DeepSeek-style) and passthrough
 clients are untouched.
 
+The relay request face is CLI-faithful and **Authorization-only**: the
+project token rides `authorization: Bearer …` plus the V4 signing quartet
+when signed — `x-api-key` is never sent on the relay plane (live-verified
+2026-11-20, probe B; the fallback edge vendor keeps its own `x-api-key`
+auth on its separate plane).
+
 ## The five documented routing-compatibility transforms
 
 The relay path performs exactly these request transforms (documented

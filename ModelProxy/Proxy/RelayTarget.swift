@@ -954,7 +954,10 @@ enum RelayTarget {
 
     /// The complete relay header set, built from scratch (client headers are
     /// never forwarded) in the official CLI 0.17.1 wire order (undici/HTTP 1.1
-    /// is order-preserving). Auth always rides along; `signed == false` (the
+    /// is order-preserving). Auth is Authorization-only — `authorization:
+    /// Bearer <project token>` plus, when signed, the V4 quartet; `x-api-key`
+    /// is never sent on the relay face (probe-B flip, live-verified
+    /// 2026-11-20). `signed == false` (the
     /// fail-open attempt) omits the signer's whole static block (`x-client-ts`
     /// /`-version`/`-sig`/`-nonce`, `x-app-id`, `x-client-pow`). A non-nil
     /// `zcodeAuthorization` (endpoint routing flagged this request) adds the
@@ -1025,7 +1028,11 @@ enum RelayTarget {
             headers.add(name: "x-app-id", value: appId)
             headers.add(name: "x-client-pow", value: pow.value)
         }
-        headers.add(name: "x-api-key", value: session.projectToken)
+        // No `x-api-key` on the relay face (probe B flip, 2026-11-20):
+        // live-verified that `authorization: Bearer <project token>` + the
+        // V4 quartet alone answers 200 — the CLI-faithful face carries the
+        // token once. The fallback vendor's `executeUpstream` path keeps
+        // its own `x-api-key` auth (different plane, untouched).
         return headers
     }
 

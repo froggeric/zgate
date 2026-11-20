@@ -632,7 +632,8 @@ struct RelayTargetTests {
 
         let headers = request.headers
         // Static identity set — byte-identical to the regenerated CLI-face
-        // fixture (`v3-relay-request.json`, 27 headers in wire order).
+        // fixture (`v3-relay-request.json`, 26 headers in wire order since
+        // the probe-B flip dropped `x-api-key`).
         #expect(headers["user-agent"] == "ZCode/0.17.1 ai-sdk/anthropic/3.0.81")
         #expect(headers["anthropic-beta"] == "mid-conversation-system-2026-04-07")
         #expect(headers["anthropic-version"] == "2023-06-01")
@@ -661,10 +662,12 @@ struct RelayTargetTests {
         #expect(osVersionHeader == Self.liveUnameRelease)
         #expect(osVersionHeader =~ "^\\d+\\.\\d+\\.\\d+$")
 
-        // Auth: the synthetic session token in both headers.
+        // Auth: the synthetic session token rides Authorization only —
+        // `x-api-key` is never sent on the relay face (probe-B flip,
+        // live-verified 2026-11-20: Bearer + V4 quartet alone answers 200).
         let session = try await context.signingClient.ensureSession()
         #expect(headers["authorization"] == "Bearer \(session.projectToken)")
-        #expect(headers["x-api-key"] == session.projectToken)
+        #expect(headers["x-api-key"] == nil)
 
         // Volatile quartet: shape + binding.
         let ts = try #require(headers["x-client-ts"])
@@ -708,7 +711,8 @@ struct RelayTargetTests {
     /// this pins the real insertion sequence, not a sorted set). The signer's
     /// static block (`x-client-ts/-version/-sig/-nonce`, `x-app-id`,
     /// `x-client-pow`) is gated on `signed` exactly like the official
-    /// `sendSigned` path; `x-api-key` stays this wave (Task 9 probe decides).
+    /// `sendSigned` path; no `x-api-key` anywhere (probe-B flip — the
+    /// Authorization bearer + quartet alone is the accepted face).
     @Test func relayHeadersMatchCLIWireOrder() throws {
         let session = SigningSession(
             projectToken: Fixtures.projectToken,
@@ -736,15 +740,15 @@ struct RelayTargetTests {
         let signed = try RelayTarget.relayHeaders(
             session: session, signed: true,
             identity: RelayTarget.SessionIdentity(id: "sid", type: "main"))
-        #expect(signed.map { $0.name } == identity + signer + ["x-api-key"])
+        #expect(signed.map { $0.name } == identity + signer)
         #expect(signed["user-agent"] == ["ZCode/0.17.1 ai-sdk/anthropic/3.0.81"])
 
-        // Unsigned fail-open attempt: identity + auth only — the signer block
+        // Unsigned fail-open attempt: identity only — the signer block
         // is the CLI signer's, so it never rides an unsigned request.
         let unsigned = try RelayTarget.relayHeaders(
             session: session, signed: false,
             identity: RelayTarget.SessionIdentity(id: "sid", type: "main"))
-        #expect(unsigned.map { $0.name } == identity + ["x-api-key"])
+        #expect(unsigned.map { $0.name } == identity)
 
         // The Task 1 routing header rides immediately after `authorization`
         // (it is ZGate's, not part of the CLI static face).
@@ -757,7 +761,7 @@ struct RelayTargetTests {
             var names = identity
             names.insert("x-zcode-authorization", at: names.firstIndex(of: "authorization")! + 1)
             return names
-        }() + signer + ["x-api-key"])
+        }() + signer)
     }
 
     // MARK: - Configured client version (relay fidelity Task 4:

@@ -119,10 +119,14 @@ to the mint. `z/login` itself fires on every invocation, using the store `access
 `ModelProxyTests/Fixtures/v3-relay-request.json` (plan path
 `Tests/ZGateTests/Fixtures/v3-relay-request.json`): url/method/headers of the official CLI
 0.17.1 wire face, regenerated 2026-11-20 (relay-fidelity Task 2) to the exact CLI insertion
-order, 27 headers. Value policy: credential-bearing headers (`authorization`, `x-api-key`,
-`x-client-sig`) and per-request IDs/nonces keep the wire.log capture's already-truncated forms
-(≤28 chars, length suffix preserved — the `(463)`/`(470)`/`(88)` lengths are the observed
-plan-token/sig lengths Tasks 4–5 need). Whitelisted non-credential headers are full values.
+order, **26 headers since the probe-B flip (fix round 1, 2026-11-20): `x-api-key` removed —
+the CLI-faithful relay face carries the project token once, in `authorization` only
+(live-verified: Bearer + V4 quartet alone answers 200; see § Task-11 probes). The fallback
+vendor's `executeUpstream` keeps its own `x-api-key` auth — different plane.** Value policy:
+credential-bearing headers (`authorization`, `x-client-sig`) and per-request IDs/nonces keep
+the wire.log capture's already-truncated forms (≤28 chars, length suffix preserved — the
+`(463)`/`(470)`/`(88)` lengths are the observed plan-token/sig lengths Tasks 4–5 need).
+Whitelisted non-credential headers are full values.
 
 - Header order (the fixture object lists them in this order; undici/HTTP 1.1 preserves it):
   `content-type`, `anthropic-version`, `authorization`, `http-referer`, `user-agent`,
@@ -130,7 +134,7 @@ plan-token/sig lengths Tasks 4–5 need). Whitelisted non-credential headers are
   `x-platform`, `x-os-category`, `x-os-version`, `x-request-id`, `x-zcode-session-type`,
   `x-zcode-trace-id`, `x-query-id`, `x-zcode-query-source`, `x-session-id`, `anthropic-beta`,
   then the signer block `x-client-ts`, `x-client-version`, `x-client-sig`, `x-client-nonce`,
-  `x-app-id`, `x-client-pow`, then `x-api-key`. ZGate additionally inserts its Task-1 routing
+  `x-app-id`, `x-client-pow`. ZGate additionally inserts its Task-1 routing
   header `x-zcode-authorization` immediately after `authorization` when endpoint routing flags
   it (ZGate's own, not part of the CLI face).
 - `anthropic-beta` recovered **byte-exact** from the bundle literal
@@ -227,13 +231,14 @@ configs. Also observed: the first cold signing chain WITHOUT the live
 (the app's own cache, copied not printed) into the probe app-support lets the
 chain complete; the relay then accepts the face.
 
-**Probe B (Authorization-only) — SAFE TO DROP (flip decision left to the
-controller; NOT committed).** Same staged build, env-gated removal of
-`x-api-key` in the throwaway relayHeaders (headers.remove after the add):
-HTTP 200 in 1.7 s against ultra-zai with `authorization: Bearer <project
-token>` + the V4 quartet only. Both headers stay in the committed code today;
-the fixtures/tests pin x-api-key KEPT, so flipping is a deliberate follow-up
-(not done by the probe).
+**Probe B (Authorization-only) — SAFE TO DROP, and DROPPED (flip applied in
+fix round 1 per the plan's Task-2 pre-authorization).** Same staged build,
+env-gated removal of `x-api-key` in the throwaway relayHeaders
+(headers.remove after the add): HTTP 200 in 1.7 s against ultra-zai with
+`authorization: Bearer <project token>` + the V4 quartet only. The committed
+face is now Authorization-only (fixture 27→26 headers, order/statics tests
+and this file's enumeration updated); the fallback vendor's separate
+`x-api-key` auth is untouched.
 
 **Probe C (fallback edge round-trip) — mint deferred to first real fallback
 serve.** The live config carries no edge-vendor API key (none existed to read;
