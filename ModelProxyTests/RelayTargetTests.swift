@@ -2137,6 +2137,105 @@ struct RelayTargetTests {
         #expect(quota.polls == 0)
     }
 
+    // MARK: - Ladder bounds (fix round 1: no re-entry from inside a retry ladder)
+
+    @Test func rateLimitCarrierOnNon429StatusCannotLoopTheLadder() async throws {
+        // Adversarial carrier: HTTP 400 + {"code":1302} forever. The entry
+        // classification starts the single-backoff-retry policy once; the
+        // retry's re-classified carrier must be TERMINAL — bounded at
+        // exactly 2 upstream requests, client gets the rate-limit fallback.
+        let carrier = MockRelayServer.Script.json(
+            ["code": 1302, "msg": "rate limited"], status: 400)
+        let relay = MockRelayServer(scripts: Array(repeating: carrier, count: 12))
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "loop1302")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        context.rateLimitBackoff = 0.05
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-loop1302")
+        guard case .rateLimitedAfterRetry = outcome else {
+            Issue.record("expected rateLimitedAfterRetry, got \(outcome)")
+            return
+        }
+        // Exactly initial + one backoff retry — a looping carrier buys no
+        // further ladders (12 scripted carriers would otherwise all burn).
+        #expect(relay.requestCount == 2)
+    }
+
+    @Test func concurrencyCarrierOnNon200StatusCannotLoopTheLadder() async throws {
+        // Adversarial carrier inside the concurrency ladder: entry 429 +
+        // {"code":3009}, every retry answered HTTP 400 + {"code":3008}. The
+        // re-classified concurrency carrier must be TERMINAL — bounded at
+        // exactly 2 upstream requests, client gets the fallback outcome.
+        let entry = MockRelayServer.Script.json(
+            ["code": 3009, "msg": "concurrent limit"], status: 429)
+        let carrier = MockRelayServer.Script.json(
+            ["code": 3008, "msg": "concurrent limit"], status: 400)
+        let relay = MockRelayServer(scripts: [entry] + Array(repeating: carrier, count: 12))
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "loop3008")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sleeper = SleepRecorder()
+        context.concurrencySleeper = { delay in sleeper.record(delay) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-loop3008")
+        guard case .concurrencyLimitedAfterRetries = outcome else {
+            Issue.record("expected concurrencyLimitedAfterRetries, got \(outcome)")
+            return
+        }
+        // Entry + first concurrency retry only: the 400+3008 carrier ends
+        // the ladder instead of spawning a fresh 2-attempt one per cycle.
+        #expect(relay.requestCount == 2)
+        #expect(sleeper.delays.count == 1)
+    }
+
+    @Test func concurrencyEnvelopeInsideRateLimitLadderIsTerminal() async throws {
+        // Mixed carriers: entry 429 + {"code":1302} starts the rate-limit
+        // policy; its retry answers 200 + {"code":3008}. The envelope's
+        // concurrency class must be TERMINAL inside the rate-limit ladder —
+        // no fresh concurrency ladder from within a retry.
+        let entry = MockRelayServer.Script.json(
+            ["code": 1302, "msg": "rate limited"], status: 429)
+        let envelope = MockRelayServer.Script.json(
+            ["code": 3008, "msg": "concurrent limit"], status: 200)
+        let relay = MockRelayServer(scripts: [entry, envelope, envelope, envelope])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "mix3008")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        context.rateLimitBackoff = 0.05
+        let sleeper = SleepRecorder()
+        context.concurrencySleeper = { delay in sleeper.record(delay) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-mix3008")
+        guard case .concurrencyLimitedAfterRetries = outcome else {
+            Issue.record("expected concurrencyLimitedAfterRetries, got \(outcome)")
+            return
+        }
+        #expect(relay.requestCount == 2)      // entry + rate-limit retry only
+        #expect(sleeper.delays.isEmpty)       // no concurrency ladder spawned
+    }
+
     // MARK: - Endpoint routing (agent/configs, relay fidelity Task 1)
 
     /// EndpointResolving stub: rewrites the `from` prefix to `to` (keeping

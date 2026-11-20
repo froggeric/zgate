@@ -408,7 +408,7 @@ enum RelayTarget {
                 kind: RelayErrorTaxonomy.classify(error), error: error, rewrapped: rewrapped,
                 session: session, signed: signed, head: head, identity: identity,
                 wireBody: wireBody, target: target, httpClient: httpClient,
-                context: context, requestID: requestID)
+                context: context, requestID: requestID, retriesAllowed: true)
         }
     }
 
@@ -442,7 +442,7 @@ enum RelayTarget {
                 kind: kind, error: error, rewrapped: rewrapped,
                 session: session, signed: signed, head: head, identity: identity,
                 wireBody: wireBody, target: target, httpClient: httpClient,
-                context: context, requestID: requestID)
+                context: context, requestID: requestID, retriesAllowed: true)
         }
     }
 
@@ -466,11 +466,16 @@ enum RelayTarget {
             kind: RelayErrorTaxonomy.classify(error), error: error, rewrapped: rewrapped,
             session: session, signed: signed, head: head, identity: identity,
             wireBody: wireBody, target: target, httpClient: httpClient,
-            context: context, requestID: requestID)
+            context: context, requestID: requestID, retriesAllowed: true)
     }
 
-    /// Remediation by failure class — the taxonomy's whole point. Every
-    /// classified dead end lands here exactly once.
+    /// Remediation by failure class — the taxonomy's whole point. ENTRY
+    /// positions (`retriesAllowed == true`: the first classification of a
+    /// fresh send) may start the rate-limit or concurrency ladder; INSIDE a
+    /// retry ladder (`false`) those two classes resolve terminally instead —
+    /// a carrier flipping between shapes (400+1302, then 429+3009, ...) must
+    /// never buy fresh retry ladders, so the exchange stays bounded no
+    /// matter what the upstream answers.
     private static func handleClassifiedFailure(
         kind: RelayFailureKind,
         error: RelayUpstreamError,
@@ -483,7 +488,8 @@ enum RelayTarget {
         target: RoutingSnapshot.RouteTarget,
         httpClient: HTTPClient,
         context: Context,
-        requestID: String
+        requestID: String,
+        retriesAllowed: Bool
     ) async -> Outcome {
         switch kind {
         case .quotaExhausted:
@@ -495,13 +501,18 @@ enum RelayTarget {
             await context.quota?.pollNow()
             return .quotaExhausted(reason)
         case .rateLimited:
-            // A classified rate limit (1302/1303) rides the existing policy
-            // unchanged: one backoff retry, then the caller's fallback.
+            // Entry: a classified rate limit (1302/1303) rides the existing
+            // policy unchanged — one backoff retry, then the caller's
+            // fallback. Inside a retry ladder: terminal, no re-entry.
+            guard retriesAllowed else { return .rateLimitedAfterRetry }
             return await handleRateLimited(
                 response: rewrapped, head: head, identity: identity, wireBody: wireBody, target: target,
                 httpClient: httpClient, session: session, signed: signed,
                 context: context, requestID: requestID)
         case .concurrencyLimited:
+            // Entry: up to 2 in-place retries. Inside a retry ladder:
+            // terminal, no re-entry (a fresh ladder per cycle would loop).
+            guard retriesAllowed else { return .concurrencyLimitedAfterRetries }
             return await handleConcurrencyLimited(
                 session: session, signed: signed, head: head, identity: identity,
                 wireBody: wireBody, target: target, httpClient: httpClient,
@@ -526,9 +537,11 @@ enum RelayTarget {
     /// on the same target — 3 s then 6 s, each ±1 s jitter through the
     /// injectable sleeper — then the caller's fallback decision (backup
     /// rule or 529). Mid-ladder answers that are NOT still
-    /// concurrency-limited route back through the taxonomy; a 200 still
-    /// carrying a concurrency code burns the attempt (no re-entry — a
-    /// looping upstream cannot drive unbounded nesting).
+    /// concurrency-limited resolve terminally through the taxonomy (no
+    /// re-entry into this ladder or the rate-limit ladder — a 200 carrying
+    /// a concurrency code burns the attempt, and a non-200 carrier with a
+    /// concurrency/rate-limit code cannot spawn fresh ladders per cycle —
+    /// so a looping upstream cannot drive unbounded nesting).
     private static func handleConcurrencyLimited(
         session: SigningSession,
         signed: Bool,
@@ -561,7 +574,8 @@ enum RelayTarget {
                             kind: RelayErrorTaxonomy.classify(envelopeError), error: envelopeError,
                             rewrapped: envelopeRewrapped, session: session, signed: signed, head: head,
                             identity: identity, wireBody: wireBody, target: target,
-                            httpClient: httpClient, context: context, requestID: requestID)
+                            httpClient: httpClient, context: context, requestID: requestID,
+                            retriesAllowed: false)
                     }
                 case 401:
                     return await handleReject(
@@ -574,23 +588,31 @@ enum RelayTarget {
                     case .concurrencyLimited:
                         continue  // next backoff
                     case .rateLimited, .unclassified:
-                        return await handleRateLimited(
-                            response: retryRewrapped, head: head, identity: identity,
-                            wireBody: wireBody, target: target, httpClient: httpClient,
-                            session: session, signed: signed, context: context, requestID: requestID)
+                        // No re-entry into the rate-limit ladder from inside
+                        // this one: a rate-limit answer mid-ladder is
+                        // terminal (the caller's fallback).
+                        return .rateLimitedAfterRetry
                     case .quotaExhausted, .riskControl,
                         .captchaChallenge, .modelNotAllowed, .invalidParameter:
                         return await handleClassifiedFailure(
                             kind: RelayErrorTaxonomy.classify(retryError), error: retryError,
                             rewrapped: retryRewrapped, session: session, signed: signed, head: head,
                             identity: identity, wireBody: wireBody, target: target,
-                            httpClient: httpClient, context: context, requestID: requestID)
+                            httpClient: httpClient, context: context, requestID: requestID,
+                            retriesAllowed: false)
                     }
                 default:
-                    return await handleOtherStatus(
-                        response: retry, session: session, signed: signed, head: head,
+                    // No ladder re-entry: a non-200 carrier with a
+                    // concurrency code (e.g. HTTP 400 + {"code":3008})
+                    // resolves terminally here — it must not spawn a fresh
+                    // 2-attempt ladder per cycle.
+                    let (error, rewrapped) = await drainErrorBody(retry)
+                    return await handleClassifiedFailure(
+                        kind: RelayErrorTaxonomy.classify(error), error: error, rewrapped: rewrapped,
+                        session: session, signed: signed, head: head,
                         identity: identity, wireBody: wireBody, target: target,
-                        httpClient: httpClient, context: context, requestID: requestID)
+                        httpClient: httpClient, context: context, requestID: requestID,
+                        retriesAllowed: false)
                 }
             } catch {
                 return .transportFailed(String(describing: error))
@@ -687,7 +709,10 @@ enum RelayTarget {
     /// any status): one backoff retry on the same target; a second
     /// rate-limit answer moves the decision to the caller (next-rule
     /// fallback or 529). The policy itself is unchanged from the
-    /// pre-taxonomy ladder — classification only decides who enters it.
+    /// pre-taxonomy ladder — classification only decides who enters it, and
+    /// nothing inside this ladder (retry envelopes, non-200 carriers) may
+    /// re-enter it or the concurrency ladder: classified failures inside a
+    /// retry are terminal.
     private static func handleRateLimited(
         response: HTTPClientResponse,
         head: HTTPRequestHead,
@@ -710,23 +735,20 @@ enum RelayTarget {
                 session: session, signed: signed, context: context, requestID: requestID)
             switch Int(retry.status.code) {
             case 200..<300:
-                // The 200-envelope check applies to the retry too — but a
-                // 200 still carrying a rate-limit code is TERMINAL here (no
-                // re-entry: the ladder stays bounded).
+                // The 200-envelope check applies to the retry too, but its
+                // classified failures resolve terminally (retriesAllowed:
+                // false) — a rate-limit/concurrency carrier under a 200 must
+                // not spawn fresh ladders from inside this one.
                 switch await checkSuccess(retry) {
                 case .plain(let relayable):
                     await context.signingClient.noteRelaySuccess(signed: signed)
                     return .responded(relayable)
                 case .envelope(let error, let rewrapped):
-                    let kind = RelayErrorTaxonomy.classify(error)
-                    if kind == .rateLimited {
-                        return .rateLimitedAfterRetry
-                    }
                     return await handleClassifiedFailure(
-                        kind: kind, error: error, rewrapped: rewrapped,
+                        kind: RelayErrorTaxonomy.classify(error), error: error, rewrapped: rewrapped,
                         session: session, signed: signed, head: head, identity: identity,
                         wireBody: wireBody, target: target, httpClient: httpClient,
-                        context: context, requestID: requestID)
+                        context: context, requestID: requestID, retriesAllowed: false)
                 }
             case 401:
                 return await handleReject(
@@ -736,10 +758,15 @@ enum RelayTarget {
             case 429:
                 return .rateLimitedAfterRetry
             default:
-                return await handleOtherStatus(
-                    response: retry, session: session, signed: signed, head: head,
-                    identity: identity, wireBody: wireBody, target: target,
-                    httpClient: httpClient, context: context, requestID: requestID)
+                // No ladder re-entry: a non-429/non-200 carrier (e.g. HTTP
+                // 400 + {"code":1302} forever) classifies here and resolves
+                // terminally — handleOtherStatus is entry-only.
+                let (error, rewrapped) = await drainErrorBody(retry)
+                return await handleClassifiedFailure(
+                    kind: RelayErrorTaxonomy.classify(error), error: error, rewrapped: rewrapped,
+                    session: session, signed: signed, head: head, identity: identity,
+                    wireBody: wireBody, target: target, httpClient: httpClient,
+                    context: context, requestID: requestID, retriesAllowed: false)
             }
         } catch {
             return .transportFailed(String(describing: error))
