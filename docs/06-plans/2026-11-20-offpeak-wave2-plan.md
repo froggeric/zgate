@@ -22,7 +22,7 @@
 - **Test suite must stay green** (baseline 772 tests). Two known flake classes: RouterTests port-race and OffPeakTargetTests under load — re-run solo before blaming a change (wave-1 history).
 - **Verification never touches the user's Claude Code config or the installed app.** Live behavior checks use the E2E harness (`scripts/e2e/`) or a fresh build in DerivedData — never `~/.claude` and never the running ZGate.
 - `ProxyServer.updateRouting` (ModelProxy/Proxy/ProxyServer.swift:541) already hot-pushes `config.offPeak` into the live context via `offPeakContext?.updateConfiguration` — enable/disable already applies without restart on the next request. Do NOT rebuild the context on config change; only the monitor start/stop is new.
-- Conventions: os_log via `AppLog.proxy`, comments in the surrounding style (dense, why-first), commits follow the repo's `feat:/fix:/docs:` style. Test files live in `ModelProxyTests/`, suite prefix `ModelProxyTests/` in `-only-testing` filters.
+- Conventions: os_log via `AppLog.proxy`, comments in the surrounding style (dense, why-first), commits follow the repo's `feat:/fix:/docs:` style. Test files live in `ModelProxyTests/`, suites run under the `ZGateTests` target — `-only-testing:ZGateTests/<Suite>`, NOT `ModelProxyTests/` (matches no target).
 
 **User decisions (already made):**
 
@@ -59,7 +59,7 @@
 - [ ] `displayString`: idle → "Off", open → "Window open", closedUntil → "Closed until HH:mm" (via `date.formatted(date: .omitted, time: .shortened)` — Sendable, no DateFormatter cache), unavailable → "Unavailable (…)".
 - [ ] Cancellation (`stop()` during injected sleep) exits the loop cleanly — no status overwrite after stop.
 
-**Verify:** `xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ModelProxyTests/OffPeakAvailabilityMonitorTests` → all pass.
+**Verify:** `xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ZGateTests/OffPeakAvailabilityMonitorTests` → all pass.
 
 **Steps:**
 
@@ -232,7 +232,7 @@ final class OffPeakAvailabilityMonitor: @unchecked Sendable {
 - [ ] A rule whose off-peak vendor row was deleted is skipped by the snapshot (existing guard at RoutingSnapshot.swift:150) — pinned by test.
 - [ ] Decoding a legacy config without `offPeakVendorSeeded` defaults the marker false; encoding omits it when false (mirror the `fallbackEdgeSeeded` wire shape).
 
-**Verify:** `xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ModelProxyTests/ConfigMigrationTests` → all pass, including the two new tests.
+**Verify:** `xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ZGateTests/ConfigMigrationTests` → all pass, including the two new tests.
 
 **Steps:**
 
@@ -293,7 +293,7 @@ if !config.offPeakVendorSeeded {
 }
 ```
 
-- [ ] **Step 4: Run** → PASS (new + existing ConfigMigrationTests). Also run `-only-testing:ModelProxyTests/RouterTests` solo (port-race flake class). **Step 5:** commit `feat(offpeak): VendorKind.offPeak + run-once seeded target vendor (migration 11)`.
+- [ ] **Step 4: Run** → PASS (new + existing ConfigMigrationTests). Also run `-only-testing:ZGateTests/RouterTests` solo (port-race flake class). **Step 5:** commit `feat(offpeak): VendorKind.offPeak + run-once seeded target vendor (migration 11)`.
 
 ---
 
@@ -313,7 +313,7 @@ if !config.offPeakVendorSeeded {
 - [ ] `ProxyChannelHandler` passes its captured `tokenStatsStore` (:95) into `handle`.
 - [ ] Existing `OffPeakTargetTests` all pass unchanged.
 
-**Verify:** `xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ModelProxyTests/OffPeakTargetTests` → all pass (existing + 1 new stats test).
+**Verify:** `xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ZGateTests/OffPeakTargetTests` → all pass (existing + 1 new stats test).
 
 **Steps:**
 
@@ -356,7 +356,7 @@ func asyncServeRecordsTokenStats() async throws {
   - `routeOffPeakNoBackupAnswers503` — gates fail, single-target rule → 503 `off_peak_unavailable`.
   - `routeOffPeakGatesOpenServesViaTicketPlane` — gates pass, off-peak stub (reuse OffPeakTargetTests stub classes for the ticket/data plane) → client gets the SSE stream; token stats row recorded under the off-peak vendor ID.
 
-**Verify:** `xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ModelProxyTests/ProxyForwarderTests` → all pass.
+**Verify:** `xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ZGateTests/ProxyForwarderTests` → all pass.
 
 **Steps:**
 
@@ -381,7 +381,7 @@ func asyncServeRecordsTokenStats() async throws {
 - [ ] Test: server started with `offPeak.enabled = false` → `updateRouting(config with enabled = true)` → within a stubbed window the monitor status leaves `.idle` (inject the probe via a test seam: `ProxyServer` gains an internal `offPeakProbeOverride` used only when non-nil — mirrors how tests inject `quotaProvider` at :356); `updateRouting(enabled = false)` → status back to `.idle` and no further polls (probe call count freezes).
 - [ ] When the server restarts (`stop()` then `start`), the monitor is rebuilt (its task died with stop) — `stop()` also nils `offPeakMonitor`.
 
-**Verify:** `xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ModelProxyTests/OffPeakMonitorWiringTests` → pass, and `-only-testing:ModelProxyTests/ProxySessionIntegrationTests` stays green.
+**Verify:** `xcodebuild test -project ZGate.xcodeproj -scheme ZGate -destination 'platform=macOS' -only-testing:ZGateTests/OffPeakMonitorWiringTests` → pass, and `-only-testing:ZGateTests/ProxySessionIntegrationTests` stays green.
 
 **Steps:**
 
