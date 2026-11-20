@@ -155,6 +155,11 @@ actor SigningClient {
 
     func currentPhase() -> Phase { phase }
 
+    /// The current signing session's apiKeyId (nil while no session is
+    /// established) — feeds the `x-api-key-id` header of the
+    /// `agent/configs` endpoint fetch ("when available").
+    func currentApiKeyId() -> String? { session?.apiKeyId }
+
     /// The events of the most recent chain build (lengths only, no values).
     func lastChainEvents() -> [ChainEvent] { chainEvents }
 

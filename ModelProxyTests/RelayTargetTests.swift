@@ -1158,6 +1158,149 @@ struct RelayTargetTests {
         }
     }
 
+    // MARK: - Endpoint routing (agent/configs, relay fidelity Task 1)
+
+    /// EndpointResolving stub: rewrites the `from` prefix to `to` (keeping
+    /// the request's path remainder, like the real service) and serves a
+    /// fixed token; records what it was asked to resolve. nil `from`/`token`
+    /// exercise the fail-open pass-throughs.
+    private final class StubEndpointResolver: EndpointResolving, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _resolved: [String] = []
+        let from: String?
+        let to: String?
+        let token: String?
+
+        init(from: String?, to: String?, token: String?) {
+            self.from = from
+            self.to = to
+            self.token = token
+        }
+
+        var resolvedURLs: [String] {
+            lock.lock(); defer { lock.unlock() }
+            return _resolved
+        }
+
+        func resolve(_ url: String) async -> (url: String, addZcodeAuthorization: Bool) {
+            lock.lock(); _resolved.append(url); lock.unlock()
+            guard let from, let to, url.hasPrefix(from) else {
+                return (url: url, addZcodeAuthorization: false)
+            }
+            return (to + url.dropFirst(from.count), true)
+        }
+
+        func zcodeAuthorizationToken() -> String? { token }
+    }
+
+    /// A relay target pinned to the CLI's PRE-routing URL (local stand-in).
+    private func preRoutingRouteTarget(port: Int) -> RoutingSnapshot.RouteTarget {
+        RoutingSnapshot.RouteTarget(
+            baseURL: "http://127.0.0.1:\(port)/api/v1/zcode-plan/anthropic",
+            apiKey: "",
+            vendorName: "ZCode Relay",
+            vendorID: UUID(),
+            targetModel: "glm-5.3",
+            isPassthrough: false,
+            connectTimeoutSeconds: 5,
+            readTimeoutSeconds: 10,
+            signingDomain: .compatibleThirdParty,
+            replayPolicy: .transparent,
+            vendorKind: .relay)
+    }
+
+    @Test func endpointRoutingRewritesRequestAndAddsZcodeAuthorization() async throws {
+        let relay = MockRelayServer(scripts: [.json(["id": "msg_route"])])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let directory = try makeTempDirectory("ep-route")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let signingClient = makeSigningClient(directory: directory, control: control)
+        let resolver = StubEndpointResolver(
+            from: "http://127.0.0.1:\(port)/api/v1/zcode-plan/anthropic",
+            to: "http://127.0.0.1:\(port)/api/v1/ultra-zai/anthropic",
+            token: "synthetic-zcode-jwt")
+        let context = RelayTarget.Context(
+            signingClient: signingClient, endpointConfig: resolver)
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: preRoutingRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-ep-route")
+        guard case .responded(let response) = outcome else {
+            Issue.record("expected responded, got \(outcome)")
+            return
+        }
+        #expect(response.status == .ok)
+
+        // The relay path consulted the service per request with the FULL
+        // pinned URL (baseURL + request uri)...
+        #expect(resolver.resolvedURLs
+            == ["http://127.0.0.1:\(port)/api/v1/zcode-plan/anthropic/v1/messages"])
+        // ...and the request went to the rewritten target with the zcode
+        // plan JWT riding the flagged header.
+        let request = try #require(relay.requests.first)
+        #expect(request.path == "/api/v1/ultra-zai/anthropic/v1/messages")
+        #expect(request.headers["x-zcode-authorization"] == "Bearer synthetic-zcode-jwt")
+        // The signing quartet still rides the same request.
+        #expect(request.headers["x-client-sig"]?.count == 88)
+    }
+
+    @Test func endpointRoutingWithoutTokenOmitsHeaderFailOpen() async throws {
+        let relay = MockRelayServer(scripts: [.json(["id": "msg_notoken"])])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let directory = try makeTempDirectory("ep-notoken")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let signingClient = makeSigningClient(directory: directory, control: control)
+        let resolver = StubEndpointResolver(
+            from: "http://127.0.0.1:\(port)/api/v1/zcode-plan/anthropic",
+            to: "http://127.0.0.1:\(port)/api/v1/ultra-zai/anthropic",
+            token: nil)
+        let context = RelayTarget.Context(
+            signingClient: signingClient, endpointConfig: resolver)
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: preRoutingRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-ep-notoken")
+        guard case .responded = outcome else {
+            Issue.record("expected responded, got \(outcome)")
+            return
+        }
+        // No credential-store JWT → the header is omitted, the request
+        // still serves at the rewritten target (fail-open on the token).
+        let request = try #require(relay.requests.first)
+        #expect(request.path == "/api/v1/ultra-zai/anthropic/v1/messages")
+        #expect(request.headers["x-zcode-authorization"] == nil)
+    }
+
+    @Test func zcodeAuthorizationHeaderSitsRightAfterAuthorization() throws {
+        let session = SigningSession(
+            projectToken: Fixtures.projectToken,
+            apiKeyId: Fixtures.apiKeyId,
+            privateKey: try Curve25519.Signing.PrivateKey(rawRepresentation: Fixtures.ed25519Seed),
+            expiresAtMs: .max,
+            marginRelaxed: false)
+        let headers = try RelayTarget.relayHeaders(
+            session: session, signed: false, sessionID: "sid",
+            zcodeAuthorization: "synthetic-zcode-jwt")
+        let names = headers.map { $0.name }
+        let authorization = try #require(names.firstIndex(of: "authorization"))
+        #expect(names.firstIndex(of: "x-zcode-authorization") == authorization + 1)
+        #expect(headers["x-zcode-authorization"] == ["Bearer synthetic-zcode-jwt"])
+
+        let bare = try RelayTarget.relayHeaders(
+            session: session, signed: false, sessionID: "sid")
+        #expect(!bare.map { $0.name }.contains("x-zcode-authorization"))
+    }
+
     // MARK: - ProxyForwarder integration (route wiring + terminal bodies)
 
     private struct ForwardFixture {

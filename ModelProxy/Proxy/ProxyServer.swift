@@ -54,6 +54,11 @@ final class ProxyServer {
     /// Polling outlives server stop/start (billing is independent of the
     /// listener), so it is never torn down in `stop()`.
     private var quotaService: QuotaService?
+    /// Endpoint routing service (relay fidelity Task 1): same lifecycle as
+    /// the quota service — one per process, lazy `agent/configs` refresh
+    /// consulted per relay request, fail-open on every failure. Never built
+    /// inside the isolated test host (no live API calls from suite runs).
+    private var endpointConfigService: EndpointConfigService?
     /// Proactive renewal loop (item 5): started with the relay context,
     /// runs for the process. See start() for the test-host exclusion.
     @ObservationIgnored
@@ -175,10 +180,33 @@ final class ProxyServer {
                 service.startPolling()
                 AppLog.proxy.info("[ProxyServer] Quota service polling (monitor API, relay vendor configured)")
             }
+            // Endpoint routing (relay fidelity Task 1): lazy agent/configs
+            // refresh with the CLI's identity headers. The apiKeyId rides
+            // the signing session when one exists; the flagged-request
+            // Bearer material is the credential store's zcode plan JWT,
+            // re-read per request through the live base box (a re-login or
+            // Settings selector change takes effect on the next flagged
+            // request). Both fail-open to "omit". Skipped entirely inside
+            // the isolated test host — the relay path then serves the
+            // pinned URL, exactly like a routing outage.
+            if endpointConfigService == nil, AppPaths.isolatedBase == nil {
+                var configuration = EndpointConfigService.Configuration()
+                let signing = signingClient
+                let box = storeBaseBox
+                configuration.apiKeyIdProvider = { await signing.currentApiKeyId() }
+                configuration.zcodeTokenProvider = {
+                    (try? CredentialStore.loadDefault(base: box.current))
+                        .flatMap { try? $0.zcodeJwtToken() }
+                }
+                let service = EndpointConfigService(configuration: configuration)
+                endpointConfigService = service
+                AppLog.proxy.info("[ProxyServer] Endpoint routing service ready (agent/configs, fail-open)")
+            }
             relayContext = RelayTarget.Context(
                 signingClient: signingClient,
                 credentialEvents: credentialEvents,
-                quota: quotaService)
+                quota: quotaService,
+                endpointConfig: endpointConfigService)
             AppLog.proxy.info("[ProxyServer] Relay signing context ready (relay vendor configured)")
             // Proactive renewal (item 5, report §C.4): keep the ladder
             // alive without relayed traffic. Runs for the process (never

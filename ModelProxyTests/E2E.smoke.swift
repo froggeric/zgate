@@ -235,7 +235,7 @@ struct E2ESmokeTests {
 
         let relay = config.vendors.first { $0.vendorKind == .relay }
         let splash = config.vendors.first { $0.name.hasPrefix("splash") }
-        #expect(relay?.baseURL == "https://zcode.z.ai/api/v1/ultra-zai/anthropic")
+        #expect(relay?.baseURL == "https://zcode.z.ai/api/v1/zcode-plan/anthropic")
         #expect(splash?.baseURL == "http://127.0.0.1:8123")
 
         // Resolution through the REAL router code (no condition seams needed

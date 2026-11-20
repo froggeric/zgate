@@ -362,6 +362,57 @@ extension AppConfig {
         _ = ConfigStore.applyMigrations(out)
         #expect(out.splash == snapshot)
     }
+
+    // MARK: - Migration 9 (relay pre-routing URL pin, 2026-11-20)
+
+    /// The pre-wave default shape: relay vendor pinned to the RESOLVED
+    /// ultra URL (what 2.9 and earlier installed).
+    private func ultraPinnedConfig() -> AppConfig {
+        var config = AppConfig.makeZGateDefaultRouting(AppConfig())
+        for i in config.vendors.indices where config.vendors[i].vendorKind == .relay {
+            config.vendors[i].baseURL = "https://zcode.z.ai/api/v1/ultra-zai/anthropic"
+        }
+        return config
+    }
+
+    /// Migration 9: the relay vendor's baseURL repins to the CLI's
+    /// PRE-routing URL — but ONLY where it still equals the old default; a
+    /// user-edited URL survives, and the pass is idempotent.
+    @Test func migration9RepinsRelayPreRoutingURLOnce() {
+        let migrated = ConfigStore.applyMigrations(ultraPinnedConfig())
+        let relay = migrated.vendors.first { $0.vendorKind == .relay }
+        #expect(relay?.baseURL == "https://zcode.z.ai/api/v1/zcode-plan/anthropic")
+
+        // User-edited URL: untouched (any other value, including hand-reset
+        // ultra-zai on a NON-relay vendor).
+        var edited = ultraPinnedConfig()
+        for i in edited.vendors.indices where edited.vendors[i].vendorKind == .relay {
+            edited.vendors[i].baseURL = "https://zcode.z.ai/api/v1/custom/anthropic"
+        }
+        #expect(ConfigStore.applyMigrations(edited).vendors.first { $0.vendorKind == .relay }?.baseURL
+            == "https://zcode.z.ai/api/v1/custom/anthropic")
+
+        // Fresh defaults already carry the new pin; a second pass is a no-op.
+        #expect(AppConfig.makeDefault().vendors.first { $0.vendorKind == .relay }?.baseURL
+            == "https://zcode.z.ai/api/v1/zcode-plan/anthropic")
+        #expect(ConfigStore.applyMigrations(migrated).vendors.first { $0.vendorKind == .relay }?.baseURL
+            == "https://zcode.z.ai/api/v1/zcode-plan/anthropic")
+    }
+
+    /// The launch path persists migration 9 to disk like the earlier
+    /// launch-path migrations.
+    @Test func storePersistsMigration9ToDisk() throws {
+        let url = try tempConfigURL()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(ultraPinnedConfig()).write(to: url)
+
+        _ = ConfigStore(configFileURL: url)  // launch path, incl. persistence
+
+        let reread = try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: url))
+        #expect(reread.vendors.first { $0.vendorKind == .relay }?.baseURL
+            == "https://zcode.z.ai/api/v1/zcode-plan/anthropic")
+    }
 }
 
 // MARK: - Credential store base setting (item 2)

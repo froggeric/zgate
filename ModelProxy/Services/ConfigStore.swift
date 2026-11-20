@@ -224,6 +224,18 @@ final class ConfigStore {
                 }
             }
         }
+        // Migration 9 (relay fidelity wave, 2026-11-20): repin the relay
+        // vendor from the RESOLVED ultra URL to the CLI's baked-in
+        // PRE-routing URL — endpoint routing (agent/configs) now maps
+        // zcode-plan → the live ultra target per request, exactly like the
+        // official CLI. Exact-value gate: only the old default rewrites, a
+        // user-edited URL survives; idempotent by construction (the new
+        // value never matches the gate again).
+        for i in config.vendors.indices
+        where config.vendors[i].vendorKind == .relay
+            && config.vendors[i].baseURL == "https://zcode.z.ai/api/v1/ultra-zai/anthropic" {
+            config.vendors[i].baseURL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
+        }
         return config
     }
 

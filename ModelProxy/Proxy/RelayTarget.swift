@@ -97,6 +97,10 @@ enum RelayTarget {
         /// request so QuotaService refreshes after every 25th one. nil in
         /// tests and when no quota service is configured.
         let quota: (any QuotaRelayCounting)?
+        /// Server-driven endpoint routing (`agent/configs`, relay fidelity
+        /// Task 1): consulted per request in `sendOnce`. nil = fail-open —
+        /// the pinned target URL serves as-is (tests, isolated test host).
+        let endpointConfig: (any EndpointResolving)?
         /// Stable per-process relay session id (`x-session-id`).
         let sessionID = UUID().uuidString.lowercased()
         /// Relay 429 backoff before the single retry (tests shorten it).
@@ -108,11 +112,13 @@ enum RelayTarget {
         init(
             signingClient: SigningClient,
             credentialEvents: CredentialEventChannel? = nil,
-            quota: (any QuotaRelayCounting)? = nil
+            quota: (any QuotaRelayCounting)? = nil,
+            endpointConfig: (any EndpointResolving)? = nil
         ) {
             self.signingClient = signingClient
             self.credentialEvents = credentialEvents
             self.quota = quota
+            self.endpointConfig = endpointConfig
         }
 
         func noteSignedSessionEstablished() {
@@ -354,7 +360,9 @@ enum RelayTarget {
     }
 
     /// One HTTP exchange. `signed == false` is the fail-open unsigned attempt:
-    /// identity + auth headers, no signing quartet.
+    /// identity + auth headers, no signing quartet. The URL is resolved
+    /// through the endpoint-routing service first (fail-open: routing
+    /// failures or no match leave the pinned URL untouched).
     private static func sendOnce(
         head: HTTPRequestHead,
         wireBody: Data,
@@ -365,10 +373,22 @@ enum RelayTarget {
         context: Context,
         requestID: String
     ) async throws -> HTTPClientResponse {
-        let urlString = target.baseURL.trimmingCharacters(in: .init(charactersIn: "/")) + head.uri
+        let rawURL = target.baseURL.trimmingCharacters(in: .init(charactersIn: "/")) + head.uri
+        var urlString = rawURL
+        var zcodeAuthorization: String?
+        if let endpointConfig = context.endpointConfig {
+            let resolved = await endpointConfig.resolve(rawURL)
+            urlString = resolved.url
+            if resolved.addZcodeAuthorization {
+                // Fail-open on the token too: absent store → header omitted.
+                zcodeAuthorization = await endpointConfig.zcodeAuthorizationToken()
+            }
+        }
         var request = HTTPClientRequest(url: urlString)
         request.method = head.method
-        request.headers = try relayHeaders(session: session, signed: signed, sessionID: context.sessionID)
+        request.headers = try relayHeaders(
+            session: session, signed: signed, sessionID: context.sessionID,
+            zcodeAuthorization: zcodeAuthorization)
         request.body = .bytes(wireBody)
         return try await httpClient.execute(
             request, timeout: .seconds(Int64(target.readTimeoutSeconds)))
@@ -378,8 +398,15 @@ enum RelayTarget {
 
     /// The complete relay header set, built from scratch (client headers are
     /// never forwarded). Auth always rides along; `signed == false` (the
-    /// fail-open attempt) omits only the signing quartet.
-    static func relayHeaders(session: SigningSession, signed: Bool, sessionID: String) throws -> HTTPHeaders {
+    /// fail-open attempt) omits only the signing quartet. A non-nil
+    /// `zcodeAuthorization` (endpoint routing flagged this request) adds the
+    /// `x-zcode-authorization` Bearer header right after `authorization`.
+    static func relayHeaders(
+        session: SigningSession,
+        signed: Bool,
+        sessionID: String,
+        zcodeAuthorization: String? = nil
+    ) throws -> HTTPHeaders {
         var headers = HTTPHeaders()
         headers.add(name: "anthropic-beta", value: anthropicBeta)
         headers.add(name: "anthropic-version", value: anthropicVersion)
@@ -404,6 +431,9 @@ enum RelayTarget {
         headers.add(name: "x-zcode-session-type", value: sessionType)
         headers.add(name: "x-zcode-trace-id", value: UUID().uuidString.lowercased())
         headers.add(name: "authorization", value: "Bearer \(session.projectToken)")
+        if let zcodeAuthorization {
+            headers.add(name: "x-zcode-authorization", value: "Bearer \(zcodeAuthorization)")
+        }
         headers.add(name: "x-api-key", value: session.projectToken)
         if signed {
             let ts = String(currentMs())

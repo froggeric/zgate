@@ -79,7 +79,7 @@ struct RouterTests {
 
     private func makeFixture(mappings: [ModelMapping]? = nil) -> RoutingFixture {
         let relay = Vendor(
-            name: "zcode relay", baseURL: "https://zcode.z.ai/api/v1/ultra-zai/anthropic",
+            name: "zcode relay", baseURL: "https://zcode.z.ai/api/v1/zcode-plan/anthropic",
             apiKey: "", readTimeoutSeconds: 10, vendorKind: .relay)
         let splash = Vendor(
             name: "splash (local)", baseURL: "http://127.0.0.1:8000",
@@ -299,7 +299,7 @@ struct RouterTests {
 
     @Test func quotaGatedRuleSkipsToNextRuleWhenConditionFails() {
         let quota = FakeQuota()
-        let relay = Vendor(name: "relay", baseURL: "https://zcode.z.ai/api/v1/ultra-zai/anthropic", apiKey: "", vendorKind: .relay)
+        let relay = Vendor(name: "relay", baseURL: "https://zcode.z.ai/api/v1/zcode-plan/anthropic", apiKey: "", vendorKind: .relay)
         let splash = Vendor(name: "splash", baseURL: "http://127.0.0.1:8000", apiKey: "")
         let client = ClientConfig(clientName: "Claude Code", port: 0, defaultUpstream: "https://api.anthropic.com")
         let config = AppConfig(vendors: [relay, splash], clients: [client], modelMappings: [
@@ -551,7 +551,7 @@ struct RouterTests {
         let vendors = try #require(json["vendors"] as? [[String: Any]])
         #expect(vendors.count == 2)
         let relay = try #require(vendors.first { ($0["name"] as? String) == "zcode relay" })
-        #expect(relay["baseURL"] as? String == "https://zcode.z.ai/api/v1/ultra-zai/anthropic")
+        #expect(relay["baseURL"] as? String == "https://zcode.z.ai/api/v1/zcode-plan/anthropic")
         #expect(relay["vendorKind"] as? String == "relay")
         #expect(relay["apiKey"] as? String == "")
         let splash = try #require(vendors.first { ($0["name"] as? String) == "splash (local)" })
