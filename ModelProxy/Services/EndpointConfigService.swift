@@ -63,7 +63,7 @@ actor EndpointConfigService: EndpointResolving {
         init() {}
     }
 
-    private var configuration: Configuration
+    private let configuration: Configuration
     private let client: HTTPClient
 
     /// Last accepted snapshot and when it was committed.
@@ -123,7 +123,7 @@ actor EndpointConfigService: EndpointResolving {
     /// the cooldown; only a fully valid payload replaces the snapshot.
     private func refresh() async {
         do {
-            let data = try await fetch()
+            let data = try await fetchBounded()
             if let mapping = EndpointMapping.parse(data) {
                 snapshot = mapping
                 snapshotAt = configuration.now()
@@ -139,8 +139,34 @@ actor EndpointConfigService: EndpointResolving {
         lastAttemptAt = configuration.now()
     }
 
+    /// The whole-exchange time bound. The `execute` deadline below covers
+    /// only connect + request + response HEAD — async-http-client cancels
+    /// its deadline task the moment the head arrives, leaving the body read
+    /// unbounded in time (a head-then-stall or trickling endpoint would
+    /// hang the body loop, and with it the single-flight slot, forever).
+    /// Racing the whole fetch against `requestTimeout` closes that gap:
+    /// cancelling the losing task cancels the AHC transaction (connection
+    /// closed) and unblocks the body iterator, so `refresh` always returns
+    /// and the request path never blocks past the bound.
+    private func fetchBounded() async throws -> Data {
+        let timeoutNanoseconds = UInt64(max(0, configuration.requestTimeout) * 1_000_000_000)
+        return try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask { try await self.fetch() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                throw EndpointConfigError.timeout
+            }
+            defer { group.cancelAll() }
+            guard let data = try await group.next() else {
+                throw EndpointConfigError.timeout
+            }
+            return data
+        }
+    }
+
     /// The `GET <origin>/agent/configs` exchange: CLI identity headers,
-    /// 3 s total bound, 256 KiB body bound.
+    /// head-phase deadline, 256 KiB body bound (the outer time bound lives
+    /// in `fetchBounded`).
     private func fetch() async throws -> Data {
         guard let url = URL(string: configuration.origin + configuration.path) else {
             throw EndpointConfigError.badURL
@@ -178,12 +204,14 @@ private enum EndpointConfigError: Error, LocalizedError {
     case badURL
     case httpStatus(Int)
     case tooLarge
+    case timeout
 
     var errorDescription: String? {
         switch self {
         case .badURL: "configured endpoint URL is invalid"
         case let .httpStatus(status): "agent/configs answered HTTP \(status)"
         case .tooLarge: "agent/configs body exceeded the 256 KiB bound"
+        case .timeout: "agent/configs exchange exceeded the 3 s whole-exchange bound"
         }
     }
 }

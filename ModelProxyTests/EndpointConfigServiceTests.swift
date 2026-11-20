@@ -49,14 +49,24 @@ struct EndpointConfigServiceTests {
     // MARK: - Stub config endpoint (SwiftNIO, 127.0.0.1)
 
     /// Serves the config endpoint: records each request (path + headers),
-    /// responds with scripted `(status, body, delayMs)` entries — popped in
-    /// order — or a default 200 + `defaultBody` once the script queue runs dry.
+    /// responds with scripted entries — popped in order — or a default
+    /// 200 + `defaultBody` once the script queue runs dry.
     private final class ConfigStubServer: @unchecked Sendable {
         struct Recorded {
             let path: String
             let headers: [String: String]
         }
-        typealias Script = (status: Int, body: Data, delayMs: Int)
+
+        /// One scripted response. `delayMs` holds the HEAD back (pre-head
+        /// stall); `trickleHoldMs` sends the head + FIRST BYTE immediately,
+        /// then holds the remainder — the head-then-stall/trickling body
+        /// shape that a head-only deadline cannot catch.
+        struct Script {
+            var status = 200
+            var body: Data
+            var delayMs = 0
+            var trickleHoldMs = 0
+        }
 
         private let lock = NSLock()
         private var _requests: [Recorded] = []
@@ -83,7 +93,7 @@ struct EndpointConfigServiceTests {
         fileprivate func takeScript() -> Script {
             lock.lock(); defer { lock.unlock() }
             if !_scripts.isEmpty { return _scripts.removeFirst() }
-            return (200, defaultBody, 0)
+            return Script(body: defaultBody)
         }
 
         private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -152,9 +162,22 @@ struct EndpointConfigServiceTests {
                 head.headers.add(name: "content-type", value: "application/json")
                 head.headers.add(name: "content-length", value: String(script.body.count))
                 channel.write(NIOAny(HTTPServerResponsePart.head(head)), promise: nil)
-                var buffer = channel.allocator.buffer(capacity: script.body.count)
-                buffer.writeBytes(script.body)
-                channel.writeAndFlush(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buffer))), promise: nil)
+                if script.trickleHoldMs > 0, !script.body.isEmpty {
+                    // Head + first byte now; the remainder (and end) after
+                    // the hold — the body stalls while the head arrived.
+                    var first = channel.allocator.buffer(capacity: 1)
+                    first.writeBytes(script.body.prefix(1))
+                    channel.writeAndFlush(
+                        NIOAny(HTTPServerResponsePart.body(.byteBuffer(first))), promise: nil)
+                    try? await Task.sleep(nanoseconds: UInt64(script.trickleHoldMs) * 1_000_000)
+                    var rest = channel.allocator.buffer(capacity: max(0, script.body.count - 1))
+                    rest.writeBytes(script.body.dropFirst())
+                    channel.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(rest))), promise: nil)
+                } else {
+                    var buffer = channel.allocator.buffer(capacity: script.body.count)
+                    buffer.writeBytes(script.body)
+                    channel.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buffer))), promise: nil)
+                }
                 channel.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil)), promise: nil)
             }
         }
@@ -255,7 +278,7 @@ struct EndpointConfigServiceTests {
         #expect(stub.requestCount == 1)
 
         // TTL expired, stub fails: the last snapshot keeps serving.
-        stub.queue((500, Data("{}".utf8), 0))
+        stub.queue(.init(status: 500, body: Data("{}".utf8)))
         clock.advance(301)
         let served = await service.resolve(Self.requestURL)
         #expect(served.url == Self.ultraTarget + "/v1/messages")
@@ -286,7 +309,7 @@ struct EndpointConfigServiceTests {
         let service = makeService(clock: clock, origin: "http://127.0.0.1:\(port)", client: httpClient)
 
         _ = await service.resolve(Self.requestURL)
-        stub.queue((200, Data("{\"code\":0,\"data\":{}}".utf8), 0))  // no proxyEndpoint
+        stub.queue(.init(body: Data("{\"code\":0,\"data\":{}}".utf8)))  // no proxyEndpoint
         clock.advance(301)
         let served = await service.resolve(Self.requestURL)
         #expect(served.url == Self.ultraTarget + "/v1/messages")
@@ -300,7 +323,7 @@ struct EndpointConfigServiceTests {
 
     @Test func slowFetchTimesOutAndFailsOpen() async throws {
         let stub = ConfigStubServer(defaultBody: mappingBody(to: Self.ultraTarget))
-        stub.queue((200, mappingBody(to: Self.ultraTarget), 5_000))  // 5 s — past the 3 s bound
+        stub.queue(.init(body: mappingBody(to: Self.ultraTarget), delayMs: 5_000))  // 5 s — past the 3 s bound
         let port = try await stub.start()
         defer { Task { await stub.shutdown() } }
         let httpClient = makeHTTPClient()
@@ -316,6 +339,40 @@ struct EndpointConfigServiceTests {
         #expect(resolved.url == Self.requestURL)
         #expect(!resolved.addZcodeAuthorization)
         #expect(elapsed < .seconds(4))
+    }
+
+    /// Regression (fix round 1): the execute deadline covers only the
+    /// response HEAD — a head-then-stall body used to hang the body read
+    /// (and the single-flight slot) indefinitely. The whole-exchange bound
+    /// must cut it: fail-open within the bound AND the slot must be
+    /// released so a later resolve can fetch again.
+    @Test func trickledBodyTimesOutFailsOpenAndReleasesSingleFlight() async throws {
+        let stub = ConfigStubServer(defaultBody: mappingBody(to: Self.ultraTarget))
+        stub.queue(.init(body: mappingBody(to: Self.ultraTarget), trickleHoldMs: 8_000))
+        let port = try await stub.start()
+        defer { Task { await stub.shutdown() } }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+        let clock = ManualClock(Date(timeIntervalSince1970: 1_763_000_000))
+        let service = makeService(clock: clock, origin: "http://127.0.0.1:\(port)", client: httpClient)
+
+        // Head + one byte arrive instantly; the body then stalls.
+        let wallClock = ContinuousClock()
+        let start = wallClock.now
+        let resolved = await service.resolve(Self.requestURL)
+        let elapsed = wallClock.now - start
+        #expect(resolved.url == Self.requestURL)
+        #expect(!resolved.addZcodeAuthorization)
+        #expect(elapsed < .seconds(4))
+
+        // The single-flight slot was freed: past the failure cooldown a
+        // subsequent resolve CAN fetch again (and commits a fresh snapshot)
+        // — impossible while a hung fetch still owned the slot.
+        clock.advance(31)
+        stub.defaultBody = mappingBody(to: Self.otherTarget)
+        let recovered = await service.resolve(Self.requestURL)
+        #expect(stub.requestCount == 2)
+        #expect(recovered.url == Self.otherTarget + "/v1/messages")
     }
 
     @Test func noSnapshotFailsOpenAndNeverThrows() async throws {
@@ -336,7 +393,7 @@ struct EndpointConfigServiceTests {
 
     @Test func concurrentResolvesShareOneFetch() async throws {
         let stub = ConfigStubServer(defaultBody: mappingBody(to: Self.ultraTarget))
-        stub.queue((200, mappingBody(to: Self.ultraTarget), 400))  // slow enough to overlap
+        stub.queue(.init(body: mappingBody(to: Self.ultraTarget), delayMs: 400))  // slow enough to overlap
         let port = try await stub.start()
         defer { Task { await stub.shutdown() } }
         let httpClient = makeHTTPClient()
