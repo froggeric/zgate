@@ -3,9 +3,12 @@ import OSLog
 
 /// Counter hook the relay path calls once per relayed request; `QuotaService`
 /// conforms. A protocol so RelayTarget's context depends on the seam, not the
-/// service type.
+/// service type. `pollNow` (relay fidelity Task 6) is the immediate-poll
+/// trigger the quota-exhausted classification fires so the true fraction is
+/// known at the moment the plan runs dry.
 protocol QuotaRelayCounting: Sendable {
     func noteRelayedRequest()
+    func pollNow() async
 }
 
 /// Polls z.ai's official quota monitor and feeds the router's `quotaBelow`

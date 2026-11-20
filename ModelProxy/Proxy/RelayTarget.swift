@@ -27,8 +27,12 @@ import OSLog
 ///   falls back to ONE unsigned attempt, and only if a signed chain had been
 ///   established earlier in this process. A terminal 401 path surfaces
 ///   `CredentialEvent.expired` for the re-login alert.
-/// - A relay 429 retries once after a backoff; a second 429 is handed to the
-///   caller for next-rule fallback / 529.
+/// - Non-2xx bodies and JSON 200s are classified by business code
+///   (`RelayErrorTaxonomy`, parsed JSON only): quota (1005/1113/1310, 402)
+///   never retries and ticks the quota poll; rate limits (1302/1303, or a
+///   bare 429) retry once after a backoff; concurrency (3008/3009/3010)
+///   retries twice in place; risk control (3012, 405) never retries; captcha
+///   (3007), model (3006), and parameter (1210/3001) errors surface as-is.
 enum RelayTarget {
 
     // Identity constants pinned from the official zcode CLI 0.17.1 face
@@ -99,9 +103,22 @@ enum RelayTarget {
         /// A response to stream back as-is: success, a passed-through first
         /// 401 (rewrapped with its drained body), or any other upstream status.
         case responded(HTTPClientResponse)
-        /// Relay answered 429 again after the backoff retry — the caller
-        /// tries the rule's backup target, or answers 529.
+        /// Relay answered 429 (or a classified rate limit) again after the
+        /// backoff retry — the caller tries the rule's backup target, or
+        /// answers 529.
         case rateLimitedAfterRetry
+        /// Plan quota exhausted (codes 1005/1113/1310 or HTTP 402): no retry
+        /// ran, the quota poll was ticked, and the caller answers a
+        /// 429-shaped error (Task 7's degraded machine branches on this).
+        case quotaExhausted(String)
+        /// Risk control (code 3012 or HTTP 405): no retry, the risk event
+        /// fired, and the caller answers a clear 502 (Task 7 enters its
+        /// riskCooldown from the same event).
+        case riskControl(String)
+        /// Concurrency-limited (codes 3008/3009/3010) after both in-place
+        /// retries — the caller's fallback decision (backup rule or 529),
+        /// like rate-limited.
+        case concurrencyLimitedAfterRetries
         /// Signing chain unavailable and nothing was sent (cold start).
         case signingUnavailable(String)
         /// Reject ladder exhausted on 401s — re-login required. The expired
@@ -146,6 +163,17 @@ enum RelayTarget {
         var clientVersion: String
         /// Relay 429 backoff before the single retry (tests shorten it).
         var rateLimitBackoff: TimeInterval = RelayTarget.defaultRateLimitBackoff
+        /// Task 6: risk-control observation (business code 3012 / HTTP 405).
+        /// No retry runs and a clear 502 surfaces; Task 7's RelayHealth
+        /// consumes this to enter its 900 s riskCooldown. nil when nobody
+        /// observes.
+        let onRiskControl: (@Sendable (String) -> Void)?
+        /// Concurrency-limited retries (codes 3008/3009/3010) sleep 3 s then
+        /// 6 s, each ±1 s jitter, through this seam — injectable like
+        /// `rateLimitBackoff` (tests record the requested delays).
+        var concurrencySleeper: @Sendable (TimeInterval) async -> Void = { delay in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+        }
         /// True once a signing chain has been established in this process —
         /// the only state from which the unsigned fail-open attempt may run.
         private(set) var establishedSignedSession = false
@@ -155,13 +183,15 @@ enum RelayTarget {
             credentialEvents: CredentialEventChannel? = nil,
             quota: (any QuotaRelayCounting)? = nil,
             endpointConfig: (any EndpointResolving)? = nil,
-            clientVersion: String = RelayTarget.clientVersion
+            clientVersion: String = RelayTarget.clientVersion,
+            onRiskControl: (@Sendable (String) -> Void)? = nil
         ) {
             self.signingClient = signingClient
             self.credentialEvents = credentialEvents
             self.quota = quota
             self.endpointConfig = endpointConfig
             self.clientVersion = clientVersion
+            self.onRiskControl = onRiskControl
         }
 
         func noteSignedSessionEstablished() {
@@ -272,23 +302,10 @@ enum RelayTarget {
             let response = try await sendOnce(
                 head: head, identity: identity, wireBody: wireBody, target: target, httpClient: httpClient,
                 session: session, signed: true, context: context, requestID: requestID)
-            switch Int(response.status.code) {
-            case 200..<300:
-                await context.signingClient.noteRelaySuccess()
-                return .responded(response)
-            case 401:
-                return await handleReject(
-                    response: response, session: session, head: head, identity: identity,
-                    wireBody: wireBody, target: target,
-                    httpClient: httpClient, context: context, requestID: requestID)
-            case 429:
-                return await handleRateLimited(
-                    response: response, head: head, identity: identity, wireBody: wireBody, target: target,
-                    httpClient: httpClient, session: session, signed: true,
-                    context: context, requestID: requestID)
-            default:
-                return .responded(response)
-            }
+            return await route(
+                response: response, session: session, signed: true, head: head, identity: identity,
+                wireBody: wireBody, target: target, httpClient: httpClient,
+                context: context, requestID: requestID)
         } catch let error as RelayTargetError {
             let reason = String(describing: error)
             AppLog.proxy.error("[Proxy] [\(requestID)] Relay signing material unavailable: \(reason)")
@@ -297,6 +314,289 @@ enum RelayTarget {
             AppLog.proxy.error("[Proxy] [\(requestID)] Relay upstream error: \(error)")
             return .transportFailed(String(describing: error))
         }
+    }
+
+    // MARK: - Response routing (Task 6 taxonomy)
+
+    /// Routes one upstream response: the 401 ladder is untouched; the 429
+    /// and other-status paths classify the drained body first so business
+    /// codes drive remediation; 2xx responses run the 200-carried-envelope
+    /// check before counting as success.
+    private static func route(
+        response: HTTPClientResponse,
+        session: SigningSession,
+        signed: Bool,
+        head: HTTPRequestHead,
+        identity: SessionIdentity,
+        wireBody: Data,
+        target: RoutingSnapshot.RouteTarget,
+        httpClient: HTTPClient,
+        context: Context,
+        requestID: String
+    ) async -> Outcome {
+        switch Int(response.status.code) {
+        case 200..<300:
+            return await handleSuccess(
+                response: response, session: session, signed: signed, head: head, identity: identity,
+                wireBody: wireBody, target: target, httpClient: httpClient,
+                context: context, requestID: requestID)
+        case 401:
+            return await handleReject(
+                response: response, session: session, head: head, identity: identity,
+                wireBody: wireBody, target: target,
+                httpClient: httpClient, context: context, requestID: requestID)
+        case 429:
+            return await handleFourTwentyNine(
+                response: response, session: session, signed: signed, head: head, identity: identity,
+                wireBody: wireBody, target: target, httpClient: httpClient,
+                context: context, requestID: requestID)
+        default:
+            return await handleOtherStatus(
+                response: response, session: session, signed: signed, head: head, identity: identity,
+                wireBody: wireBody, target: target, httpClient: httpClient,
+                context: context, requestID: requestID)
+        }
+    }
+
+    /// What a 2xx response turned out to be after the 200-envelope peek.
+    private enum SuccessCheck {
+        /// A real success — the original response (unread) or a rewrapped
+        /// one carrying the same bytes (read and ruled NOT an envelope).
+        case plain(HTTPClientResponse)
+        /// A 200 whose body is a business envelope — classify, do not relay.
+        case envelope(RelayUpstreamError, HTTPClientResponse)
+    }
+
+    /// The 200-carried-envelope check: a JSON (never SSE) 2xx whose body is
+    /// envelope-sized is drained whole and parsed. Anything else — SSE,
+    /// missing content-type, a content-length beyond envelope size — is
+    /// left untouched on the wire.
+    private static func checkSuccess(_ response: HTTPClientResponse) async -> SuccessCheck {
+        guard isJSONResponse(response), isEnvelopeSized(response) else { return .plain(response) }
+        let (data, rewrapped) = await drainWholeBody(response)
+        if let envelope = RelayErrorTaxonomy.businessEnvelope(
+            status: Int(response.status.code), body: data)
+        {
+            return .envelope(envelope, rewrapped)
+        }
+        return .plain(rewrapped)
+    }
+
+    /// 2xx handling: a 200 carrying a business envelope (`code != 0`, no
+    /// `type:"message"`) is classified and remediated instead of relayed as
+    /// success; every other 2xx — streaming or not — relays byte-identical.
+    private static func handleSuccess(
+        response: HTTPClientResponse,
+        session: SigningSession,
+        signed: Bool,
+        head: HTTPRequestHead,
+        identity: SessionIdentity,
+        wireBody: Data,
+        target: RoutingSnapshot.RouteTarget,
+        httpClient: HTTPClient,
+        context: Context,
+        requestID: String
+    ) async -> Outcome {
+        switch await checkSuccess(response) {
+        case .plain(let relayable):
+            await context.signingClient.noteRelaySuccess(signed: signed)
+            return .responded(relayable)
+        case .envelope(let error, let rewrapped):
+            AppLog.proxy.error(
+                "[Proxy] [\(requestID)] Relay 200 carries business envelope (code \(error.code.map(String.init) ?? "nil")): \(error.displayReason)")
+            return await handleClassifiedFailure(
+                kind: RelayErrorTaxonomy.classify(error), error: error, rewrapped: rewrapped,
+                session: session, signed: signed, head: head, identity: identity,
+                wireBody: wireBody, target: target, httpClient: httpClient,
+                context: context, requestID: requestID)
+        }
+    }
+
+    /// A relay 429 entry: the drained body is classified first — quota,
+    /// concurrency, and risk codes override the default rate-limit policy;
+    /// a true rate-limit code (1302/1303) or an unclassifiable 429 rides
+    /// the existing single-backoff-retry policy unchanged.
+    private static func handleFourTwentyNine(
+        response: HTTPClientResponse,
+        session: SigningSession,
+        signed: Bool,
+        head: HTTPRequestHead,
+        identity: SessionIdentity,
+        wireBody: Data,
+        target: RoutingSnapshot.RouteTarget,
+        httpClient: HTTPClient,
+        context: Context,
+        requestID: String
+    ) async -> Outcome {
+        let (error, rewrapped) = await drainErrorBody(response)
+        let kind = RelayErrorTaxonomy.classify(error)
+        switch kind {
+        case .rateLimited, .unclassified:
+            return await handleRateLimited(
+                response: rewrapped, head: head, identity: identity, wireBody: wireBody, target: target,
+                httpClient: httpClient, session: session, signed: signed,
+                context: context, requestID: requestID)
+        case .quotaExhausted, .riskControl, .concurrencyLimited,
+            .captchaChallenge, .modelNotAllowed, .invalidParameter:
+            return await handleClassifiedFailure(
+                kind: kind, error: error, rewrapped: rewrapped,
+                session: session, signed: signed, head: head, identity: identity,
+                wireBody: wireBody, target: target, httpClient: httpClient,
+                context: context, requestID: requestID)
+        }
+    }
+
+    /// Any other upstream status: drain + classify, then remediate by
+    /// class (quota codes on 4xx bodies, 402/405 status fallbacks, or
+    /// passthrough for everything unclassified).
+    private static func handleOtherStatus(
+        response: HTTPClientResponse,
+        session: SigningSession,
+        signed: Bool,
+        head: HTTPRequestHead,
+        identity: SessionIdentity,
+        wireBody: Data,
+        target: RoutingSnapshot.RouteTarget,
+        httpClient: HTTPClient,
+        context: Context,
+        requestID: String
+    ) async -> Outcome {
+        let (error, rewrapped) = await drainErrorBody(response)
+        return await handleClassifiedFailure(
+            kind: RelayErrorTaxonomy.classify(error), error: error, rewrapped: rewrapped,
+            session: session, signed: signed, head: head, identity: identity,
+            wireBody: wireBody, target: target, httpClient: httpClient,
+            context: context, requestID: requestID)
+    }
+
+    /// Remediation by failure class — the taxonomy's whole point. Every
+    /// classified dead end lands here exactly once.
+    private static func handleClassifiedFailure(
+        kind: RelayFailureKind,
+        error: RelayUpstreamError,
+        rewrapped: HTTPClientResponse,
+        session: SigningSession,
+        signed: Bool,
+        head: HTTPRequestHead,
+        identity: SessionIdentity,
+        wireBody: Data,
+        target: RoutingSnapshot.RouteTarget,
+        httpClient: HTTPClient,
+        context: Context,
+        requestID: String
+    ) async -> Outcome {
+        switch kind {
+        case .quotaExhausted:
+            // No retry: tick the quota poll immediately so the true fraction
+            // is known now, then answer 429-shaped (Task 7 routes degraded
+            // fallback from this class).
+            let reason = error.displayReason
+            AppLog.proxy.error("[Proxy] [\(requestID)] Relay quota exhausted: \(reason)")
+            await context.quota?.pollNow()
+            return .quotaExhausted(reason)
+        case .rateLimited:
+            // A classified rate limit (1302/1303) rides the existing policy
+            // unchanged: one backoff retry, then the caller's fallback.
+            return await handleRateLimited(
+                response: rewrapped, head: head, identity: identity, wireBody: wireBody, target: target,
+                httpClient: httpClient, session: session, signed: signed,
+                context: context, requestID: requestID)
+        case .concurrencyLimited:
+            return await handleConcurrencyLimited(
+                session: session, signed: signed, head: head, identity: identity,
+                wireBody: wireBody, target: target, httpClient: httpClient,
+                context: context, requestID: requestID)
+        case .riskControl:
+            // No retry: expose the event (Task 7's RelayHealth enters its
+            // cooldown from here) and surface a clear 502.
+            let reason = error.displayReason
+            AppLog.proxy.error("[Proxy] [\(requestID)] Relay risk control engaged: \(reason)")
+            context.onRiskControl?(reason)
+            return .riskControl(reason)
+        case .captchaChallenge, .modelNotAllowed, .invalidParameter, .unclassified:
+            // Surfaced as-is: captcha is never solved; 3006/1210/3001 are
+            // request errors the client sees verbatim (Task 5 prevents the
+            // common ones before send); anything unclassified passes
+            // through exactly like the pre-taxonomy default branch.
+            return .responded(rewrapped)
+        }
+    }
+
+    /// Concurrency-limited (codes 3008/3009/3010): up to 2 in-place retries
+    /// on the same target — 3 s then 6 s, each ±1 s jitter through the
+    /// injectable sleeper — then the caller's fallback decision (backup
+    /// rule or 529). Mid-ladder answers that are NOT still
+    /// concurrency-limited route back through the taxonomy; a 200 still
+    /// carrying a concurrency code burns the attempt (no re-entry — a
+    /// looping upstream cannot drive unbounded nesting).
+    private static func handleConcurrencyLimited(
+        session: SigningSession,
+        signed: Bool,
+        head: HTTPRequestHead,
+        identity: SessionIdentity,
+        wireBody: Data,
+        target: RoutingSnapshot.RouteTarget,
+        httpClient: HTTPClient,
+        context: Context,
+        requestID: String
+    ) async -> Outcome {
+        for base in [TimeInterval(3), TimeInterval(6)] {
+            await context.concurrencySleeper(max(0, base + Double.random(in: -1...1)))
+            do {
+                let retry = try await sendOnce(
+                    head: head, identity: identity, wireBody: wireBody, target: target,
+                    httpClient: httpClient, session: session, signed: signed,
+                    context: context, requestID: requestID)
+                switch Int(retry.status.code) {
+                case 200..<300:
+                    switch await checkSuccess(retry) {
+                    case .plain(let relayable):
+                        await context.signingClient.noteRelaySuccess(signed: signed)
+                        return .responded(relayable)
+                    case .envelope(let envelopeError, let envelopeRewrapped):
+                        guard RelayErrorTaxonomy.classify(envelopeError) != .concurrencyLimited else {
+                            continue  // 200 still carrying a concurrency code: burn the attempt
+                        }
+                        return await handleClassifiedFailure(
+                            kind: RelayErrorTaxonomy.classify(envelopeError), error: envelopeError,
+                            rewrapped: envelopeRewrapped, session: session, signed: signed, head: head,
+                            identity: identity, wireBody: wireBody, target: target,
+                            httpClient: httpClient, context: context, requestID: requestID)
+                    }
+                case 401:
+                    return await handleReject(
+                        response: retry, session: session, head: head, identity: identity,
+                        wireBody: wireBody, target: target,
+                        httpClient: httpClient, context: context, requestID: requestID)
+                case 429:
+                    let (retryError, retryRewrapped) = await drainErrorBody(retry)
+                    switch RelayErrorTaxonomy.classify(retryError) {
+                    case .concurrencyLimited:
+                        continue  // next backoff
+                    case .rateLimited, .unclassified:
+                        return await handleRateLimited(
+                            response: retryRewrapped, head: head, identity: identity,
+                            wireBody: wireBody, target: target, httpClient: httpClient,
+                            session: session, signed: signed, context: context, requestID: requestID)
+                    case .quotaExhausted, .riskControl,
+                        .captchaChallenge, .modelNotAllowed, .invalidParameter:
+                        return await handleClassifiedFailure(
+                            kind: RelayErrorTaxonomy.classify(retryError), error: retryError,
+                            rewrapped: retryRewrapped, session: session, signed: signed, head: head,
+                            identity: identity, wireBody: wireBody, target: target,
+                            httpClient: httpClient, context: context, requestID: requestID)
+                    }
+                default:
+                    return await handleOtherStatus(
+                        response: retry, session: session, signed: signed, head: head,
+                        identity: identity, wireBody: wireBody, target: target,
+                        httpClient: httpClient, context: context, requestID: requestID)
+                }
+            } catch {
+                return .transportFailed(String(describing: error))
+            }
+        }
+        return .concurrencyLimitedAfterRetries
     }
 
     /// A relay 401: note it, and on the second consecutive reject rebuild the
@@ -316,12 +616,14 @@ enum RelayTarget {
     ) async -> Outcome {
         await context.signingClient.noteRelayRejection()
         let phase = await context.signingClient.currentPhase()
-        let (message, rewrapped) = await drainErrorBody(response)
+        let (drained, rewrapped) = await drainErrorBody(response)
+        let message = drained.message
 
         guard phase == .needsRehandshake else {
             // First reject: tolerated (controller ruling — two consecutive
             // rejects trigger the rebuild). Pass through, surfacing an
-            // explicit expiry signal if the relay named one.
+            // explicit expiry signal if the relay named one (the envelope
+            // message field, never a raw-body substring).
             if let message, message.localizedCaseInsensitiveContains("expired") {
                 context.credentialEvents?.emit(.expired(reason: message))
             }
@@ -336,22 +638,27 @@ enum RelayTarget {
                 session: fresh, signed: true, context: context, requestID: requestID)
             switch Int(retry.status.code) {
             case 200..<300:
-                await context.signingClient.noteRelaySuccess()
-                return .responded(retry)
+                return await handleSuccess(
+                    response: retry, session: fresh, signed: true, head: head, identity: identity,
+                    wireBody: wireBody, target: target, httpClient: httpClient,
+                    context: context, requestID: requestID)
             case 401:
                 await context.signingClient.noteRelayRejection()
-                let (retryMessage, retryRewrapped) = await drainErrorBody(retry)
-                let reason = retryMessage ?? message ?? "relay 401 after chain rebuild"
+                let (retryDrained, retryRewrapped) = await drainErrorBody(retry)
+                let reason = retryDrained.message ?? message ?? "relay 401 after chain rebuild"
                 context.credentialEvents?.emit(.expired(reason: reason))
                 _ = retryRewrapped  // terminal: the 502 body is proxy-authored
                 return .credentialsExpired(reason)
             case 429:
-                return await handleRateLimited(
-                    response: retry, head: head, identity: identity, wireBody: wireBody, target: target,
-                    httpClient: httpClient, session: fresh, signed: true,
+                return await handleFourTwentyNine(
+                    response: retry, session: fresh, signed: true, head: head, identity: identity,
+                    wireBody: wireBody, target: target, httpClient: httpClient,
                     context: context, requestID: requestID)
             default:
-                return .responded(retry)
+                return await handleOtherStatus(
+                    response: retry, session: fresh, signed: true, head: head, identity: identity,
+                    wireBody: wireBody, target: target, httpClient: httpClient,
+                    context: context, requestID: requestID)
             }
         } catch {
             let reason = signingFailureReason(error)
@@ -376,8 +683,11 @@ enum RelayTarget {
         }
     }
 
-    /// A relay 429: one backoff retry on the same target; a second 429 moves
-    /// the decision to the caller (next-rule fallback or 529).
+    /// A relay rate-limit entry (a 429 status, or a classified 1302/1303 on
+    /// any status): one backoff retry on the same target; a second
+    /// rate-limit answer moves the decision to the caller (next-rule
+    /// fallback or 529). The policy itself is unchanged from the
+    /// pre-taxonomy ladder — classification only decides who enters it.
     private static func handleRateLimited(
         response: HTTPClientResponse,
         head: HTTPRequestHead,
@@ -391,7 +701,7 @@ enum RelayTarget {
         requestID: String
     ) async -> Outcome {
         _ = response  // terminal for the ladder: the caller answers 529/fallback
-        AppLog.proxy.info("[Proxy] [\(requestID)] Relay 429 — one retry after backoff")
+        AppLog.proxy.info("[Proxy] [\(requestID)] Relay rate limited — one retry after backoff")
         let backoffNanos = UInt64(max(0, context.rateLimitBackoff) * 1_000_000_000)
         try? await Task.sleep(nanoseconds: backoffNanos)
         do {
@@ -400,8 +710,24 @@ enum RelayTarget {
                 session: session, signed: signed, context: context, requestID: requestID)
             switch Int(retry.status.code) {
             case 200..<300:
-                await context.signingClient.noteRelaySuccess(signed: signed)
-                return .responded(retry)
+                // The 200-envelope check applies to the retry too — but a
+                // 200 still carrying a rate-limit code is TERMINAL here (no
+                // re-entry: the ladder stays bounded).
+                switch await checkSuccess(retry) {
+                case .plain(let relayable):
+                    await context.signingClient.noteRelaySuccess(signed: signed)
+                    return .responded(relayable)
+                case .envelope(let error, let rewrapped):
+                    let kind = RelayErrorTaxonomy.classify(error)
+                    if kind == .rateLimited {
+                        return .rateLimitedAfterRetry
+                    }
+                    return await handleClassifiedFailure(
+                        kind: kind, error: error, rewrapped: rewrapped,
+                        session: session, signed: signed, head: head, identity: identity,
+                        wireBody: wireBody, target: target, httpClient: httpClient,
+                        context: context, requestID: requestID)
+                }
             case 401:
                 return await handleReject(
                     response: retry, session: session, head: head, identity: identity,
@@ -410,7 +736,10 @@ enum RelayTarget {
             case 429:
                 return .rateLimitedAfterRetry
             default:
-                return .responded(retry)
+                return await handleOtherStatus(
+                    response: retry, session: session, signed: signed, head: head,
+                    identity: identity, wireBody: wireBody, target: target,
+                    httpClient: httpClient, context: context, requestID: requestID)
             }
         } catch {
             return .transportFailed(String(describing: error))
@@ -434,24 +763,30 @@ enum RelayTarget {
                 session: session, signed: false, context: context, requestID: requestID)
             switch Int(response.status.code) {
             case 200..<300:
-                // Served, but UNSIGNED — mark the degraded face (UI item 5).
-                await context.signingClient.noteRelaySuccess(signed: false)
-                return .responded(response)
+                // handleSuccess marks the success UNSIGNED (UI item 5) after
+                // the same 200-envelope check the signed path runs.
+                return await handleSuccess(
+                    response: response, session: session, signed: false, head: head,
+                    identity: identity, wireBody: wireBody, target: target,
+                    httpClient: httpClient, context: context, requestID: requestID)
             case 401:
                 await context.signingClient.noteRelayRejection()
-                let (message, _) = await drainErrorBody(response)
-                let reason = message ?? previousMessage ?? "relay 401 (unsigned fail-open)"
+                let (drained, _) = await drainErrorBody(response)
+                let reason = drained.message ?? previousMessage ?? "relay 401 (unsigned fail-open)"
                 context.credentialEvents?.emit(.expired(reason: reason))
                 return .credentialsExpired(reason)
             case 429:
                 // Same rate-limit policy as the signed path: one backoff
                 // retry (also unsigned), then the caller's decision.
-                return await handleRateLimited(
-                    response: response, head: head, identity: identity, wireBody: wireBody, target: target,
-                    httpClient: httpClient, session: session, signed: false,
-                    context: context, requestID: requestID)
+                return await handleFourTwentyNine(
+                    response: response, session: session, signed: false, head: head,
+                    identity: identity, wireBody: wireBody, target: target,
+                    httpClient: httpClient, context: context, requestID: requestID)
             default:
-                return .responded(response)
+                return await handleOtherStatus(
+                    response: response, session: session, signed: false, head: head,
+                    identity: identity, wireBody: wireBody, target: target,
+                    httpClient: httpClient, context: context, requestID: requestID)
             }
         } catch {
             return .transportFailed(String(describing: error))
@@ -622,11 +957,26 @@ enum RelayTarget {
 
     // MARK: - Error bodies
 
-    /// Reads an error response body (bounded to 8 KiB), extracts the relay's
-    /// error message (`error.message` / `message`), and returns a re-wrapped
-    /// response carrying the same bytes so a passthrough can still stream it.
+    /// Reads an error response body (bounded to 8 KiB), parses it into a
+    /// `RelayUpstreamError` (business `code` + message, parsed JSON only —
+    /// never substrings over the raw bytes), and returns a re-wrapped
+    /// response carrying the same bytes so a passthrough can still stream
+    /// it (an AsyncHTTPClient body admits a single iterator).
     static func drainErrorBody(_ response: HTTPClientResponse) async
-        -> (message: String?, rewrapped: HTTPClientResponse)
+        -> (error: RelayUpstreamError, rewrapped: HTTPClientResponse)
+    {
+        let data = await readBodyCapped(response, cap: 8192)
+        let error = RelayUpstreamError.parse(status: Int(response.status.code), body: data)
+            ?? RelayUpstreamError(status: Int(response.status.code))
+        return (error, rewrap(response, data))
+    }
+
+    /// Reads a response body IN FULL (no cap) and re-wraps the same bytes —
+    /// the 200-envelope peek: a legit non-streaming JSON success must come
+    /// back byte-identical whatever its size, so truncation is never an
+    /// option on this path.
+    static func drainWholeBody(_ response: HTTPClientResponse) async
+        -> (data: Data, rewrapped: HTTPClientResponse)
     {
         var data = Data()
         do {
@@ -634,22 +984,57 @@ enum RelayTarget {
                 if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
                     data.append(bytes)
                 }
-                if data.count > 8192 { break }
+            }
+        } catch {
+            // Body read failure mid-peek: forward what we have.
+        }
+        return (data, rewrap(response, data))
+    }
+
+    /// The bounded read behind `drainErrorBody` (stops past `cap` bytes).
+    private static func readBodyCapped(_ response: HTTPClientResponse, cap: Int) async -> Data {
+        var data = Data()
+        do {
+            for try await chunk in response.body {
+                if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
+                    data.append(bytes)
+                }
+                if data.count > cap { break }
             }
         } catch {
             // Body read failure on an error path: forward what we have.
         }
-        var message: String?
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            message = (json["error"] as? [String: Any])?["message"] as? String
-                ?? json["message"] as? String
-        }
+        return data
+    }
+
+    /// The single rewrap primitive: same version/status/headers, same bytes.
+    private static func rewrap(_ response: HTTPClientResponse, _ data: Data) -> HTTPClientResponse {
         var rewrapped = HTTPClientResponse(
             version: response.version, status: response.status, headers: response.headers)
         var buffer = ByteBufferAllocator().buffer(capacity: data.count)
         buffer.writeBytes(data)
         rewrapped.body = .bytes(buffer)
-        return (message, rewrapped)
+        return rewrapped
+    }
+
+    /// JSON content-type (SSE never qualifies) — the 200-envelope check and
+    /// only it; every other response body is relayed untouched.
+    static func isJSONResponse(_ response: HTTPClientResponse) -> Bool {
+        guard let value = response.headers.first(name: "content-type")?.lowercased()
+        else { return false }
+        return value.contains("json") && !value.contains("event-stream")
+    }
+
+    /// Envelope-sized: business envelopes are tiny, so a content-length
+    /// beyond the cap cannot be one — skipping the read leaves the stream
+    /// untouched for live relay (large non-streaming successes never pay
+    /// the buffer). Absent content-length (chunked) still peeks, reading
+    /// the whole body so a rewrap is never truncated.
+    static func isEnvelopeSized(_ response: HTTPClientResponse) -> Bool {
+        guard let raw = response.headers.first(name: "content-length"),
+            let length = Int(raw)
+        else { return true }
+        return length <= 8192
     }
 
     /// Display reason for a signing-chain failure — typed errors only, never

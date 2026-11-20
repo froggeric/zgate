@@ -445,11 +445,17 @@ struct RelayTargetTests {
     }
 
     private func makeRelayContext(
-        control: SigningControl, events: CredentialEventChannel? = nil, directoryLabel: String
+        control: SigningControl,
+        events: CredentialEventChannel? = nil,
+        directoryLabel: String,
+        quota: (any QuotaRelayCounting)? = nil,
+        onRiskControl: (@Sendable (String) -> Void)? = nil
     ) throws -> (RelayTarget.Context, URL) {
         let directory = try makeTempDirectory(directoryLabel)
         let client = makeSigningClient(directory: directory, control: control)
-        return (RelayTarget.Context(signingClient: client, credentialEvents: events), directory)
+        return (RelayTarget.Context(
+            signingClient: client, credentialEvents: events, quota: quota,
+            onRiskControl: onRiskControl), directory)
     }
 
     private func relayRouteTarget(port: Int, targetModel: String? = "glm-5.3") -> RoutingSnapshot.RouteTarget {
@@ -1606,6 +1612,531 @@ struct RelayTargetTests {
         }
     }
 
+    // MARK: - Business-code taxonomy (relay fidelity Task 6)
+
+    /// Quota-relay seam stub: counts exchange ticks and immediate polls.
+    private final class RecordingQuotaCounter: QuotaRelayCounting, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _relayed = 0
+        private var _polls = 0
+        var relayed: Int {
+            lock.lock(); defer { lock.unlock() }
+            return _relayed
+        }
+        var polls: Int {
+            lock.lock(); defer { lock.unlock() }
+            return _polls
+        }
+        func noteRelayedRequest() {
+            lock.lock(); _relayed += 1; lock.unlock()
+        }
+        func pollNow() async {
+            lock.lock(); _polls += 1; lock.unlock()
+        }
+    }
+
+    /// Concurrency-sleeper stub: records requested delays, sleeps nothing.
+    private final class SleepRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _delays: [TimeInterval] = []
+        var delays: [TimeInterval] {
+            lock.lock(); defer { lock.unlock() }
+            return _delays
+        }
+        func record(_ delay: TimeInterval) {
+            lock.lock(); _delays.append(delay); lock.unlock()
+        }
+    }
+
+    /// Risk-control event stub: records the surfaced reasons.
+    private final class RiskEventRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _reasons: [String] = []
+        var reasons: [String] {
+            lock.lock(); defer { lock.unlock() }
+            return _reasons
+        }
+        func record(_ reason: String) {
+            lock.lock(); _reasons.append(reason); lock.unlock()
+        }
+    }
+
+    @Test func quotaExhaustedCodeOn429DoesNotRetryTicksQuotaSurfaces429Class() async throws {
+        // Code 1113 on a 429 body whose message text contains a colliding
+        // 20-digit logid: the PARSED code classifies, no retry runs, the
+        // quota poll ticks immediately.
+        let relay = MockRelayServer(scripts: [.json(
+            ["code": 1113, "msg": "Insufficient balance, logid 11139999999999993009"],
+            status: 429)])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let quota = RecordingQuotaCounter()
+        let (context, directory) = try makeRelayContext(
+            control: control, directoryLabel: "quota1113", quota: quota)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-quota1113")
+        guard case .quotaExhausted(let reason) = outcome else {
+            Issue.record("expected quotaExhausted, got \(outcome)")
+            return
+        }
+        #expect(reason == "Insufficient balance, logid 11139999999999993009")
+        #expect(relay.requestCount == 1)  // no retry
+        #expect(quota.relayed == 1)       // the exchange tick
+        #expect(quota.polls == 1)         // the immediate exhausted tick
+    }
+
+    @Test func http402StatusFallbackIsQuotaExhausted() async throws {
+        let relay = MockRelayServer(scripts: [.json(["msg": "payment required"], status: 402)])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let quota = RecordingQuotaCounter()
+        let (context, directory) = try makeRelayContext(
+            control: control, directoryLabel: "quota402", quota: quota)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-quota402")
+        guard case .quotaExhausted(let reason) = outcome else {
+            Issue.record("expected quotaExhausted, got \(outcome)")
+            return
+        }
+        #expect(reason == "payment required")
+        #expect(relay.requestCount == 1)
+        #expect(quota.polls == 1)
+    }
+
+    @Test func rateLimitCode1302WithCollidingLogidRidesTheBackoffRetry() async throws {
+        // The live collision case: a 429 whose parsed code is 1302 (rate
+        // limit) while the message text contains "1113…3009" — the logid
+        // must NOT turn this into quota exhaustion or a concurrency ladder.
+        let limited = MockRelayServer.Script.json(
+            ["code": 1302, "msg": "rate limited, logid 11139999999999993009"],
+            status: 429)
+        let relay = MockRelayServer(scripts: [limited, limited])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let quota = RecordingQuotaCounter()
+        let (context, directory) = try makeRelayContext(
+            control: control, directoryLabel: "rl1302", quota: quota)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        context.rateLimitBackoff = 0.05
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-rl1302")
+        guard case .rateLimitedAfterRetry = outcome else {
+            Issue.record("expected rateLimitedAfterRetry, got \(outcome)")
+            return
+        }
+        #expect(relay.requestCount == 2)  // initial + exactly one retry
+        #expect(quota.polls == 0)         // not quota — no poll tick
+    }
+
+    @Test func rateLimitCode1302OnNon429StatusStillRetriesOnce() async throws {
+        // Classification, not status, drives remediation: a 400 carrying
+        // 1302 enters the same single-backoff-retry policy and recovers.
+        let relay = MockRelayServer(scripts: [
+            .json(["code": 1302, "msg": "rate limited"], status: 400),
+            .json(["id": "msg_rl_recovered"]),
+        ])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "rl400")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        context.rateLimitBackoff = 0.05
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-rl400")
+        guard case .responded(let response) = outcome else {
+            Issue.record("expected responded (recovered), got \(outcome)")
+            return
+        }
+        #expect(response.status == .ok)
+        #expect(relay.requestCount == 2)
+    }
+
+    @Test func concurrencyLimitedRetriesTwiceWithJitteredBackoffThenCallerFallback() async throws {
+        let limited = MockRelayServer.Script.json(
+            ["code": 3009, "msg": "concurrent request limit reached"], status: 429)
+        let relay = MockRelayServer(scripts: [limited, limited, limited])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "conc")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sleeper = SleepRecorder()
+        context.concurrencySleeper = { delay in sleeper.record(delay) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-conc")
+        guard case .concurrencyLimitedAfterRetries = outcome else {
+            Issue.record("expected concurrencyLimitedAfterRetries, got \(outcome)")
+            return
+        }
+        // Initial send + exactly two in-place retries.
+        #expect(relay.requestCount == 3)
+        #expect(sleeper.delays.count == 2)
+        // 3 s ± 1 s, then 6 s ± 1 s.
+        #expect(sleeper.delays[0] >= 2 && sleeper.delays[0] <= 4)
+        #expect(sleeper.delays[1] >= 5 && sleeper.delays[1] <= 7)
+    }
+
+    @Test func concurrencyLimitedRetryRecoversAfterFirstBackoff() async throws {
+        let relay = MockRelayServer(scripts: [
+            .json(["code": 3008, "msg": "concurrent limit"], status: 429),
+            .json(["id": "msg_conc_recovered"]),
+        ])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "concok")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sleeper = SleepRecorder()
+        context.concurrencySleeper = { delay in sleeper.record(delay) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-concok")
+        guard case .responded(let response) = outcome else {
+            Issue.record("expected responded (recovered), got \(outcome)")
+            return
+        }
+        #expect(response.status == .ok)
+        #expect(relay.requestCount == 2)
+        #expect(sleeper.delays.count == 1)
+        #expect(sleeper.delays[0] >= 2 && sleeper.delays[0] <= 4)
+    }
+
+    @Test func riskControl405DoesNotRetryEmitsEventSurfaces502Class() async throws {
+        let relay = MockRelayServer(scripts: [.json(["msg": "Method Not Allowed"], status: 405)])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let riskReasons = RiskEventRecorder()
+        let (context, directory) = try makeRelayContext(
+            control: control, directoryLabel: "risk405",
+            onRiskControl: { reason in riskReasons.record(reason) })
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-risk405")
+        guard case .riskControl(let reason) = outcome else {
+            Issue.record("expected riskControl, got \(outcome)")
+            return
+        }
+        #expect(reason == "Method Not Allowed")
+        #expect(riskReasons.reasons == ["Method Not Allowed"])
+        #expect(relay.requestCount == 1)  // no retry
+    }
+
+    @Test func riskControlCode3012On400DoesNotRetry() async throws {
+        let relay = MockRelayServer(scripts: [.json(
+            ["code": 3012, "msg": "risk control triggered"], status: 400)])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let riskReasons = RiskEventRecorder()
+        let (context, directory) = try makeRelayContext(
+            control: control, directoryLabel: "risk3012",
+            onRiskControl: { reason in riskReasons.record(reason) })
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-risk3012")
+        guard case .riskControl(let reason) = outcome else {
+            Issue.record("expected riskControl, got \(outcome)")
+            return
+        }
+        #expect(reason == "risk control triggered")
+        #expect(riskReasons.reasons.count == 1)
+        #expect(relay.requestCount == 1)
+    }
+
+    @Test func captcha3007SurfacesAsIsNeverSolved() async throws {
+        let script = MockRelayServer.Script.json(
+            ["code": 3007, "msg": "captcha challenge required"], status: 400)
+        let relay = MockRelayServer(scripts: [script])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "captcha")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-captcha")
+        guard case .responded(let response) = outcome else {
+            Issue.record("expected responded (captcha passthrough), got \(outcome)")
+            return
+        }
+        #expect(Int(response.status.code) == 400)
+        var body = Data()
+        for try await chunk in response.body {
+            if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
+                body.append(bytes)
+            }
+        }
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["code"] as? Int == 3007)
+        #expect(relay.requestCount == 1)  // no retry, no solve attempt
+    }
+
+    @Test func surfaceAsIsClassesPassThroughWithoutRetry() async throws {
+        // 3006 (model), 1210 (max_tokens), 1114 (nonexistent): all surface
+        // verbatim — 1114 in particular must never enter a remediation class.
+        let cases: [[String: Any]] = [
+            ["code": 3006, "msg": "model not allowed"],
+            ["code": 1210, "msg": "max_tokens out of range"],
+            ["code": 1114, "msg": "unknown code, logid 11149999999999993009"],
+        ]
+        let relay = MockRelayServer(scripts: cases.map {
+            .json($0, status: 400)
+        })
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "asis")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        for (index, _) in cases.enumerated() {
+            let outcome = await RelayTarget.execute(
+                head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+                target: relayRouteTarget(port: port), httpClient: httpClient,
+                context: context, requestID: "t-asis-\(index)")
+            guard case .responded(let response) = outcome else {
+                Issue.record("expected responded (passthrough), got \(outcome)")
+                return
+            }
+            #expect(Int(response.status.code) == 400)
+        }
+        #expect(relay.requestCount == 3)  // one send each, no retries
+    }
+
+    @Test func businessEnvelopeOn200IsClassifiedNotRelayedAsSuccess() async throws {
+        // A 200 whose JSON body carries code 1113 is quota exhaustion, not a
+        // success — classified, no retry, quota ticked.
+        let relay = MockRelayServer(scripts: [.json(
+            ["code": 1113, "msg": "insufficient quota"], status: 200)])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let quota = RecordingQuotaCounter()
+        let (context, directory) = try makeRelayContext(
+            control: control, directoryLabel: "env200", quota: quota)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-env200")
+        guard case .quotaExhausted(let reason) = outcome else {
+            Issue.record("expected quotaExhausted from 200 envelope, got \(outcome)")
+            return
+        }
+        #expect(reason == "insufficient quota")
+        #expect(relay.requestCount == 1)
+        #expect(quota.polls == 1)
+    }
+
+    @Test func businessEnvelope1302On200RidesTheRateLimitRetryTerminally() async throws {
+        // 200 + code 1302: enters the rate-limit policy; the retry's own
+        // 200-envelope 1302 is terminal (bounded ladder — no re-entry).
+        let limited = MockRelayServer.Script.json(
+            ["code": 1302, "msg": "rate limited in a 200"], status: 200)
+        let relay = MockRelayServer(scripts: [limited, limited])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "env1302")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        context.rateLimitBackoff = 0.05
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-env1302")
+        guard case .rateLimitedAfterRetry = outcome else {
+            Issue.record("expected rateLimitedAfterRetry, got \(outcome)")
+            return
+        }
+        #expect(relay.requestCount == 2)
+    }
+
+    @Test func legitNonStreaming200JSONSuccessRelaysByteIdentical() async throws {
+        // An Anthropic non-streaming success IS application/json — the
+        // 200-envelope check must not eat it (no top-level `code`).
+        let body = try JSONSerialization.data(withJSONObject: [
+            "id": "msg_ns", "type": "message", "role": "assistant",
+            "content": [["type": "text", "text": "héllo"]],
+            "model": "GLM-5.3", "stop_reason": "end_turn",
+        ])
+        let relay = MockRelayServer(scripts: [
+            MockRelayServer.Script(
+                status: 200, headers: ["content-type": "application/json"], chunks: [body])
+        ])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "ns200")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-ns200")
+        guard case .responded(let response) = outcome else {
+            Issue.record("expected responded, got \(outcome)")
+            return
+        }
+        #expect(response.status == .ok)
+        var relayed = Data()
+        for try await chunk in response.body {
+            if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
+                relayed.append(bytes)
+            }
+        }
+        #expect(relayed == body)
+    }
+
+    @Test func oversizedJSON200SuccessIsNotDrainedOrMangled() async throws {
+        // content-length beyond envelope size: cannot be a business
+        // envelope — the stream relays untouched, so a >8 KiB success
+        // survives byte-identical (no truncating peek).
+        let text = String(repeating: "x", count: 9000)
+        let body = Data("{\"id\":\"msg_big\",\"type\":\"message\",\"content\":\"\(text)\"}".utf8)
+        #expect(body.count > 8192)
+        let relay = MockRelayServer(scripts: [
+            MockRelayServer.Script(
+                status: 200, headers: ["content-type": "application/json"], chunks: [body])
+        ])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "big200")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-big200")
+        guard case .responded(let response) = outcome else {
+            Issue.record("expected responded, got \(outcome)")
+            return
+        }
+        #expect(response.status == .ok)
+        var relayed = Data()
+        for try await chunk in response.body {
+            if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
+                relayed.append(bytes)
+            }
+        }
+        #expect(relayed == body)
+    }
+
+    @Test func codeZero200BodyRelaysAsSuccess() async throws {
+        // Business success envelope (`code` 0): NOT an error envelope —
+        // relayed as-is per the `code != 0` gate.
+        let relay = MockRelayServer(scripts: [.json(["code": 0, "msg": "ok", "data": ["n": 1]])])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "zero200")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-zero200")
+        guard case .responded(let response) = outcome else {
+            Issue.record("expected responded, got \(outcome)")
+            return
+        }
+        #expect(response.status == .ok)
+        #expect(relay.requestCount == 1)
+    }
+
+    @Test func quotaPollDoesNotTickForBare429s() async throws {
+        // The immediate poll is the exhausted-class remediation only: a
+        // bare (unclassifiable) 429 goes through the retry without polling.
+        let limited = MockRelayServer.Script.json(
+            ["type": "error", "error": ["type": "rate_limit_error", "message": "rate limited"]],
+            status: 429)
+        let relay = MockRelayServer(scripts: [limited, limited])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let quota = RecordingQuotaCounter()
+        let (context, directory) = try makeRelayContext(
+            control: control, directoryLabel: "bare429", quota: quota)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        context.rateLimitBackoff = 0.05
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-bare429")
+        guard case .rateLimitedAfterRetry = outcome else {
+            Issue.record("expected rateLimitedAfterRetry, got \(outcome)")
+            return
+        }
+        #expect(relay.requestCount == 2)
+        #expect(quota.relayed == 1)
+        #expect(quota.polls == 0)
+    }
+
     // MARK: - Endpoint routing (agent/configs, relay fidelity Task 1)
 
     /// EndpointResolving stub: rewrites the `from` prefix to `to` (keeping
@@ -1942,6 +2473,93 @@ struct RelayTargetTests {
         // Relay saw initial + one retry; the backup served the final answer.
         #expect(relay.requestCount == 2)
         #expect(backup.requestCount == 1)
+        finishChannel(client)
+    }
+
+    // MARK: - ProxyForwarder + taxonomy terminals (relay fidelity Task 6)
+
+    @Test func forwardQuotaExhaustedAnswers429ShapedError() async throws {
+        let relay = MockRelayServer(scripts: [.json(
+            ["code": 1113, "msg": "insufficient quota"], status: 429)])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, _) = try makeRelayContext(control: control, directoryLabel: "fwd429q")
+        let fixture = try makeForwardFixture(relayPort: port, backupPort: nil)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client)
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .tooManyRequests)
+        #expect(sawEnd)
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let error = try #require(json["error"] as? [String: Any])
+        #expect(error["type"] as? String == "rate_limit_error")
+        #expect((error["message"] as? String)?.localizedCaseInsensitiveContains("quota") == true)
+        // No retry: exactly one relay request.
+        #expect(relay.requestCount == 1)
+        finishChannel(client)
+    }
+
+    @Test func forwardRiskControlAnswersClear502() async throws {
+        let relay = MockRelayServer(scripts: [.json(
+            ["code": 3012, "msg": "risk control triggered"], status: 400)])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, _) = try makeRelayContext(control: control, directoryLabel: "fwd502risk")
+        let fixture = try makeForwardFixture(relayPort: port, backupPort: nil)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client)
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .badGateway)
+        #expect(sawEnd)
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let error = try #require(json["error"] as? [String: Any])
+        #expect(error["type"] as? String == "api_error")
+        #expect((error["message"] as? String)?.localizedCaseInsensitiveContains("risk control") == true)
+        #expect(relay.requestCount == 1)  // no retry
+        finishChannel(client)
+    }
+
+    @Test func forwardConcurrencyLimitedAfterRetriesFallsBackToBackupVendor() async throws {
+        let limited = MockRelayServer.Script.json(
+            ["code": 3009, "msg": "concurrent limit"], status: 429)
+        let relay = MockRelayServer(scripts: [limited, limited, limited])
+        let relayPort = try await relay.start()
+        let backup = MockRelayServer(scripts: [.json(["id": "msg_backup_conc"])])
+        let backupPort = try await backup.start()
+        defer {
+            Task { await relay.shutdown() }
+            Task { await backup.shutdown() }
+        }
+        let control = SigningControl()
+        let (context, _) = try makeRelayContext(control: control, directoryLabel: "fwdconc")
+        let sleeper = SleepRecorder()
+        context.concurrencySleeper = { delay in sleeper.record(delay) }
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: backupPort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client)
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .ok)
+        #expect(sawEnd)
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["id"] as? String == "msg_backup_conc")
+        // Initial send + both in-place retries on the relay; backup serves.
+        #expect(relay.requestCount == 3)
+        #expect(backup.requestCount == 1)
+        #expect(sleeper.delays.count == 2)
         finishChannel(client)
     }
 }

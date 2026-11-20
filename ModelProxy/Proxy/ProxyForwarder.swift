@@ -881,9 +881,18 @@ enum ProxyForwarder {
             context: relayContext,
             requestID: requestID)
 
-        if case .rateLimitedAfterRetry = outcome {
-            // The backoff retry already ran inside the ladder: fall back to
-            // the rule's next target if one exists, else answer 529.
+        // Rate-limited after its backoff retry, or concurrency-limited after
+        // both in-place retries (Task 6): the retries already ran inside the
+        // ladder — fall back to the rule's next target if one exists, else
+        // answer 529.
+        let callerFallback: Bool
+        switch outcome {
+        case .rateLimitedAfterRetry, .concurrencyLimitedAfterRetries:
+            callerFallback = true
+        default:
+            callerFallback = false
+        }
+        if callerFallback {
             if let allTargets = await router.targets(for: model), allTargets.count > 1 {
                 let backupTarget = (primaryTarget.vendorID == allTargets[0].vendorID) ? allTargets[1] : allTargets[0]
                 AppLog.proxy.info(
@@ -941,6 +950,21 @@ enum ProxyForwarder {
             return RelayTarget.UpstreamTerminal(
                 status: 529, anthropicType: "overloaded_error",
                 message: "Relay rate limited (429 after retry) and no fallback rule is configured.")
+        case .quotaExhausted(let reason):
+            // 429-shaped by design (relay fidelity Task 6): the plan quota is
+            // gone — the client's own rate-limit handling applies, and the
+            // quota poll has already been ticked for the UI.
+            return RelayTarget.UpstreamTerminal(
+                status: 429, anthropicType: "rate_limit_error",
+                message: "Relay plan quota exhausted, no retry is possible. (\(reason))")
+        case .riskControl(let reason):
+            return RelayTarget.UpstreamTerminal(
+                status: 502, anthropicType: "api_error",
+                message: "Relay risk control engaged — request blocked upstream, no retry. (\(reason))")
+        case .concurrencyLimitedAfterRetries:
+            return RelayTarget.UpstreamTerminal(
+                status: 529, anthropicType: "overloaded_error",
+                message: "Relay concurrency-limited (codes 3008/3009/3010) after retries and no fallback rule is configured.")
         case .responded:
             preconditionFailure("responded outcomes stream; they do not map to a terminal")
         }
