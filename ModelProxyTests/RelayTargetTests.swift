@@ -561,7 +561,7 @@ struct RelayTargetTests {
         #expect(RelayTarget.canonicalModel("  GLM-5.3  ") == "GLM-5.3")
     }
 
-    // MARK: - Outgoing header set (AC: fixture statics byte-identical, volatile shapes)
+    // MARK: - Outgoing header set (AC: fixture statics byte-identical, wire order, volatile shapes)
 
     @Test func outgoingHeadersMatchFixtureStaticsAndVolatileShapes() async throws {
         let relay = MockRelayServer(scripts: [.json(["id": "msg_1"])])
@@ -589,8 +589,9 @@ struct RelayTargetTests {
         #expect(request.path == "/api/v1/ultra-zai/anthropic/v1/messages")
 
         let headers = request.headers
-        // Static identity set — byte-identical to the Task 1 capture.
-        #expect(headers["user-agent"] == "ZCode/0.17.1 ai-sdk/provider-utils/4.0.27 runtime/node.js/22")
+        // Static identity set — byte-identical to the regenerated CLI-face
+        // fixture (`v3-relay-request.json`, 27 headers in wire order).
+        #expect(headers["user-agent"] == "ZCode/0.17.1 ai-sdk/anthropic/3.0.81")
         #expect(headers["anthropic-beta"] == "mid-conversation-system-2026-04-07")
         #expect(headers["anthropic-version"] == "2023-06-01")
         #expect(headers["content-type"] == "application/json")
@@ -603,8 +604,11 @@ struct RelayTargetTests {
         #expect(headers["x-client-language"] == "en-US")
         #expect(headers["x-client-version"] == "0.17.1")
         #expect(headers["x-os-category"] == "macos")
-        #expect(headers["x-release-channel"] == "production")
         #expect(headers["x-app-id"] == "zcode")
+        // Dropped from the CLI face: the CLI sends release-channel only when
+        // one is env-provided; session-features is empty and not sent.
+        #expect(headers["x-release-channel"] == nil)
+        #expect(headers["x-zcode-session-features"] == nil)
         // Dynamic-but-known environment identity.
         #expect(headers["x-client-timezone"] == TimeZone.current.identifier)
         #expect(headers["x-platform"] == "darwin-arm64")
@@ -656,6 +660,59 @@ struct RelayTargetTests {
         }
         #expect(headers["x-session-id"] == context.sessionID)
         #expect(UUID(uuidString: context.sessionID) != nil)
+    }
+
+    /// The exact CLI 0.17.1 wire order (undici/HTTP 1.1 is order-preserving —
+    /// this pins the real insertion sequence, not a sorted set). The signer's
+    /// static block (`x-client-ts/-version/-sig/-nonce`, `x-app-id`,
+    /// `x-client-pow`) is gated on `signed` exactly like the official
+    /// `sendSigned` path; `x-api-key` stays this wave (Task 9 probe decides).
+    @Test func relayHeadersMatchCLIWireOrder() throws {
+        let session = SigningSession(
+            projectToken: Fixtures.projectToken,
+            apiKeyId: Fixtures.apiKeyId,
+            privateKey: try Curve25519.Signing.PrivateKey(rawRepresentation: Fixtures.ed25519Seed),
+            expiresAtMs: .max,
+            marginRelaxed: false)
+
+        // UA is built from the version, never a frozen literal.
+        #expect(RelayTarget.userAgent(for: "0.17.1") == "ZCode/0.17.1 ai-sdk/anthropic/3.0.81")
+        #expect(RelayTarget.userAgent(for: "9.9.9") == "ZCode/9.9.9 ai-sdk/anthropic/3.0.81")
+
+        let identity = [
+            "content-type", "anthropic-version", "authorization", "http-referer",
+            "user-agent", "x-zcode-app-version", "x-title", "x-client-language",
+            "x-client-timezone", "x-zcode-agent", "x-platform", "x-os-category",
+            "x-os-version", "x-request-id", "x-zcode-session-type", "x-zcode-trace-id",
+            "x-query-id", "x-zcode-query-source", "x-session-id", "anthropic-beta",
+        ]
+        let signer = [
+            "x-client-ts", "x-client-version", "x-client-sig", "x-client-nonce",
+            "x-app-id", "x-client-pow",
+        ]
+
+        let signed = try RelayTarget.relayHeaders(
+            session: session, signed: true, sessionID: "sid")
+        #expect(signed.map { $0.name } == identity + signer + ["x-api-key"])
+        #expect(signed["user-agent"] == ["ZCode/0.17.1 ai-sdk/anthropic/3.0.81"])
+
+        // Unsigned fail-open attempt: identity + auth only — the signer block
+        // is the CLI signer's, so it never rides an unsigned request.
+        let unsigned = try RelayTarget.relayHeaders(
+            session: session, signed: false, sessionID: "sid")
+        #expect(unsigned.map { $0.name } == identity + ["x-api-key"])
+
+        // The Task 1 routing header rides immediately after `authorization`
+        // (it is ZGate's, not part of the CLI static face).
+        let routed = try RelayTarget.relayHeaders(
+            session: session, signed: true, sessionID: "sid",
+            zcodeAuthorization: "synthetic-zcode-jwt")
+        let routedNames = routed.map { $0.name }
+        #expect(routedNames == {
+            var names = identity
+            names.insert("x-zcode-authorization", at: names.firstIndex(of: "authorization")! + 1)
+            return names
+        }() + signer + ["x-api-key"])
     }
 
     @Test func sessionIDStaysStableAcrossRequests() async throws {

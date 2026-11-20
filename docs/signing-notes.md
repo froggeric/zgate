@@ -117,23 +117,32 @@ to the mint. `z/login` itself fires on every invocation, using the store `access
 ## Relay request — fixture
 
 `ModelProxyTests/Fixtures/v3-relay-request.json` (plan path
-`Tests/ZGateTests/Fixtures/v3-relay-request.json`): url/method/headers from the wire.log V3
-capture, 28 headers. Value policy: credential-bearing headers (`authorization`, `x-api-key`,
-`x-client-sig`) and per-request IDs/nonces keep wire.log's already-truncated forms (≤28 chars,
-length suffix preserved — the `(463)`/`(470)`/`(88)` lengths are the observed plan-token/sig
-lengths Tasks 4–5 need). Whitelisted non-credential headers are full values.
+`Tests/ZGateTests/Fixtures/v3-relay-request.json`): url/method/headers of the official CLI
+0.17.1 wire face, regenerated 2026-11-20 (relay-fidelity Task 2) to the exact CLI insertion
+order, 27 headers. Value policy: credential-bearing headers (`authorization`, `x-api-key`,
+`x-client-sig`) and per-request IDs/nonces keep the wire.log capture's already-truncated forms
+(≤28 chars, length suffix preserved — the `(463)`/`(470)`/`(88)` lengths are the observed
+plan-token/sig lengths Tasks 4–5 need). Whitelisted non-credential headers are full values.
 
+- Header order (the fixture object lists them in this order; undici/HTTP 1.1 preserves it):
+  `content-type`, `anthropic-version`, `authorization`, `http-referer`, `user-agent`,
+  `x-zcode-app-version`, `x-title`, `x-client-language`, `x-client-timezone`, `x-zcode-agent`,
+  `x-platform`, `x-os-category`, `x-os-version`, `x-request-id`, `x-zcode-session-type`,
+  `x-zcode-trace-id`, `x-query-id`, `x-zcode-query-source`, `x-session-id`, `anthropic-beta`,
+  then the signer block `x-client-ts`, `x-client-version`, `x-client-sig`, `x-client-nonce`,
+  `x-app-id`, `x-client-pow`, then `x-api-key`. ZGate additionally inserts its Task-1 routing
+  header `x-zcode-authorization` immediately after `authorization` when endpoint routing flags
+  it (ZGate's own, not part of the CLI face).
 - `anthropic-beta` recovered **byte-exact** from the bundle literal
   `ke.add("mid-conversation-system-2026-04-07")` — 34 chars, head `mid-conversation-s` /
   tail `-04-07` / length all match the wire.log truncation, and the 18:25Z live run sent the
   identical value.
-- `user-agent` full value from the 18:25Z live run (whitelisted → logged in full):
-  `ZCode/0.17.1 ai-sdk/provider-utils/4.0.27 runtime/node.js/22` (60 chars — composition:
-  CLI version prefix + ai-sdk provider-utils segment + runtime segment with node *major* only;
-  matches the V3 truncation checkpoints head `ZCode/0.17.1 ai-sd` / tail `.js/22` / len 60).
-- The live relay header **name set is identical to the V3 capture** (same 28 headers), so the
-  fixture's names are live-confirmed; only per-request values (ids, nonces, ts, pow) differ
-  between runs, as expected.
+- `user-agent` official CLI composition (Task 2): `ZCode/<version> ai-sdk/anthropic/3.0.81` —
+  built from `clientVersion`, never a frozen literal. The earlier capture's
+  `ai-sdk/provider-utils/… runtime/node.js/22` tail was the pre-Task-2 divergence, now fixed.
+- `x-release-channel` is no longer listed (the CLI sends it only when env-provided) and
+  `x-zcode-session-features` is never sent (empty) — the earlier 28-header capture's
+  `x-release-channel: production` was the one extra name; the other 27 are live-confirmed.
 
 ### Relay request/response body shapes (18:25Z, typed, zero values — for Task 5)
 

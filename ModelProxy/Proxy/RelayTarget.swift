@@ -7,9 +7,9 @@ import OSLog
 
 /// The zcode signed relay as a forward target (`vendorKind == .relay`).
 ///
-/// Mirrors the zbridge request builder (`zbridge.mjs` `buildRelayHeaders` /
-/// `mapModel`, pinned by the Task 1 capture `v3-relay-request.json`): the
-/// identity header set is built from scratch — client headers never leak
+/// Mirrors the zcode CLI request face: the identity header set (order + UA
+/// per the official CLI 0.17.1, pinned by `v3-relay-request.json`) is built
+/// from scratch — client headers never leak
 /// upstream — the top-level `model` value is rewritten to the GLM-canonical
 /// rule target with a byte-preserving splice, and every request carries the
 /// per-request V4 signing quartet (`x-client-ts`/`-nonce`/`-pow`/`-sig`)
@@ -30,9 +30,14 @@ import OSLog
 ///   caller for next-rule fallback / 529.
 enum RelayTarget {
 
-    // Identity constants pinned from the zcode CLI bundle (Task 1 capture).
+    // Identity constants pinned from the official zcode CLI 0.17.1 face
+    // (Task 1 capture, corrected to the CLI wire order/UA in Task 2).
     static let clientVersion = "0.17.1"
-    static let userAgent = "ZCode/0.17.1 ai-sdk/provider-utils/4.0.27 runtime/node.js/22"
+    /// Official CLI UA — built from the version, never a frozen literal
+    /// (the relay face is `ai-sdk/anthropic/3.0.81`, not provider-utils).
+    static func userAgent(for version: String) -> String {
+        "ZCode/\(version) ai-sdk/anthropic/3.0.81"
+    }
     static let appId = "zcode"
     static let anthropicBeta = "mid-conversation-system-2026-04-07"
     static let anthropicVersion = "2023-06-01"
@@ -42,7 +47,6 @@ enum RelayTarget {
     static let querySource = "main_turn"
     static let sessionType = "main"
     static let clientLanguage = "en-US"
-    static let releaseChannel = "production"
     /// Relay 429: one retry after this backoff before fallback / 529.
     static let defaultRateLimitBackoff: TimeInterval = 1
 
@@ -397,10 +401,13 @@ enum RelayTarget {
     // MARK: - Headers
 
     /// The complete relay header set, built from scratch (client headers are
-    /// never forwarded). Auth always rides along; `signed == false` (the
-    /// fail-open attempt) omits only the signing quartet. A non-nil
+    /// never forwarded) in the official CLI 0.17.1 wire order (undici/HTTP 1.1
+    /// is order-preserving). Auth always rides along; `signed == false` (the
+    /// fail-open attempt) omits the signer's whole static block (`x-client-ts`
+    /// /`-version`/`-sig`/`-nonce`, `x-app-id`, `x-client-pow`). A non-nil
     /// `zcodeAuthorization` (endpoint routing flagged this request) adds the
-    /// `x-zcode-authorization` Bearer header right after `authorization`.
+    /// `x-zcode-authorization` Bearer header right after `authorization` —
+    /// that one is ZGate's routing header, not part of the CLI static face.
     static func relayHeaders(
         session: SigningSession,
         signed: Bool,
@@ -408,33 +415,33 @@ enum RelayTarget {
         zcodeAuthorization: String? = nil
     ) throws -> HTTPHeaders {
         var headers = HTTPHeaders()
-        headers.add(name: "anthropic-beta", value: anthropicBeta)
-        headers.add(name: "anthropic-version", value: anthropicVersion)
         headers.add(name: "content-type", value: "application/json")
-        headers.add(name: "http-referer", value: httpReferer)
-        headers.add(name: "user-agent", value: userAgent)
-        headers.add(name: "x-app-id", value: appId)
-        headers.add(name: "x-client-language", value: clientLanguage)
-        headers.add(name: "x-client-timezone", value: TimeZone.current.identifier)
-        headers.add(name: "x-client-version", value: clientVersion)
-        headers.add(name: "x-os-category", value: osCategory)
-        headers.add(name: "x-os-version", value: osVersion)
-        headers.add(name: "x-platform", value: platform)
-        headers.add(name: "x-query-id", value: UUID().uuidString.lowercased())
-        headers.add(name: "x-release-channel", value: releaseChannel)
-        headers.add(name: "x-request-id", value: UUID().uuidString.lowercased())
-        headers.add(name: "x-session-id", value: sessionID)
-        headers.add(name: "x-title", value: title)
-        headers.add(name: "x-zcode-agent", value: zcodeAgent)
-        headers.add(name: "x-zcode-app-version", value: clientVersion)
-        headers.add(name: "x-zcode-query-source", value: querySource)
-        headers.add(name: "x-zcode-session-type", value: sessionType)
-        headers.add(name: "x-zcode-trace-id", value: UUID().uuidString.lowercased())
+        headers.add(name: "anthropic-version", value: anthropicVersion)
         headers.add(name: "authorization", value: "Bearer \(session.projectToken)")
         if let zcodeAuthorization {
+            // Task-1 routing header — rides immediately after `authorization`.
             headers.add(name: "x-zcode-authorization", value: "Bearer \(zcodeAuthorization)")
         }
-        headers.add(name: "x-api-key", value: session.projectToken)
+        headers.add(name: "http-referer", value: httpReferer)
+        headers.add(name: "user-agent", value: userAgent(for: clientVersion))
+        headers.add(name: "x-zcode-app-version", value: clientVersion)
+        headers.add(name: "x-title", value: title)
+        headers.add(name: "x-client-language", value: clientLanguage)
+        headers.add(name: "x-client-timezone", value: TimeZone.current.identifier)
+        headers.add(name: "x-zcode-agent", value: zcodeAgent)
+        headers.add(name: "x-platform", value: platform)
+        headers.add(name: "x-os-category", value: osCategory)
+        headers.add(name: "x-os-version", value: osVersion)
+        headers.add(name: "x-request-id", value: UUID().uuidString.lowercased())
+        headers.add(name: "x-zcode-session-type", value: sessionType)
+        headers.add(name: "x-zcode-trace-id", value: UUID().uuidString.lowercased())
+        headers.add(name: "x-query-id", value: UUID().uuidString.lowercased())
+        headers.add(name: "x-zcode-query-source", value: querySource)
+        headers.add(name: "x-session-id", value: sessionID)
+        // The CLI sends its beta flag only when set (ours always is).
+        if !anthropicBeta.isEmpty {
+            headers.add(name: "anthropic-beta", value: anthropicBeta)
+        }
         if signed {
             let ts = String(currentMs())
             let nonce = randomHex32()
@@ -453,10 +460,13 @@ enum RelayTarget {
                 throw RelayTargetError.signingMaterialUnavailable("ed25519 signature failed")
             }
             headers.add(name: "x-client-ts", value: ts)
-            headers.add(name: "x-client-nonce", value: nonce)
-            headers.add(name: "x-client-pow", value: pow.value)
+            headers.add(name: "x-client-version", value: clientVersion)
             headers.add(name: "x-client-sig", value: sig)
+            headers.add(name: "x-client-nonce", value: nonce)
+            headers.add(name: "x-app-id", value: appId)
+            headers.add(name: "x-client-pow", value: pow.value)
         }
+        headers.add(name: "x-api-key", value: session.projectToken)
         return headers
     }
 
