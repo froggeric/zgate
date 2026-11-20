@@ -4,6 +4,51 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
+## 2.10 (1)
+
+### 2026-11-20 — relay fidelity & resilience
+
+- **Exact CLI request face, per-conversation sessions.** The relay path now
+  mirrors the official zcode CLI wire face exactly (header order + UA
+  pinned from the CLI bundle), and derives ONE session identity per
+  conversation from the Claude Code session header — feeding `x-session-id`,
+  the proof-of-work input and the signature message together, like the
+  official `sess_` semantics.
+- **Server-driven endpoint routing, fail-open.** `agent/configs` is
+  consulted lazily per request (300 s TTL / 30 s failure cooldown / 3 s
+  bound) and may rewrite the upstream URL exactly like the CLI's provider
+  table. Any fetch failure leaves the request untouched — routing can
+  never be the reason a request fails. (Live-probed on release day: the
+  server's table maps the public api hosts into the relay; the interim
+  pre-routing pin experiment was reverted in-place — the relay vendor
+  stays on the resolved ultra target, which live-answers 200.)
+- **Version tracking.** The server's `forceUpdate.minimalVersion` is
+  polled and the impersonated CLI version bumped greater-only across all
+  four version surfaces (live-observed bump 0.17.1 → 3.5.3 accepted by
+  the relay on the next request).
+- **Model hygiene.** Retired GLM names are canonicalized to the current
+  main/flash models (documented routing-compatibility transform), provider
+  prefixes are stripped, and an out-of-range `max_tokens` is clamped into
+  `[1, 131072]` — each byte-preserving outside its field.
+- **Precise failure handling; degraded never terminal.** Upstream errors
+  are classified by business code from parsed JSON (quota / rate-limit /
+  concurrency / risk-control / captcha / model / parameter), each with its
+  documented retry policy; connect failures retry twice on a short ladder;
+  two 401s rebuild the signing chain exactly once. A signing outage or
+  credentials-expired outcome enters a half-open degraded state that
+  serves class-routed traffic DIRECTLY from a signing-free `api.z.ai`
+  fallback edge (key minted on demand, never used to launder a 401) while
+  the signed ladder recovers automatically.
+- **Off-peak async surface (opt-in, default OFF).** A `/async/` route
+  family (`ANTHROPIC_BASE_URL=http://localhost:<port>/async`) runs
+  generation through ZCode's Off-Peak / Idle Plan ticket queue —
+  availability → take → poll (SSE keepalives while queued) → unsigned
+  data-plane request → untouched SSE relay → settle. Disabled by default;
+  disabled, it answers locally and contacts nothing. Stream-only
+  (`"stream": true` required). The control plane accepts the plan JWT
+  (live-probed); the full round-trip activates with the first minted
+  fallback key.
+
 ## 2.9 (10)
 
 ### 2026-11-19 — per-chip splash, update center, self-update, storage management

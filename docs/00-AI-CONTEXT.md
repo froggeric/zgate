@@ -39,6 +39,25 @@ are never sent (the relay 401s them). Decision record:
 - `ModelProxy/Signing/ZaiLoginClient.swift`, `CredentialKeeper.swift`, `BizSessionCache.swift` - in-app OAuth, renewal
 - `ModelProxy/Services/CredentialStore.swift` - shared zcode credential store access
 
+### Relay fidelity & resilience (2026-11-20 wave)
+
+The relay path mirrors the official CLI wire face with ONE per-conversation
+session identity, resolves URLs through the server's `agent/configs` table
+(fail-open), tracks the server's minimum CLI version, performs the five
+documented routing-compatibility transforms (model canonicalization,
+provider-prefix strip, max_tokens clamp, session derivation, endpoint
+routing), classifies upstream failures by business code with per-class retry
+policy, and serves degraded traffic from a signing-free api.z.ai fallback
+edge instead of failing. An opt-in (default OFF) off-peak `/async/` surface
+routes through ZCode's Off-Peak ticket queue. Feature doc:
+`docs/05-features/2026-11-20-relay-fidelity-resilience.md`.
+
+**Key Files:**
+- `ModelProxy/Services/EndpointConfigService.swift` - lazy agent/configs routing (fail-open)
+- `ModelProxy/Proxy/RelayErrorTaxonomy.swift` / `RelayHealth.swift` - failure classes, degraded machine + fallback edge
+- `ModelProxy/Services/VersionPinService.swift` - server-driven CLI-version pin
+- `ModelProxy/Proxy/OffPeakTarget.swift` / `ModelProxy/Services/OffPeakTicketClient.swift` - off-peak async surface
+
 ### Configuration
 
 Manages vendors, model mappings, routing rules, and client-specific settings

@@ -186,3 +186,83 @@ human-only):
 ZCODE_DATA_BASE_DIR=$HOME/.zcode-scratch-v3 ZCODE_CREDENTIAL_SECRET_FILE=$HOME/.zcode-scratch-v3/secret.txt \
 node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login zai
 ```
+
+## Task-11 live probes (2026-11-20, relay fidelity wave)
+
+Method: a staged Debug build of the working tree (+2 throwaway probe lines, never
+committed), Developer-ID signed with the production identity and bundle id
+(required — see below), run against a COPY of the live config in its own
+app-support dir (`ZGATE_APP_SUPPORT_DIR`; the app read `~/.zcode` itself). All
+data-plane payloads were `{"model":…,"max_tokens":8,"messages":[{"role":"user","content":"x"}]}`.
+No credential value appears below; the probe log lines quoted carry URLs and
+business codes only.
+
+**Staged-build signing prerequisite (new pin):** an ad-hoc signed build BLOCKS
+FOREVER inside `SecItemCopyMatching → SecKeychainSearchCopyNext` while
+`CredentialStore` unseals the `enc:v2:os:` envelopes — the login-keychain item's
+ACL designates the properly signed app, and an unknown signer waits on a prompt
+that never resolves (sampled stack: `LiveKeychain.tryProbe` → `_pthread_mutex_firstfit_lock_wait`).
+Any staged build that must read the live store has to carry the production
+identity + bundle id (as `scripts/notarize.sh` signs). This is also why the E2E
+rig's relay scenario points `credentialStoreBase` at an empty dir — a missing
+store file throws BEFORE the keychain probe (verified in `CredentialStore.init`).
+
+**Probe A (pre-routing pin + mapping) — FAIL as implemented; revert applied
+(commit 9c5b224).** The wave's migration 9 had repinned the relay vendor to the
+CLI's pre-routing URL `…/zcode-plan/anthropic`. Live behavior, deterministic
+across 4 requests and BOTH version pins (0.17.1 and the server-bumped 3.5.3):
+the `agent/configs` snapshot is fetched and accepted, but its table contains
+only two entries —
+`https://api.z.ai/api/anthropic/v1/messages → https://zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages`
+and `open.bigmodel.cn/api/anthropic → …/ultra/anthropic` (identical answers for
+UA `ZCode/0.17.1` and `ZCode/3.5.3`, curl-verified) — so `resolve` is a no-op
+for the pin, the request serves the pinned URL, and the relay 401-rejects it
+(passed-through first 401, empty body). Counterfactual, same build, same face,
+vendor pointed at `…/ultra-zai/anthropic` (migration disabled in the throwaway
+build): HTTP 200 in 2.8 s, `model:"GLM-5.3-Flash"`, `usage.output_tokens:8` —
+canonicalization, clamp and the signed quartet all correct end to end. The pin
+reverted to the resolved ultra URL; migration 9 inverted to heal interim
+configs. Also observed: the first cold signing chain WITHOUT the live
+`biz-session.cache` fails `z/login` (reloginRequired) — staging that one file
+(the app's own cache, copied not printed) into the probe app-support lets the
+chain complete; the relay then accepts the face.
+
+**Probe B (Authorization-only) — SAFE TO DROP (flip decision left to the
+controller; NOT committed).** Same staged build, env-gated removal of
+`x-api-key` in the throwaway relayHeaders (headers.remove after the add):
+HTTP 200 in 1.7 s against ultra-zai with `authorization: Bearer <project
+token>` + the V4 quartet only. Both headers stay in the committed code today;
+the fixtures/tests pin x-api-key KEPT, so flipping is a deliberate follow-up
+(not done by the probe).
+
+**Probe C (fallback edge round-trip) — mint deferred to first real fallback
+serve.** The live config carries no edge-vendor API key (none existed to read;
+the migration seeds the vendor keyless and the mint chain fills it lazily), and
+minting against the live account was ruled out of probe scope. Deferred with
+it: the monitor-API fraction read around the edge request. Incidental live
+datum from probe A's failed leg: the degraded machine DID engage exactly as
+designed (`Credentials expired: … serving the fallback edge … directly`, then
+`fallback key mint failed: reloginRequired` — the mint needs the same login
+chain, correctly not bypassed).
+
+**Probe D (off-peak, phase 1) — JWT ACCEPTED on the control plane; round-trip
+awaits the minted key.** Phase 1 via the staged app (a raw curl cannot work:
+the store's `zcodejwttoken` is an `enc:v2:os:` envelope only the designated app
+can unseal). `GET /api/v1/off-peak/ticket/availability` with the real plan JWT
+and the full CLI identity face: with the `x-coding-plan-api-key` header ABSENT
+the plane answers HTTP 400 `{"code":3001,"msg":"parameter error"}` (not 401)
+deterministically; with the header PRESENT (a dummy value — none real exists
+yet) it answers a well-formed `code:0` envelope — observed
+`can_take_number=true, next_take_at=nil` at 2026-11-20T17:43Z (18:43 Paris).
+So: the header itself is a required parameter, availability does not validate
+its value, and the real JWT produced a success envelope. Take/data-plane/settle
+and the quota-does-not-move confirmation remain for the first real fallback
+serve (phase-2 checklist in the task-11 report). No ticket was taken during
+the probe (state machine aborted on client disconnect before take completed).
+
+**Fifth version surface (known follow-up, pinned here):** `EndpointConfigService`'s
+own `agent/configs` fetch still stamps the BUNDLED default version
+(`RelayTarget.clientVersion`, 0.17.1) in its UA/`x-zcode-app-version` instead
+of the configured pin — pre-existing Task-4 deferral, now explicitly harmless:
+the live table is identical for 0.17.1 and 3.5.3 (curl-verified above). Thread
+`relayClientVersion` into the service when touching it next.
