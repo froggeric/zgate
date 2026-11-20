@@ -785,6 +785,29 @@ struct RouterTests {
         await relayServer.stop()
     }
 
+    @Test func offPeakContextRebuiltAcrossStopStart() async throws {
+        // The off-peak data plane captures the per-start shared HTTP client
+        // (OffPeakTarget.Context.dataPlaneExecute) and stop() shuts that
+        // client down — so stop() must nil the context and the next start()
+        // rebuild it against the NEW client. A surviving context would throw
+        // on every off-peak data-plane call after pause/resume (the ticket
+        // plane is unaffected: fresh client per call).
+        let config = AppConfig(
+            clients: [ClientConfig(
+                clientName: "Claude Code", port: 0,
+                defaultUpstream: "https://api.anthropic.com")])
+        let server = ProxyServer(tokenStatsStore: TokenStatsStore())
+        await server.start(config: config)
+        let firstContext = try #require(server.offPeakContext)
+        await server.stop()
+
+        await server.start(config: config)
+        let secondContext = try #require(server.offPeakContext)
+        #expect(firstContext !== secondContext)
+        #expect(firstContext.httpClient !== secondContext.httpClient)
+        await server.stop()
+    }
+
     @Test func proxyServerStartIsIdempotentWhileRunning() async throws {
         // The app starts the server at LAUNCH (ModelProxyApp init); the
         // popover's .task start path and Resume re-enter start() afterwards.

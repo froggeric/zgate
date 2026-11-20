@@ -94,12 +94,13 @@ final class ProxyServer {
     /// signing-unavailable 502, never an unsigned request.
     @ObservationIgnored
     private let makeSigningClient: (@Sendable () -> SigningClient)?
-    /// Off-peak async surface context (relay fidelity Task 10): built once
-    /// per process like the signing context (no network at init — the
-    /// surface is default-OFF and answers locally until enabled);
-    /// `updateRouting` refreshes its config in place.
+    /// Off-peak async surface context (relay fidelity Task 10): built per
+    /// `start` (its data plane captures the per-start shared HTTP client,
+    /// so `stop` nils it and the next start rebuilds it; no network at
+    /// init — the surface is default-OFF and answers locally until
+    /// enabled); `updateRouting` refreshes its config in place.
     @ObservationIgnored
-    private var offPeakContext: OffPeakTarget.Context?
+    private(set) var offPeakContext: OffPeakTarget.Context?
 
     // MARK: - Init
 
@@ -300,7 +301,8 @@ final class ProxyServer {
         let relayContext = self.relayContext
 
         // Off-peak async surface (relay fidelity Task 10): one context per
-        // process over the shared server HTTP client. The zcode plan JWT
+        // start over that start's shared server HTTP client (stop() nils
+        // it — the data plane captures this client). The zcode plan JWT
         // re-reads the credential store through the live base box (same
         // wiring as the endpoint-routing service); the coding-plan key is
         // Task 7's minted credential via the relay health machine. Both
@@ -464,6 +466,13 @@ final class ProxyServer {
 
         try? await httpClient?.shutdown()
         httpClient = nil
+
+        // The off-peak context's data plane captures the per-start shared
+        // client (unlike the ticket plane's fresh-per-call clients), so it
+        // dies with that client here. Nil it: the next start() rebuilds the
+        // context against the new client — a surviving context would throw
+        // on every off-peak data-plane call after pause/resume.
+        offPeakContext = nil
 
         try? await eventLoopGroup?.shutdownGracefully()
         eventLoopGroup = nil
