@@ -132,6 +132,13 @@ final class AppConfig: Codable {
     /// never re-seeds. Encoded only when true (pre-fix configs and fresh
     /// hand-edits stay byte-stable until the migration records itself).
     var fallbackEdgeSeeded: Bool
+    /// Off-peak wave 2 migration marker: the seeded off-peak rule-target
+    /// vendor (migration 11) has been applied at least once. Run-once gate
+    /// with the same contract as `fallbackEdgeSeeded` / migration 10:
+    /// after the first application a user-removed row STAYS removed —
+    /// migration 11 never re-seeds. Encoded only when true (legacy configs
+    /// stay byte-stable until the migration records itself).
+    var offPeakVendorSeeded: Bool
     /// Off-Peak async surface settings (relay fidelity Task 10). Absent in
     /// every pre-wave config → defaults (disabled); the `relayClientVersion`
     /// pattern — defaulted decode, encode-if-changed, no ConfigStore
@@ -153,6 +160,7 @@ final class AppConfig: Codable {
         credentialStoreBase: String? = nil,
         relayClientVersion: String = RelayTarget.clientVersion,
         fallbackEdgeSeeded: Bool = false,
+        offPeakVendorSeeded: Bool = false,
         offPeak: OffPeakConfig = OffPeakConfig()
     ) {
         self.vendors = vendors
@@ -166,6 +174,7 @@ final class AppConfig: Codable {
         self.credentialStoreBase = credentialStoreBase
         self.relayClientVersion = relayClientVersion
         self.fallbackEdgeSeeded = fallbackEdgeSeeded
+        self.offPeakVendorSeeded = offPeakVendorSeeded
         self.offPeak = offPeak
     }
 
@@ -183,6 +192,7 @@ final class AppConfig: Codable {
         case credentialStoreBase
         case relayClientVersion
         case fallbackEdgeSeeded
+        case offPeakVendorSeeded
         case offPeak
     }
 
@@ -216,6 +226,9 @@ final class AppConfig: Codable {
         // Absent in every pre-fix config — false until migration 10 records
         // its first application.
         fallbackEdgeSeeded = (try? container.decodeIfPresent(Bool.self, forKey: .fallbackEdgeSeeded)) ?? false
+        // Absent in every pre-wave-2 config — false until migration 11
+        // records its first application.
+        offPeakVendorSeeded = (try? container.decodeIfPresent(Bool.self, forKey: .offPeakVendorSeeded)) ?? false
         // Absent in every pre-wave config — defaults (disabled). A malformed
         // section also falls to defaults rather than failing the whole load.
         offPeak = (try? container.decode(OffPeakConfig.self, forKey: .offPeak)) ?? OffPeakConfig()
@@ -245,6 +258,9 @@ final class AppConfig: Codable {
         }
         if fallbackEdgeSeeded {
             try container.encode(true, forKey: .fallbackEdgeSeeded)
+        }
+        if offPeakVendorSeeded {
+            try container.encode(true, forKey: .offPeakVendorSeeded)
         }
         // Encode-if-changed (the relayClientVersion pattern): untouched
         // installs stay byte-stable; a real edit persists the whole section.

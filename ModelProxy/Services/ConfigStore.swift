@@ -278,6 +278,26 @@ final class ConfigStore {
             }
             config.fallbackEdgeSeeded = true
         }
+        // Migration 11 (off-peak wave 2, 2026-11-20): seed the off-peak rule
+        // target vendor. FIRST application only (gated by `offPeakVendorSeeded`,
+        // same contract as migration 10): a user-deleted row stays deleted. The
+        // row is inert until the user attaches it to a routing rule — seeding it
+        // changes no routing by itself.
+        if !config.offPeakVendorSeeded {
+            if !config.vendors.contains(where: { $0.vendorKind == .offPeak }) {
+                config.vendors.append(Vendor(
+                    name: "ZCode Off-Peak",
+                    baseURL: OffPeakConfig.defaultOrigin,
+                    apiKey: "",
+                    connectTimeoutSeconds: 15,
+                    readTimeoutSeconds: 4500,
+                    supportsThinkingBlocks: true,
+                    stripsClaudeOnlyRequestFields: true,
+                    applyGLMCanonicalization: true,
+                    vendorKind: .offPeak))
+            }
+            config.offPeakVendorSeeded = true
+        }
         return config
     }
 

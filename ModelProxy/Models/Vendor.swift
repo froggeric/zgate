@@ -7,6 +7,11 @@ enum VendorKind: String, Codable, Sendable {
     /// The zcode signed relay: per-request V4 signing headers built from the
     /// SigningClient chain (see RelayTarget). The configured API key is unused.
     case relay
+    /// The zcode Off-Peak / Idle Plan ticket queue (see OffPeakTarget):
+    /// requests routed here walk the async ticket plane. The configured API
+    /// key is unused (auth is the plan-JWT chain), and the serving origin
+    /// comes from `OffPeakConfig`, not this row's baseURL.
+    case offPeak
 }
 
 enum VendorDefaults {

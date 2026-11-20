@@ -212,10 +212,18 @@ extension AppConfig {
         #expect(store.didResetFromCorrupt == false)
         let bytes = try Data(contentsOf: url)  // defaults were written
         #expect(try JSONDecoder().decode(AppConfig.self, from: bytes).modelMappings.last?.catchAll == true)
-        // Second launch rewrites nothing (byte-identical, untouched mtime).
+        // Second launch performs migration 11's ONE-TIME off-peak seed (the
+        // fresh-write default matrix deliberately does not carry the row —
+        // seeding is migration 11's job, not makeDefault's), then never
+        // rewrites again: the third launch is byte-identical with untouched
+        // mtime (the write-once contract, generalized past the seed).
+        let seeded = ConfigStore(configFileURL: url)
+        let seededBytes = try Data(contentsOf: url)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: seededBytes).offPeakVendorSeeded)
+        #expect(seeded.config.vendors.contains { $0.vendorKind == .offPeak })
         let mtimeBefore = try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
         _ = ConfigStore(configFileURL: url)
-        #expect(try Data(contentsOf: url) == bytes)
+        #expect(try Data(contentsOf: url) == seededBytes)
         #expect(try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date == mtimeBefore)
     }
 
@@ -594,5 +602,76 @@ extension ConfigMigrationTests {
 
         #expect(after.vendors.contains { ApiKeyMinter.isFallbackEdge($0.baseURL) })
         #expect(!after.modelMappings.contains { $0.catchAll })
+    }
+}
+
+// MARK: - Migration 11 (off-peak wave 2, Task 2: seeded rule-target vendor)
+
+extension ConfigMigrationTests {
+
+    /// A config in the pre-wave-2 shape: fully migrated except it carries no
+    /// off-peak vendor and no migration-11 marker.
+    private func preOffPeakConfig() -> AppConfig {
+        legacyConfig().also { c in
+            c.vendors.removeAll { $0.vendorKind == .offPeak }
+            c.offPeakVendorSeeded = false
+        }
+    }
+
+    @Test func migration11SeedsOffPeakVendorOnceAndNeverResurrects() throws {
+        let once = ConfigStore.applyMigrations(preOffPeakConfig())
+        let seeded = try #require(once.vendors.first { $0.vendorKind == .offPeak })
+        #expect(once.offPeakVendorSeeded)  // first application records the marker
+        #expect(seeded.name == "ZCode Off-Peak")
+        #expect(seeded.baseURL == OffPeakConfig.defaultOrigin)
+        #expect(seeded.apiKey.isEmpty)  // ticket plane: auth is the plan-JWT chain, not a stored key
+        #expect(seeded.connectTimeoutSeconds == 15)
+        #expect(seeded.readTimeoutSeconds == 4500)  // the async plane's long-wait bound
+        // Seeding is inert: no rule gains the vendor as target or backup —
+        // the row changes no routing until the user attaches it to a rule.
+        #expect(once.modelMappings.allSatisfy {
+            $0.targetVendorID != seeded.id && $0.backupTargetVendorID != seeded.id
+        })
+
+        // User deletes the row, app relaunches: the marker is set, so the
+        // deletion sticks — migration 11 never resurrects the row.
+        var deleted = once
+        deleted.vendors.removeAll { $0.vendorKind == .offPeak }
+        let twice = ConfigStore.applyMigrations(deleted)
+        #expect(twice.offPeakVendorSeeded)
+        #expect(!twice.vendors.contains { $0.vendorKind == .offPeak })
+    }
+
+    @Test func migration11DoesNotDuplicateAnExistingOffPeakVendor() {
+        // A user-created off-peak-kind row already present on the first
+        // application: reused (marker set), never duplicated.
+        var edited = preOffPeakConfig()
+        let own = Vendor(
+            name: "my off-peak", baseURL: "https://example.invalid",
+            apiKey: "", vendorKind: .offPeak)
+        edited.vendors.append(own)
+
+        let after = ConfigStore.applyMigrations(edited)
+
+        let rows = after.vendors.filter { $0.vendorKind == .offPeak }
+        #expect(rows.count == 1)
+        #expect(rows.first?.id == own.id)
+        #expect(after.offPeakVendorSeeded)
+        #expect(!after.vendors.contains { $0.name == "ZCode Off-Peak" })
+    }
+
+    @Test func offPeakVendorMarkerEncodesOnlyWhenSet() throws {
+        // Fresh AppConfig() omits the key (byte-stable legacy configs); the
+        // marker records itself only after migration 11's first application.
+        let plain = try String(data: JSONEncoder().encode(AppConfig()), encoding: .utf8) ?? ""
+        #expect(!plain.contains("offPeakVendorSeeded"))
+        var seeded = AppConfig()
+        seeded.offPeakVendorSeeded = true
+        let recorded = try String(data: JSONEncoder().encode(seeded), encoding: .utf8) ?? ""
+        #expect(recorded.contains("offPeakVendorSeeded"))
+        // A legacy config without the key decodes the marker false.
+        let decoded = try JSONDecoder().decode(
+            AppConfig.self, from: Data(#"{"vendors":[],"clients":[]}"#.utf8))
+        #expect(decoded.offPeakVendorSeeded == false)
     }
 }
