@@ -154,6 +154,22 @@ struct RuleEditState: Equatable {
                 return "Enter the backup target model, or clear the backup."
             }
         }
+        // Off-peak wave 2 (controller ruling): an off-peak primary rides
+        // the ticket plane only while the window is open, and the
+        // forwarder treats a missing OR off-peak-kind backup as no usable
+        // closed-window fallback (Task-4 guard) — so the editor blocks the
+        // save up front, one message for both shapes.
+        if let primary = vendors.first(where: { $0.id == primaryVendorID }),
+            primary.vendorKind == .offPeak
+        {
+            let usableBackup = backupVendorID
+                .flatMap { id in vendors.first(where: { $0.id == id }) }
+                .map { $0.vendorKind != .offPeak }
+                ?? false
+            if !usableBackup {
+                return "An off-peak primary target needs a backup target for the closed-window fallback."
+            }
+        }
         for condition in conditions {
             switch condition.type {
             case .timeWindow:

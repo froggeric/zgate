@@ -53,6 +53,10 @@ struct StatusPopover: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
 
+            offPeakSection
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+
             rulesAndHealthSection
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
@@ -404,6 +408,23 @@ struct StatusPopover: View {
                 }
             }
             .accessibilityElement(children: .combine)
+        }
+    }
+
+    // MARK: - Off-Peak (off-peak wave 2 Task 6)
+
+    /// One-line window-status chip, same visual weight as the credential
+    /// row above. Renders ONLY while the surface is enabled — the off
+    /// face lives in Settings (General → Off-Peak), mirroring the
+    /// credentialSection ruling. Reads the monitor's cached status; the
+    /// @Observable monitor re-renders the row on every poll.
+    @ViewBuilder
+    private var offPeakSection: some View {
+        if configStore.config.offPeak.enabled {
+            let face = OffPeakStatusChip.face(for: proxyServer.offPeakMonitor?.status ?? .idle)
+            Text(face.text)
+                .font(.callout)
+                .foregroundStyle(face.color)
         }
     }
 

@@ -400,6 +400,30 @@ struct MenuBarUITests {
             == .init(symbolName: "circle.dashed", text: "splash · off", color: .secondary))
     }
 
+    // MARK: - Off-peak window chip (off-peak wave 2 Task 6)
+
+    @Test("off-peak chip: green only for an open window, text carries the state")
+    func offPeakChipFaces() {
+        #expect(
+            OffPeakStatusChip.face(for: .open)
+                == .init(text: "Off-Peak: Window open", color: .green))
+        // Closed/unavailable dim to secondary; the localized date text is
+        // NOT pinned (locale-dependent) — prefix + color only.
+        let closed = OffPeakStatusChip.face(
+            for: .closedUntil(Date(timeIntervalSince1970: 1_763_000_000)))
+        #expect(closed.text.hasPrefix("Off-Peak: Closed until "))
+        #expect(closed.color == .secondary)
+        #expect(
+            OffPeakStatusChip.face(for: .unavailable("probe failed"))
+                == .init(text: "Off-Peak: Unavailable (probe failed)", color: .secondary))
+        // Enabled-but-not-yet-polled: "Checking…", never "Off" (the row is
+        // only rendered while the surface is enabled — "Off" would read as
+        // the toggle state).
+        #expect(
+            OffPeakStatusChip.face(for: .idle)
+                == .init(text: "Off-Peak: Checking…", color: .secondary))
+    }
+
     // MARK: - Env line
 
     @Test("env line is the exact spec form with the given port")
@@ -571,6 +595,40 @@ struct MenuBarUITests {
             RuleCondition(type: .quotaBelow, percent: 50),
         ]
         #expect(state.validationError(vendors: vendors) == nil)
+    }
+
+    @Test("off-peak primary requires a non-off-peak backup (closed-window fallback)")
+    func ruleValidationOffPeakPrimary() {
+        // Local list (same stored-UUID rationale as `vendors`): the seeded
+        // off-peak vendor plus a normal relay vendor as the usable backup.
+        let offPeak = Vendor(
+            name: "ZCode Off-Peak", baseURL: "https://zcode.z.ai", apiKey: "",
+            vendorKind: .offPeak)
+        let relay = Vendor(name: "zcode relay", baseURL: "https://zcode.z.ai", apiKey: "")
+        let vendors = [offPeak, relay]
+        let blockMessage = "An off-peak primary target needs a backup target for the closed-window fallback."
+
+        // No backup at all → blocked with the exact message.
+        var state = RuleEditState()
+        state.primaryVendorID = offPeak.id
+        state.primaryModel = "GLM-5.3"
+        #expect(state.validationError(vendors: vendors) == blockMessage)
+
+        // An off-peak backup is no usable backup either (the forwarder's
+        // Task-4 guard treats it as none — same single message).
+        state.backupVendorID = offPeak.id
+        state.backupModel = "GLM-5.3"
+        #expect(state.validationError(vendors: vendors) == blockMessage)
+
+        // A non-off-peak backup satisfies the guard.
+        state.backupVendorID = relay.id
+        #expect(state.validationError(vendors: vendors) == nil)
+
+        // A non-off-peak primary keeps needing no backup at all.
+        var plain = RuleEditState()
+        plain.primaryVendorID = relay.id
+        plain.primaryModel = "GLM-5.3"
+        #expect(plain.validationError(vendors: vendors) == nil)
     }
 
     @Test("catch-all and class modes map onto the Task 6 schema fields")

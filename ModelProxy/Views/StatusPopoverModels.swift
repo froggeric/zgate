@@ -175,6 +175,37 @@ enum RulesSummary: Sendable {
     }
 }
 
+// MARK: - Off-peak window chip (off-peak wave 2 Task 6, testable)
+
+/// Popover face for the availability monitor's cached window state. The
+/// text carries the state (never color alone — HIG color); green accents
+/// ONLY an open window, every other face dims to `.secondary` so a merely
+/// closed window never reads as an alarm. `.idle` (enabled, first poll
+/// still in flight) says "Checking…" — the row only renders while the
+/// surface is enabled, so "Off" would falsely read as the toggle state.
+enum OffPeakStatusChip: Equatable, Sendable {
+
+    struct Face: Equatable, Sendable {
+        let text: String
+        let color: Color
+    }
+
+    static func face(for status: OffPeakAvailabilityMonitor.Status) -> Face {
+        switch status {
+        case .idle:
+            return .init(text: "Off-Peak: Checking…", color: .secondary)
+        case .open:
+            return .init(text: "Off-Peak: Window open", color: .green)
+        case .closedUntil(let date):
+            return .init(
+                text: "Off-Peak: Closed until \(date.formatted(date: .omitted, time: .shortened))",
+                color: .secondary)
+        case .unavailable(let reason):
+            return .init(text: "Off-Peak: Unavailable (\(reason))", color: .secondary)
+        }
+    }
+}
+
 // MARK: - Splash lifecycle chip (Package C, testable)
 
 /// Popover face for the manager's process state (spec §5). The router's

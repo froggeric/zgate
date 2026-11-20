@@ -32,6 +32,8 @@ struct GeneralTabView: View {
 
             credentialsSection
 
+            offPeakSection
+
             Section("Web Search") {
                 Picker("Search Provider", selection: binding(\.provider)) {
                     ForEach(WebSearchConfig.Provider.allCases) { provider in
@@ -166,6 +168,40 @@ struct GeneralTabView: View {
                 configStore.config.credentialStoreBase = path.isEmpty ? "" : path
                 configStore.saveAndReload(proxyServer: proxyServer)
             })
+    }
+
+    // MARK: - Off-Peak (off-peak wave 2 Task 6)
+
+    /// The opt-in toggle for the async ticket-plane surface. The status
+    /// line under the title reads the live monitor (`displayString` on the
+    /// @Observable monitor — "Off" while disabled or before the first
+    /// poll). saveAndReload carries the flip to the running proxy: the
+    /// monitor's lifecycle rides the live toggle (Task 5), no restart.
+    /// Advanced knobs (origin/maxWait/poll/keepalive) stay config-only.
+    private var offPeakSection: some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { configStore.config.offPeak.enabled },
+                set: { enabled in
+                    configStore.config.offPeak.enabled = enabled
+                    configStore.saveAndReload(proxyServer: proxyServer)
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use ZCode off-peak compute")
+                    Text(proxyServer.offPeakMonitor?.displayString ?? "Off")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityLabel("Use ZCode off-peak compute")
+            .accessibilityHint(
+                "Rules targeting the ZCode Off-Peak vendor ride the ticket plane while the window is open, and use their backup target otherwise.")
+        } header: {
+            Text("Off-Peak")
+        } footer: {
+            Text("Rules targeting the “ZCode Off-Peak” vendor ride the ticket plane while the window is open, and use their backup target otherwise. Enabling mints the coding-plan key on the first availability check.")
+        }
     }
 
     // MARK: - About

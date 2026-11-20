@@ -30,6 +30,15 @@ struct VendorEditSheet: View {
     private var isEditing: Bool { editingVendorID != nil }
     private var title: String { isEditing ? "Edit Vendor" : "Add Vendor" }
 
+    /// Kind of the vendor being edited (nil while adding — a new row is
+    /// always `.anthropic`; kinds are assigned by config seeding). The
+    /// off-peak plane authenticates through the ZCode login chain, so its
+    /// row must not offer the (unused) API-key field.
+    private var editingVendorKind: VendorKind? {
+        guard let vid = editingVendorID else { return nil }
+        return configStore.config.vendors.first(where: { $0.id == vid })?.vendorKind
+    }
+
     /// nil = valid to save. First failing check wins, phrased for display
     /// (the RuleEditorSheet contract: a disabled Save always says why).
     private var validationMessage: String? {
@@ -58,18 +67,24 @@ struct VendorEditSheet: View {
                             applyCapabilityDefaults(for: newBaseURL)
                         }
 
-                    HStack {
-                        if showAPIKey {
-                            TextField("API Key", text: $apiKey)
-                                .autocorrectionDisabled()
-                        } else {
-                            SecureField("API Key", text: $apiKey)
+                    if editingVendorKind == .offPeak {
+                        Text("The off-peak plane authenticates through your ZCode login — no API key needed for this vendor.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        HStack {
+                            if showAPIKey {
+                                TextField("API Key", text: $apiKey)
+                                    .autocorrectionDisabled()
+                            } else {
+                                SecureField("API Key", text: $apiKey)
+                            }
+                            Button(showAPIKey ? "Hide" : "Reveal") {
+                                showAPIKey.toggle()
+                            }
+                            .buttonStyle(.link)
+                            .accessibilityLabel(showAPIKey ? "Hide API Key" : "Reveal API Key")
                         }
-                        Button(showAPIKey ? "Hide" : "Reveal") {
-                            showAPIKey.toggle()
-                        }
-                        .buttonStyle(.link)
-                        .accessibilityLabel(showAPIKey ? "Hide API Key" : "Reveal API Key")
                     }
 
                     Picker(selection: $compatibleClientID) {
