@@ -80,6 +80,12 @@ final class AppConfig: Codable {
     /// `~/.zcode-scratch-v3`. Settings UI ships in the wave's UI task;
     /// this is the persistence + plumbing.
     var credentialStoreBase: String?
+    /// Server-driven relay client-version pin (relay fidelity Task 4): the
+    /// impersonated zcode CLI version — the single source of RelayTarget's
+    /// four version surfaces (UA, `x-zcode-app-version`, `x-client-version`,
+    /// sig message). Absent in pre-wave configs → the bundled default; only
+    /// `VersionPinService` writes it (greater-only, persisted on bump).
+    var relayClientVersion: String
 
     // MARK: - Init
 
@@ -92,7 +98,8 @@ final class AppConfig: Codable {
         webSearch: WebSearchConfig = WebSearchConfig(),
         splash: SplashSettings? = nil,
         update: UpdateSettings? = nil,
-        credentialStoreBase: String? = nil
+        credentialStoreBase: String? = nil,
+        relayClientVersion: String = RelayTarget.clientVersion
     ) {
         self.vendors = vendors
         self.clients = clients
@@ -103,6 +110,7 @@ final class AppConfig: Codable {
         self.splash = splash
         self.update = update
         self.credentialStoreBase = credentialStoreBase
+        self.relayClientVersion = relayClientVersion
     }
 
     // MARK: - Codable
@@ -117,6 +125,7 @@ final class AppConfig: Codable {
         case splash
         case update
         case credentialStoreBase
+        case relayClientVersion
     }
 
     required init(from decoder: Decoder) throws {
@@ -135,6 +144,17 @@ final class AppConfig: Codable {
         update = try? container.decode(UpdateSettings.self, forKey: .update)
         // Absent in every pre-wave config — nil = shared default store.
         credentialStoreBase = try? container.decodeIfPresent(String.self, forKey: .credentialStoreBase)
+        // Absent in every pre-wave config — the bundled pin is the default
+        // (an emptied hand-edit falls back to it too). Encode-if-changed
+        // below keeps existing installs byte-identical until a real
+        // server-driven bump writes the key.
+        if let stored = try? container.decodeIfPresent(String.self, forKey: .relayClientVersion),
+            !stored.isEmpty
+        {
+            relayClientVersion = stored
+        } else {
+            relayClientVersion = RelayTarget.clientVersion
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -155,6 +175,9 @@ final class AppConfig: Codable {
         }
         if let credentialStoreBase {
             try container.encode(credentialStoreBase, forKey: .credentialStoreBase)
+        }
+        if relayClientVersion != RelayTarget.clientVersion {
+            try container.encode(relayClientVersion, forKey: .relayClientVersion)
         }
     }
 }

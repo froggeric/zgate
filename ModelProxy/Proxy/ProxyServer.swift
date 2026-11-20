@@ -59,6 +59,16 @@ final class ProxyServer {
     /// consulted per relay request, fail-open on every failure. Never built
     /// inside the isolated test host (no live API calls from suite runs).
     private var endpointConfigService: EndpointConfigService?
+    /// Client-version pin service (relay fidelity Task 4): polls
+    /// `client/configs` at launch + every 6 h and bumps the impersonated
+    /// CLI version when the server minimum rises (greater-only, silent on
+    /// failure). Same lifecycle as the endpoint-routing service; never built
+    /// inside the isolated test host.
+    private var versionPinService: VersionPinService?
+    /// Persistence sink for accepted version bumps — the app layer owns
+    /// ConfigStore, so it injects this write-through (nil = bumps stay
+    /// in-memory for this process only).
+    var clientVersionSink: (@MainActor (String) -> Void)?
     /// Proactive renewal loop (item 5): started with the relay context,
     /// runs for the process. See start() for the test-host exclusion.
     @ObservationIgnored
@@ -202,11 +212,37 @@ final class ProxyServer {
                 endpointConfigService = service
                 AppLog.proxy.info("[ProxyServer] Endpoint routing service ready (agent/configs, fail-open)")
             }
+            // Client-version pin (relay fidelity Task 4): poll
+            // client/configs for the server's force-update minimum; a
+            // greater-only bump updates the live relay context (all four
+            // version surfaces) and persists through the app layer's sink.
+            // Silent on every failure — the current pin keeps serving.
+            if versionPinService == nil, AppPaths.isolatedBase == nil {
+                var configuration = VersionPinService.Configuration()
+                configuration.initialVersion = config.relayClientVersion
+                let box = storeBaseBox
+                configuration.zcodeTokenProvider = {
+                    (try? CredentialStore.loadDefault(base: box.current))
+                        .flatMap { try? $0.zcodeJwtToken() }
+                }
+                let sink = clientVersionSink
+                configuration.onBump = { [weak self] version in
+                    Task { @MainActor [weak self] in
+                        self?.relayContext?.clientVersion = version
+                        sink?(version)
+                    }
+                }
+                let service = VersionPinService(configuration: configuration)
+                versionPinService = service
+                await service.startPolling()
+                AppLog.proxy.info("[ProxyServer] Version pin service polling (client/configs, 6 h cadence)")
+            }
             relayContext = RelayTarget.Context(
                 signingClient: signingClient,
                 credentialEvents: credentialEvents,
                 quota: quotaService,
-                endpointConfig: endpointConfigService)
+                endpointConfig: endpointConfigService,
+                clientVersion: config.relayClientVersion)
             AppLog.proxy.info("[ProxyServer] Relay signing context ready (relay vendor configured)")
             // Proactive renewal (item 5, report §C.4): keep the ladder
             // alive without relayed traffic. Runs for the process (never

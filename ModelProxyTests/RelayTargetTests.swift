@@ -729,6 +729,85 @@ struct RelayTargetTests {
         }() + signer + ["x-api-key"])
     }
 
+    // MARK: - Configured client version (relay fidelity Task 4:
+    // UA, x-zcode-app-version, x-client-version, sig message — one source)
+
+    /// The four version surfaces all derive from the configured value: with
+    /// a bumped pin the UA, both version headers, AND the Ed25519 sig
+    /// message carry it (the default-parameter statics above stay the
+    /// bundled-default face).
+    @Test func configuredVersionDrivesAllFourSurfaces() throws {
+        let session = SigningSession(
+            projectToken: Fixtures.projectToken,
+            apiKeyId: Fixtures.apiKeyId,
+            privateKey: try Curve25519.Signing.PrivateKey(rawRepresentation: Fixtures.ed25519Seed),
+            expiresAtMs: .max,
+            marginRelaxed: false)
+        let identity = RelayTarget.SessionIdentity(id: "sid", type: "main")
+
+        let headers = try RelayTarget.relayHeaders(
+            session: session, signed: true, identity: identity, clientVersion: "0.18.0")
+        #expect(headers["user-agent"] == ["ZCode/0.18.0 ai-sdk/anthropic/3.0.81"])
+        #expect(headers["x-zcode-app-version"] == ["0.18.0"])
+        #expect(headers["x-client-version"] == ["0.18.0"])
+
+        // Sig surface: the message is built from the configured version, so
+        // the fixture key verifies it only when the version rode along.
+        let ts = try #require(headers["x-client-ts"].first)
+        let nonce = try #require(headers["x-client-nonce"].first)
+        let sig = try #require(headers["x-client-sig"].first)
+        let sigBytes = try #require(Data(base64Encoded: sig))
+        let publicKey = try Curve25519.Signing.PrivateKey(rawRepresentation: Fixtures.ed25519Seed).publicKey
+        let message = CryptoCore.requestSigMessage(
+            apiKeyId: Fixtures.apiKeyId, ts: ts, version: "0.18.0",
+            sessionId: "sid", nonce: nonce)
+        #expect(publicKey.isValidSignature(sigBytes, for: Data(message.utf8)))
+        let staleVersionMessage = CryptoCore.requestSigMessage(
+            apiKeyId: Fixtures.apiKeyId, ts: ts, version: "0.17.1",
+            sessionId: "sid", nonce: nonce)
+        #expect(!publicKey.isValidSignature(sigBytes, for: Data(staleVersionMessage.utf8)))
+    }
+
+    /// The execute path threads `Context.clientVersion` into the same four
+    /// surfaces (this is the wiring a live VersionPinService bump mutates).
+    @Test func contextVersionDrivesTheExecutePath() async throws {
+        let relay = MockRelayServer(scripts: [.json(["id": "msg_version"])])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let directory = try makeTempDirectory("version")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let signingClient = makeSigningClient(directory: directory, control: control)
+        let context = RelayTarget.Context(signingClient: signingClient, clientVersion: "0.18.0")
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let outcome = await RelayTarget.execute(
+            head: postHead(), bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-version")
+        guard case .responded = outcome else {
+            Issue.record("expected responded, got \(outcome)")
+            return
+        }
+
+        let headers = try #require(relay.requests.first).headers
+        #expect(headers["user-agent"] == "ZCode/0.18.0 ai-sdk/anthropic/3.0.81")
+        #expect(headers["x-zcode-app-version"] == "0.18.0")
+        #expect(headers["x-client-version"] == "0.18.0")
+
+        let session = try await context.signingClient.ensureSession()
+        let ts = try #require(headers["x-client-ts"])
+        let nonce = try #require(headers["x-client-nonce"])
+        let sig = try #require(headers["x-client-sig"])
+        let sigBytes = try #require(Data(base64Encoded: sig))
+        let publicKey = try Curve25519.Signing.PrivateKey(rawRepresentation: Fixtures.ed25519Seed).publicKey
+        let message = CryptoCore.requestSigMessage(
+            apiKeyId: session.apiKeyId, ts: ts, version: "0.18.0",
+            sessionId: context.sessionID, nonce: nonce)
+        #expect(publicKey.isValidSignature(sigBytes, for: Data(message.utf8)))
+    }
+
     /// No inbound CC headers → the per-process UUID stays the session id,
     /// stable across requests — the pre-Task-3 face, now the fallback.
     @Test func sessionIDStaysStableAcrossRequests() async throws {

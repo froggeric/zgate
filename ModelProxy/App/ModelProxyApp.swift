@@ -20,6 +20,15 @@ struct ModelProxyApp: App {
         _configStore = State(initialValue: configStore)
         let server = ProxyServer(tokenStatsStore: store)
         _proxyServer = State(initialValue: server)
+        // Relay client-version pin (relay fidelity Task 4): a server-driven
+        // bump persists through ConfigStore — the app layer owns config.json,
+        // so the sink writes the field and saves; the next launch loads the
+        // bumped value as the pin.
+        server.clientVersionSink = { [weak configStore] version in
+            guard let configStore else { return }
+            configStore.config.relayClientVersion = version
+            configStore.save()
+        }
         _loginItemService = State(initialValue: LoginItemService())
         // Menu-bar icon (quota ring with the ZΓ mark inside) reads the same
         // model the popover renders; the slow tick keeps the ring fresh

@@ -33,6 +33,10 @@ enum RelayTarget {
 
     // Identity constants pinned from the official zcode CLI 0.17.1 face
     // (Task 1 capture, corrected to the CLI wire order/UA in Task 2).
+    // `clientVersion` is the BUNDLED DEFAULT of the configured pin
+    // (`AppConfig.relayClientVersion`, server-driven via VersionPinService,
+    // Task 4); the runtime face derives from the configured value through
+    // `Context.clientVersion`.
     static let clientVersion = "0.17.1"
     /// Official CLI UA — built from the version, never a frozen literal
     /// (the relay face is `ai-sdk/anthropic/3.0.81`, not provider-utils).
@@ -110,6 +114,12 @@ enum RelayTarget {
         /// Per-process fallback relay session id (`x-session-id` when the
         /// inbound CC session header is absent or garbage).
         let sessionID = UUID().uuidString.lowercased()
+        /// The impersonated CLI version — the single source of the four
+        /// version surfaces (UA input, `x-zcode-app-version`,
+        /// `x-client-version`, sig-message version). Loaded from config at
+        /// build time (bundled constant as the default) and bumped in place
+        /// by VersionPinService's sink when the server minimum rises.
+        var clientVersion: String
         /// Relay 429 backoff before the single retry (tests shorten it).
         var rateLimitBackoff: TimeInterval = RelayTarget.defaultRateLimitBackoff
         /// True once a signing chain has been established in this process —
@@ -120,12 +130,14 @@ enum RelayTarget {
             signingClient: SigningClient,
             credentialEvents: CredentialEventChannel? = nil,
             quota: (any QuotaRelayCounting)? = nil,
-            endpointConfig: (any EndpointResolving)? = nil
+            endpointConfig: (any EndpointResolving)? = nil,
+            clientVersion: String = RelayTarget.clientVersion
         ) {
             self.signingClient = signingClient
             self.credentialEvents = credentialEvents
             self.quota = quota
             self.endpointConfig = endpointConfig
+            self.clientVersion = clientVersion
         }
 
         func noteSignedSessionEstablished() {
@@ -452,7 +464,7 @@ enum RelayTarget {
         request.method = head.method
         request.headers = try relayHeaders(
             session: session, signed: signed, identity: identity,
-            zcodeAuthorization: zcodeAuthorization)
+            zcodeAuthorization: zcodeAuthorization, clientVersion: context.clientVersion)
         request.body = .bytes(wireBody)
         return try await httpClient.execute(
             request, timeout: .seconds(Int64(target.readTimeoutSeconds)))
@@ -471,11 +483,15 @@ enum RelayTarget {
     /// The session identity (per-conversation, `SessionIdentity.derive`)
     /// supplies `x-session-id`, `x-zcode-session-type`, AND the PoW/sig
     /// session id — one id everywhere the server looks.
+    /// `clientVersion` is the configured pin (Task 4) driving the four
+    /// version surfaces — UA input, `x-zcode-app-version`, `x-client-version`,
+    /// and the sig message below; the default keeps the bundled constant.
     static func relayHeaders(
         session: SigningSession,
         signed: Bool,
         identity: SessionIdentity,
-        zcodeAuthorization: String? = nil
+        zcodeAuthorization: String? = nil,
+        clientVersion: String = RelayTarget.clientVersion
     ) throws -> HTTPHeaders {
         var headers = HTTPHeaders()
         headers.add(name: "content-type", value: "application/json")
