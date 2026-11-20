@@ -10,7 +10,8 @@ numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 
 - **Exact CLI request face, per-conversation sessions.** The relay path now
   mirrors the official zcode CLI wire face exactly (header order + UA
-  pinned from the CLI bundle), and derives ONE session identity per
+  pinned from the CLI bundle; `x-api-key` dropped — Authorization + signing
+  quartet only, live-verified), and derives ONE session identity per
   conversation from the Claude Code session header — feeding `x-session-id`,
   the proof-of-work input and the signature message together, like the
   official `sess_` semantics.
@@ -34,11 +35,12 @@ numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
   are classified by business code from parsed JSON (quota / rate-limit /
   concurrency / risk-control / captcha / model / parameter), each with its
   documented retry policy; connect failures retry twice on a short ladder;
-  two 401s rebuild the signing chain exactly once. A signing outage or
-  credentials-expired outcome enters a half-open degraded state that
-  serves class-routed traffic DIRECTLY from a signing-free `api.z.ai`
-  fallback edge (key minted on demand, never used to launder a 401) while
-  the signed ladder recovers automatically.
+  two 401s rebuild the signing chain exactly once. A signing outage enters
+  a half-open degraded state that serves class-routed traffic DIRECTLY
+  from a signing-free `api.z.ai` fallback edge (key minted on demand,
+  never used to launder a 401) while the signed ladder recovers
+  automatically. An expired login serves the same fallback WITHOUT
+  probing — recovery is an interactive re-login.
 - **Off-peak async surface (opt-in, default OFF).** A `/async/` route
   family (`ANTHROPIC_BASE_URL=http://localhost:<port>/async`) runs
   generation through ZCode's Off-Peak / Idle Plan ticket queue —

@@ -32,7 +32,23 @@ editable in Settings → Rules.
 | `opus` class, weekdays 07:00–11:00 Europe/Paris | zcode relay `GLM-5.3-Flash` | — | peak twin — **disabled** by default (3× peak metering; dormant cost lever) |
 | `opus` class | zcode relay `GLM-5.3` | — | |
 | `haiku`/`sonnet` (local qwen levers) | splash `local/qwen3.8-27b-q8` | relay `GLM-5.3-Flash` | **disabled** by default — one toggle in Settings → Rules takes that tier local (health-gated) |
-| fallback (catch-all, incl. unknown/local qwen ids) | zcode relay `GLM-5.3-Flash` | — | no request is ever dropped |
+| fallback (catch-all, incl. unknown/local qwen ids) | zcode relay `GLM-5.3-Flash` | api.z.ai edge | no request is ever dropped |
+
+**v2.10 relay fidelity & resilience (2026-11-20):** the relay path mirrors
+the official zcode CLI wire face exactly (ordered headers, UA, per-
+conversation session ids feeding the proof-of-work and signature inputs),
+tracks the server's minimum client version, and canonicalizes retired
+model names and out-of-range `max_tokens` before send (documented
+routing-compatibility transforms). Upstream failures are classified by
+business code with bounded retry policies, connect failures retry on a
+short ladder, and a signing outage degrades to a signing-free `api.z.ai`
+fallback edge with half-open recovery (an expired login recovers by
+signing in again). An opt-in **off-peak async surface** (`/async/…`,
+default OFF) parks batch requests in ZCode's off-peak ticket queue —
+details in
+[`docs/05-features/2026-11-20-relay-fidelity-resilience.md`](docs/05-features/2026-11-20-relay-fidelity-resilience.md).
+The class rules above carry no rule-level backup; when signing degrades,
+their traffic is served directly by the fallback edge instead.
 
 **v2.1 routing (2026-11-17):** all deliberate work — the opus and sonnet
 tiers — goes to full `GLM-5.3`; fast/background chatter (the haiku tier)
