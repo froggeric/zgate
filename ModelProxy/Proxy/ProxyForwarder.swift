@@ -1118,6 +1118,28 @@ enum ProxyForwarder {
         )
     }
 
+    /// Clamp the top-level `"max_tokens"` value into `[min, max]` while
+    /// preserving all other bytes exactly (documented routing-compatibility
+    /// transform — the relay rejects out-of-range values with 400 code 1210).
+    /// Splices only when the current integer value is out of range; an absent,
+    /// in-range, or non-integer value leaves the body byte-unchanged.
+    static func clampMaxTokensField(_ body: Data, min: Int = 1, max: Int = 131_072) -> Data {
+        let bytes = [UInt8](body)
+        guard let valueRange = Self.topLevelNumberValueRange(in: bytes, key: "max_tokens"),
+            let value = Int(String(decoding: bytes[valueRange], as: UTF8.self)),
+            value < min || value > max
+        else { return body }
+
+        let clamped = value < min ? min : max
+        let clampedBytes = Array(String(clamped).utf8)
+        var result = Data()
+        result.reserveCapacity(bytes.count - valueRange.count + clampedBytes.count)
+        result.append(contentsOf: bytes[0..<valueRange.lowerBound])
+        result.append(contentsOf: clampedBytes)
+        result.append(contentsOf: bytes[valueRange.upperBound..<bytes.count])
+        return result
+    }
+
     private static func topLevelModelValueRange(in bytes: [UInt8]) -> Range<Int>? {
         let quote: UInt8 = 34
         let colon: UInt8 = 58
@@ -1175,6 +1197,83 @@ enum ProxyForwarder {
         }
 
         return nil
+    }
+
+    /// Byte range of the top-level `key`'s numeric value, or nil when the key
+    /// is absent at the top level or its value does not start a JSON number
+    /// token. Sibling of `topLevelModelValueRange` (same depth-1 key scan,
+    /// number value instead of string value).
+    private static func topLevelNumberValueRange(in bytes: [UInt8], key: String) -> Range<Int>? {
+        let quote: UInt8 = 34
+        let colon: UInt8 = 58
+        let openObject: UInt8 = 123
+        let closeObject: UInt8 = 125
+        let openArray: UInt8 = 91
+        let closeArray: UInt8 = 93
+        let minus: UInt8 = 45
+        let keyBytes = Array(key.utf8)
+
+        var index = 0
+        var depth = 0
+
+        while index < bytes.count {
+            let byte = bytes[index]
+
+            if byte == quote {
+                guard let (stringRange, nextIndex) = Self.parseJSONString(in: bytes, startingAt: index) else {
+                    return nil
+                }
+
+                if depth == 1 {
+                    var cursor = nextIndex
+                    while cursor < bytes.count, Self.isWhitespace(bytes[cursor]) {
+                        cursor += 1
+                    }
+
+                    if cursor < bytes.count, bytes[cursor] == colon, bytes[stringRange].elementsEqual(keyBytes) {
+                        cursor += 1
+                        while cursor < bytes.count, Self.isWhitespace(bytes[cursor]) {
+                            cursor += 1
+                        }
+
+                        // The value must start a JSON number (`-` or a digit);
+                        // anything else (null, string, object…) is not ours to touch.
+                        guard cursor < bytes.count,
+                            bytes[cursor] == minus || (48...57).contains(bytes[cursor])
+                        else { return nil }
+                        let start = cursor
+                        cursor += 1
+                        while cursor < bytes.count, Self.isJSONNumberByte(bytes[cursor]) {
+                            cursor += 1
+                        }
+                        return start..<cursor
+                    }
+                }
+
+                index = nextIndex
+                continue
+            }
+
+            switch byte {
+            case openObject, openArray:
+                depth += 1
+            case closeObject, closeArray:
+                depth = max(0, depth - 1)
+            default:
+                break
+            }
+
+            index += 1
+        }
+
+        return nil
+    }
+
+    /// Bytes that may appear inside a JSON number token: digits plus
+    /// `-`, `+`, `.`, `e`, `E`.
+    private static func isJSONNumberByte(_ byte: UInt8) -> Bool {
+        byte == 45 || byte == 43 || byte == 46 || byte == 101 || byte == 69
+            || (48...57).contains(byte)
     }
 
     private static func parseJSONString(in bytes: [UInt8], startingAt start: Int) -> (Range<Int>, Int)? {

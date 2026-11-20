@@ -61,8 +61,32 @@ enum RelayTarget {
         "GLM-4.5", "GLM-4.6V", "GLM-4.6V-Flash", "GLM-4.6V-FlashX", "GLM-4.1V-Thinking-FlashX",
         "GLM-4.1V-Thinking-Flash", "GLM-4-FlashX-250414", "GLM-4-Flash-250414", "GLM-4V-Flash",
     ]
+    /// Retired GLM names the relay no longer serves (upstream 400 code 3006).
+    /// Documented routing-compatibility transform: they are canonicalized to
+    /// the current main model before send. Flash-suffixed variants map to
+    /// flash — the flash-substring rule in `canonicalModel` already runs
+    /// first, so those entries are belt-and-braces.
+    private static let retiredModelAliases: [String: String] = [
+        "glm-5.2": "GLM-5.3",
+        "glm-5.1": "GLM-5.3",
+        "glm-5.1-highspeed": "GLM-5.3",
+        "glm-5-turbo": "GLM-5.3",
+        "glm-4.7": "GLM-5.3",
+        "glm-turbo": "GLM-5.3",
+        "glm-5.2-flash": "GLM-5.3-Flash",
+        "glm-5.1-flash": "GLM-5.3-Flash",
+        "glm-5.1-highspeed-flash": "GLM-5.3-Flash",
+        "glm-5-turbo-flash": "GLM-5.3-Flash",
+        "glm-4.7-flash": "GLM-5.3-Flash",
+        "glm-turbo-flash": "GLM-5.3-Flash",
+    ]
+
+    /// zbridge `GLM_FAMILY` self-map, with retired names (upstream 400 code
+    /// 3006) overridden onto the current main/flash model — a documented
+    /// routing-compatibility transform.
     private static let glmCanon: [String: String] = Dictionary(
         uniqueKeysWithValues: glmFamily.map { ($0.lowercased(), $0) })
+        .merging(retiredModelAliases) { _, retired in retired }
 
     enum RelayTargetError: Error {
         /// The signing quartet could not be produced (PoW search exhausted,
@@ -552,13 +576,21 @@ enum RelayTarget {
     // MARK: - Body
 
     /// The wire body: only the top-level `model` value is replaced (canonical
-    /// GLM name, byte-preserving splice) — everything else stays byte-unchanged.
+    /// GLM name, byte-preserving splice) and a top-level out-of-range
+    /// `max_tokens` clamped into `[1, 131072]` — everything else stays
+    /// byte-unchanged.
     static func wireBody(bodyData: Data, target: RoutingSnapshot.RouteTarget) -> Data {
-        guard let sourceModel = target.targetModel ?? bodyModelField(bodyData) else {
-            return bodyData  // no model field: forward as-is (zbridge parity)
+        let canonBody: Data
+        if let sourceModel = target.targetModel ?? bodyModelField(bodyData) {
+            canonBody = ProxyForwarder.replaceModelField(
+                in: bodyData, with: canonicalModel(sourceModel)).data
+        } else {
+            canonBody = bodyData  // no model field: forward as-is (zbridge parity)
         }
-        return ProxyForwarder.replaceModelField(
-            in: bodyData, with: canonicalModel(sourceModel)).data
+        // Documented routing-compatibility transform: the relay rejects
+        // out-of-range max_tokens with 400 code 1210, so clamp before send.
+        // Byte-identical no-op when the field is absent or already in range.
+        return ProxyForwarder.clampMaxTokensField(canonBody)
     }
 
     /// Top-level `"model"` field of a request body (nil when unparseable).
@@ -570,10 +602,17 @@ enum RelayTarget {
     }
 
     /// zbridge `mapModel`: the GLM-canonical wire name for a rule target.
-    /// Flash check first (matches `GLM-5.3-Flash` ahead of the 5.3 rule),
+    /// Provider prefixes stripped first, flash check next (matches
+    /// `GLM-5.3-Flash` ahead of the 5.3 rule), retired names remapped,
     /// unknown glm-family names map to the main model, unknown names to flash.
     static func canonicalModel(_ model: String) -> String {
-        let lowered = model.trimmingCharacters(in: .whitespaces).lowercased()
+        var lowered = model.trimmingCharacters(in: .whitespaces).lowercased()
+        // Documented routing-compatibility transform: provider-qualified
+        // names ("zai/GLM-5.3", "bigmodel/glm-5.3") drop the qualifier
+        // before the lookup.
+        for prefix in ["zai/", "bigmodel/"] where lowered.hasPrefix(prefix) {
+            lowered = String(lowered.dropFirst(prefix.count))
+        }
         if lowered.contains("flash") { return "GLM-5.3-Flash" }
         if lowered.contains("glm-5.3") { return "GLM-5.3" }  // glm-5.3 and glm-5.3[1m]
         if let canon = glmCanon[lowered] { return canon }

@@ -570,6 +570,25 @@ struct RelayTargetTests {
         #expect(RelayTarget.canonicalModel("glm-99-x") == "GLM-5.3")  // glm-family unknown → main
         #expect(RelayTarget.canonicalModel("some-other-model") == "GLM-5.3-Flash")  // unknown → flash
         #expect(RelayTarget.canonicalModel("  GLM-5.3  ") == "GLM-5.3")
+        // Retired names (upstream 400 code 3006) canonicalize to the current
+        // main model instead of passing through.
+        #expect(RelayTarget.canonicalModel("glm-5.2") == "GLM-5.3")
+        #expect(RelayTarget.canonicalModel("glm-5.1") == "GLM-5.3")
+        #expect(RelayTarget.canonicalModel("glm-5.1-highspeed") == "GLM-5.3")
+        #expect(RelayTarget.canonicalModel("glm-5-turbo") == "GLM-5.3")
+        #expect(RelayTarget.canonicalModel("glm-4.7") == "GLM-5.3")
+        #expect(RelayTarget.canonicalModel("glm-turbo") == "GLM-5.3")
+        // Flash-suffixed retired names ride the flash rule (checked first).
+        #expect(RelayTarget.canonicalModel("glm-5.2-flash") == "GLM-5.3-Flash")
+        #expect(RelayTarget.canonicalModel("glm-4.7-flash") == "GLM-5.3-Flash")
+        // Older family names still pass through verbatim.
+        #expect(RelayTarget.canonicalModel("GLM-4.5-Air") == "GLM-4.5-Air")
+        // Provider-qualified names strip the prefix before canonicalization.
+        #expect(RelayTarget.canonicalModel("zai/GLM-5.3") == "GLM-5.3")
+        #expect(RelayTarget.canonicalModel("bigmodel/glm-5.3") == "GLM-5.3")
+        #expect(RelayTarget.canonicalModel("ZAI/glm-5.2") == "GLM-5.3")
+        #expect(RelayTarget.canonicalModel("zai/glm-5.3-flash") == "GLM-5.3-Flash")
+        #expect(RelayTarget.canonicalModel("  bigmodel/GLM-4.6  ") == "GLM-4.6")
     }
 
     // MARK: - Outgoing header set (AC: fixture statics byte-identical, wire order, volatile shapes)
@@ -1095,6 +1114,77 @@ struct RelayTargetTests {
         let sentJSON = try #require(
             try JSONSerialization.jsonObject(with: relay.requests.first!.body) as? [String: Any])
         #expect(sentJSON["model"] as? String == "GLM-5.3-Flash")
+    }
+
+    // MARK: - Model hygiene on the wire (AC: retired aliases, prefix strip, max_tokens clamp)
+
+    /// wireBody fixture whose model is already canonical, so the model splice
+    /// is a byte-identical no-op and any output difference is the clamp alone.
+    /// Expected outputs are built from the same generator with only the digits
+    /// changed — the assertion is byte-exact, formatting included.
+    private func clampFixtureBody(maxTokens: String) -> Data {
+        Data("{\"model\":\"GLM-5.3\",\"stream\":true,\"max_tokens\":\(maxTokens),\"messages\":[{\"role\":\"user\",\"content\":\"héllo\"}]}".utf8)
+    }
+
+    private func clampWire(_ body: Data) -> Data {
+        RelayTarget.wireBody(bodyData: body, target: relayRouteTarget(port: 1, targetModel: "GLM-5.3"))
+    }
+
+    @Test func wireBodyLeavesInRangeMaxTokensBytesUntouched() {
+        // Both bounds included: in-range values come back byte-identical.
+        for value in ["1", "128", "131072"] {
+            let body = clampFixtureBody(maxTokens: value)
+            #expect(clampWire(body) == body)
+        }
+    }
+
+    @Test func wireBodyClampsOutOfRangeMaxTokens() {
+        // 0 → 1, 131073 → 131072, 200000 → 131072: only the digits change.
+        let cases: [(sent: String, wire: String)] = [
+            ("0", "1"), ("131073", "131072"), ("200000", "131072"),
+        ]
+        for testCase in cases {
+            #expect(
+                clampWire(clampFixtureBody(maxTokens: testCase.sent))
+                    == clampFixtureBody(maxTokens: testCase.wire))
+        }
+    }
+
+    @Test func wireBodyClampPreservesFormattingBytes() {
+        // Whitespace around the key/colon survives the splice untouched.
+        let body = Data("{\"model\":\"GLM-5.3\" ,  \"max_tokens\" :\n 200000 , \"stream\":true}".utf8)
+        let expected = Data("{\"model\":\"GLM-5.3\" ,  \"max_tokens\" :\n 131072 , \"stream\":true}".utf8)
+        #expect(clampWire(body) == expected)
+    }
+
+    @Test func wireBodyLeavesAbsentMaxTokensUntouched() {
+        let body = Data("{\"model\":\"GLM-5.3\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"héllo\"}]}".utf8)
+        #expect(clampWire(body) == body)
+    }
+
+    @Test func wireBodyIgnoresNestedMaxTokens() {
+        // Nested max_tokens (inside a message object) is not the request
+        // field: with no top-level key, an out-of-range nested value stays
+        // byte-untouched.
+        let nestedOnly = Data("{\"model\":\"GLM-5.3\",\"messages\":[{\"role\":\"user\",\"content\":\"x\",\"max_tokens\":200000}]}".utf8)
+        #expect(clampWire(nestedOnly) == nestedOnly)
+
+        // With both present, only the top-level value is clamped and the
+        // nested out-of-range bytes survive verbatim.
+        let both = Data("{\"model\":\"GLM-5.3\",\"max_tokens\":200000,\"messages\":[{\"role\":\"user\",\"content\":\"x\",\"max_tokens\":999999}]}".utf8)
+        let expected = Data("{\"model\":\"GLM-5.3\",\"max_tokens\":131072,\"messages\":[{\"role\":\"user\",\"content\":\"x\",\"max_tokens\":999999}]}".utf8)
+        #expect(clampWire(both) == expected)
+    }
+
+    @Test func wireBodyCanonicalizesProviderPrefixedRetiredModel() throws {
+        // Full-path composition: prefix strip + retired alias + in-range
+        // clamp no-op on a body-carried model (targetModel nil).
+        let body = Data("{\"model\":\"zai/glm-5.2\",\"max_tokens\":128,\"messages\":[]}".utf8)
+        let wire = RelayTarget.wireBody(
+            bodyData: body, target: relayRouteTarget(port: 1, targetModel: nil))
+        let json = try #require(try JSONSerialization.jsonObject(with: wire) as? [String: Any])
+        #expect(json["model"] as? String == "GLM-5.3")
+        #expect(json["max_tokens"] as? Int == 128)
     }
 
     // MARK: - SSE passthrough (AC: byte-identical stream, split mid-JSON survives)
