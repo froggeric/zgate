@@ -40,12 +40,14 @@ what the semantics allow, and keep serving through outages.
 - Business codes (parsed JSON only) decide retry/no-retry (taxonomy in the
   feature doc); a 401 ladder rebuilds the signing chain exactly once;
   connect-phase failures get a 2-step retry ladder.
-- A transport-class failure or credentials-expired outcome flips
-  `RelayHealth` into `degradedSigning` with a half-open probe (60 s base,
-  doubling): while degraded, class-routed requests are served DIRECTLY by
-  the fallback edge vendor (a signing-free `api.z.ai/api/anthropic`
-  credential minted on demand) instead of failing. No-launder: the edge is
-  never used to push a request past an upstream 401.
+- A transport- or signing-class failure flips `RelayHealth` into
+  `degradedSigning` with a half-open probe (60 s base, doubling): while
+  degraded, class-routed requests are served DIRECTLY by the fallback edge
+  vendor (a signing-free `api.z.ai/api/anthropic` credential minted on
+  demand) instead of failing. No-launder: the edge is never used to push a
+  request past an upstream 401. A credentials-expired outcome serves the
+  same fallback WITHOUT probing — relay health stays untouched (recovery is
+  an interactive re-login, and a successful re-login resets health).
 - Evidence for the edge: the API-key fallback plane is a real
   Anthropic-compatible surface (billing/monitor endpoints live-verified
   2026-11-16; the mint chain is the same z/login → biz JWT chain the relay

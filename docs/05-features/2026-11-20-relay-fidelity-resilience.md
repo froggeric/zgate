@@ -22,7 +22,7 @@ the project constraint):
 | # | Transform | Where | Behavior |
 |---|-----------|-------|----------|
 | 1 | Model canonicalization | `RelayTarget.canonicalModel` (`ModelProxy/Proxy/RelayTarget.swift`) | The top-level `model` is rewritten to the GLM-canonical wire name with a byte-preserving splice: retired GLM names map to the current main/flash model, unknown `glm-*` names map to the main model, unknown names to flash. Byte-identical when already canonical. |
-| 2 | Provider-prefix strip | same | A provider prefix on the rule target (`anthropic/`, `zai/`, `glm/`, …) is stripped before canonicalization — one layer per plan-snippet semantics. |
+| 2 | Provider-prefix strip | same | A provider prefix on the rule target (`zai/` or `bigmodel/` — exactly these two) is stripped before canonicalization — one layer per plan-snippet semantics. |
 | 3 | `max_tokens` clamp | `ProxyForwarder.clampMaxTokensField` | A top-level out-of-range `max_tokens` is clamped into `[1, 131072]` before send (the relay 400s code 1210 otherwise). Byte-identical when absent or in range. |
 | 4 | Session derivation | `RelayTarget.SessionIdentity.derive` | ONE per-conversation identity derived per exchange from the inbound Claude Code session header (read, never forwarded) feeds everything upstream: `x-session-id`, the PoW challenge input, and the Ed25519 signature message — mirroring the official CLI's `sess_` semantics. Subagent-typed headers keep their type; a garbage or absent header falls back to a per-process id (subagent-typed when the request looks like one). |
 | 5 | Endpoint routing | `EndpointConfigService` / `EndpointMapping` (`ModelProxy/Services/`) | The request URL is resolved through the server's `agent/configs` snapshot (see below). Fail-open: a failed, slow, invalid or missing snapshot never blocks or fails a request — the pinned URL serves. |
@@ -61,13 +61,15 @@ routing still engages for any future table that maps the pin.
   try ONE unsigned attempt only if a signed chain had been established in
   the process. Never-launder: the fallback edge is never used to bypass a
   401.
-- **Degraded machine** (`RelayHealth`): transport-class failures or a
-  credentials-expired outcome enter `degradedSigning` with a half-open
-  probe cadence (60 s base, doubling backoff). While degraded, class-routed
-  requests serve the fallback edge vendor DIRECTLY (the rule's backup keeps
-  its own semantics) — degraded is a serving state, not a terminal one.
-  Recovery is automatic (a successful probe or served request restores the
-  signed ladder).
+- **Degraded machine** (`RelayHealth`): transport- or signing-class failures
+  enter `degradedSigning` with a half-open probe cadence (60 s base,
+  doubling backoff). While degraded, class-routed requests serve the
+  fallback edge vendor DIRECTLY (the rule's backup keeps its own semantics)
+  — degraded is a serving state, not a terminal one. Recovery is automatic
+  (a successful probe or served request restores the signed ladder). A
+  credentials-expired outcome serves the fallback edge WITHOUT probing —
+  relay health stays untouched (the re-login event already fired); recovery
+  is an interactive re-login, and a successful re-login resets health.
 - **Connect-retry ladder:** connect-phase transport failures retry twice
   (500 ms, then 1 s backoff) before surfacing.
 - **API-key fallback edge:** a signing-free `api.z.ai/api/anthropic`
