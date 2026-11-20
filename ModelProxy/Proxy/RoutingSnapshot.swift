@@ -9,8 +9,11 @@ struct RoutingSnapshot: Sendable {
     struct RouteTarget: Sendable {
         /// Vendor baseURL, e.g. "https://dashscope.aliyuncs.com/compatible-mode"
         let baseURL: String
-        /// Vendor API key (empty string = use original key from request)
-        let apiKey: String
+        /// Vendor API key (empty string = use original key from request).
+        /// `var` for the fallback edge's lazily minted credential: the
+        /// snapshot copy stays empty until the mint persists + hot-reloads,
+        /// so the serving path resolves the live key per request.
+        var apiKey: String
         let vendorName: String
         /// Vendor UUID for token stats keying; nil for passthrough routes.
         let vendorID: UUID?
@@ -34,6 +37,10 @@ struct RoutingSnapshot: Sendable {
         let repairsAnthropicToolCalls: Bool
         /// Whether Claude-only request fields and `anthropic-beta` are removed before forwarding.
         let stripsClaudeOnlyRequestFields: Bool
+        /// Whether the outgoing top-level `model` value runs through
+        /// `RelayTarget.canonicalModel` (the Task-7 fallback edge's flag —
+        /// GLM canonical wire names, retired names never leak raw).
+        let applyGLMCanonicalization: Bool
         /// Auth/forward mode: static-key vendor (`.anthropic`) or the signed
         /// zcode relay (`.relay` — routed through RelayTarget).
         let vendorKind: VendorKind
@@ -53,6 +60,7 @@ struct RoutingSnapshot: Sendable {
             supportsAnthropicCountTokens: Bool = VendorDefaults.supportsAnthropicCountTokens,
             repairsAnthropicToolCalls: Bool = VendorDefaults.repairsAnthropicToolCalls,
             stripsClaudeOnlyRequestFields: Bool = VendorDefaults.stripsClaudeOnlyRequestFields,
+            applyGLMCanonicalization: Bool = VendorDefaults.applyGLMCanonicalization,
             vendorKind: VendorKind = .anthropic
         ) {
             self.baseURL = baseURL
@@ -69,7 +77,17 @@ struct RoutingSnapshot: Sendable {
             self.supportsAnthropicCountTokens = supportsAnthropicCountTokens
             self.repairsAnthropicToolCalls = repairsAnthropicToolCalls
             self.stripsClaudeOnlyRequestFields = stripsClaudeOnlyRequestFields
+            self.applyGLMCanonicalization = applyGLMCanonicalization
             self.vendorKind = vendorKind
+        }
+
+        /// Copy with a resolved API key — the fallback edge's serving path
+        /// (its snapshot key stays empty until the first mint persists and
+        /// the routing snapshot hot-reloads).
+        func withAPIKey(_ newKey: String) -> RouteTarget {
+            var copy = self
+            copy.apiKey = newKey
+            return copy
         }
     }
 
@@ -137,6 +155,7 @@ struct RoutingSnapshot: Sendable {
                 supportsAnthropicCountTokens: vendor.supportsAnthropicCountTokens,
                 repairsAnthropicToolCalls: vendor.repairsAnthropicToolCalls,
                 stripsClaudeOnlyRequestFields: vendor.stripsClaudeOnlyRequestFields,
+                applyGLMCanonicalization: vendor.applyGLMCanonicalization,
                 vendorKind: vendor.vendorKind
             )
             var targets = [primary]
@@ -160,6 +179,7 @@ struct RoutingSnapshot: Sendable {
                     supportsAnthropicCountTokens: backupVendor.supportsAnthropicCountTokens,
                     repairsAnthropicToolCalls: backupVendor.repairsAnthropicToolCalls,
                     stripsClaudeOnlyRequestFields: backupVendor.stripsClaudeOnlyRequestFields,
+                    applyGLMCanonicalization: backupVendor.applyGLMCanonicalization,
                     vendorKind: backupVendor.vendorKind
                 )
                 targets.append(backup)
@@ -200,6 +220,7 @@ struct RoutingSnapshot: Sendable {
                 supportsAnthropicCountTokens: vendor.supportsAnthropicCountTokens,
                 repairsAnthropicToolCalls: vendor.repairsAnthropicToolCalls,
                 stripsClaudeOnlyRequestFields: vendor.stripsClaudeOnlyRequestFields,
+                applyGLMCanonicalization: vendor.applyGLMCanonicalization,
                 vendorKind: vendor.vendorKind
             )
         } else {

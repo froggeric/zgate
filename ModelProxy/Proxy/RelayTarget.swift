@@ -168,6 +168,12 @@ enum RelayTarget {
         /// consumes this to enter its 900 s riskCooldown. nil when nobody
         /// observes.
         let onRiskControl: (@Sendable (String) -> Void)?
+        /// Task 7's relay health machine — the degraded-signing/risk-cooldown
+        /// admission gate and the fallback edge's key lifecycle, consulted by
+        /// ProxyForwarder.executeRelay. nil = fail-open (tests, legacy
+        /// contexts): every request attempts the signed ladder, exactly like
+        /// the pre-Task-7 behavior.
+        let relayHealth: RelayHealth?
         /// Concurrency-limited retries (codes 3008/3009/3010) sleep 3 s then
         /// 6 s, each ±1 s jitter, through this seam — injectable like
         /// `rateLimitBackoff` (tests record the requested delays).
@@ -184,7 +190,8 @@ enum RelayTarget {
             quota: (any QuotaRelayCounting)? = nil,
             endpointConfig: (any EndpointResolving)? = nil,
             clientVersion: String = RelayTarget.clientVersion,
-            onRiskControl: (@Sendable (String) -> Void)? = nil
+            onRiskControl: (@Sendable (String) -> Void)? = nil,
+            relayHealth: RelayHealth? = nil
         ) {
             self.signingClient = signingClient
             self.credentialEvents = credentialEvents
@@ -192,6 +199,7 @@ enum RelayTarget {
             self.endpointConfig = endpointConfig
             self.clientVersion = clientVersion
             self.onRiskControl = onRiskControl
+            self.relayHealth = relayHealth
         }
 
         func noteSignedSessionEstablished() {

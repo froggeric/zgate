@@ -69,6 +69,16 @@ final class ProxyServer {
     /// ConfigStore, so it injects this write-through (nil = bumps stay
     /// in-memory for this process only).
     var clientVersionSink: (@MainActor (String) -> Void)?
+    /// Persistence sink for a minted fallback-edge key (relay fidelity
+    /// Task 7) — the app layer writes it into the fallback vendor's
+    /// `apiKey` (config.json) and hot-reloads routing. nil = the key stays
+    /// in RelayHealth's memory for this process only.
+    var fallbackKeySink: (@MainActor (String) -> Void)?
+    /// Relay health machine (relay fidelity Task 7): the relay plane's
+    /// degraded/risk admission gate plus the fallback edge's key
+    /// lifecycle. Built once per process with the relay context; survives
+    /// stop/start like the signing context.
+    private var relayHealth: RelayHealth?
     /// Proactive renewal loop (item 5): started with the relay context,
     /// runs for the process. See start() for the test-host exclusion.
     @ObservationIgnored
@@ -212,6 +222,27 @@ final class ProxyServer {
                 endpointConfigService = service
                 AppLog.proxy.info("[ProxyServer] Endpoint routing service ready (agent/configs, fail-open)")
             }
+            // Relay health (relay fidelity Task 7): the degraded machine +
+            // the fallback edge's mint chain. The mint's biz JWT comes from
+            // the signing chain; the minted key persists through the app
+            // layer's sink. Never built inside the isolated test host (no
+            // live API calls from suite runs) — the health machine itself
+            // still runs there, mint-free, exactly like a config without a
+            // fallback key.
+            if relayHealth == nil {
+                var healthConfiguration = RelayHealth.Configuration()
+                if AppPaths.isolatedBase == nil {
+                    var minterConfiguration = ApiKeyMinter.Configuration()
+                    minterConfiguration.bizJWTProvider = { try await signingClient.currentBizJWT() }
+                    healthConfiguration.minter = ApiKeyMinter(configuration: minterConfiguration)
+                    let sink = fallbackKeySink
+                    healthConfiguration.onKeyMinted = { key in
+                        Task { @MainActor in sink?(key) }
+                    }
+                }
+                relayHealth = RelayHealth(configuration: healthConfiguration)
+                AppLog.proxy.info("[ProxyServer] Relay health machine ready (degraded probes, fallback edge)")
+            }
             // Client-version pin (relay fidelity Task 4): poll
             // client/configs for the server's force-update minimum; a
             // greater-only bump updates the live relay context (all four
@@ -242,7 +273,8 @@ final class ProxyServer {
                 credentialEvents: credentialEvents,
                 quota: quotaService,
                 endpointConfig: endpointConfigService,
-                clientVersion: config.relayClientVersion)
+                clientVersion: config.relayClientVersion,
+                relayHealth: relayHealth)
             AppLog.proxy.info("[ProxyServer] Relay signing context ready (relay vendor configured)")
             // Proactive renewal (item 5, report §C.4): keep the ladder
             // alive without relayed traffic. Runs for the process (never

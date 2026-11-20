@@ -426,7 +426,9 @@ struct RelayTargetTests {
 
     /// A SigningClient whose chain is mint + handshake against the URLProtocol
     /// mock (a seeded biz-session cache means z/login never runs).
-    private func makeSigningClient(directory: URL, control: SigningControl) -> SigningClient {
+    private func makeSigningClient(
+        directory: URL, control: SigningControl, seedCache: Bool = true
+    ) -> SigningClient {
         SigningURLProtocolMock.control = control
         var configuration = SigningClient.Configuration()
         let urlSessionConfiguration = URLSessionConfiguration.ephemeral
@@ -436,11 +438,13 @@ struct RelayTargetTests {
         configuration.initialLocation = Fixtures.location
         let cacheURL = directory.appendingPathComponent("biz-session.cache")
         configuration.cacheURL = cacheURL
-        let cache = BizSessionCache(fileURL: cacheURL)
-        try? cache.save(BizSession(
-            bizJwt: Fixtures.bizJwt,
-            acquiredAtMs: Int64(Date().timeIntervalSince1970 * 1000) - 1_000,
-            location: Fixtures.location))
+        if seedCache {
+            let cache = BizSessionCache(fileURL: cacheURL)
+            try? cache.save(BizSession(
+                bizJwt: Fixtures.bizJwt,
+                acquiredAtMs: Int64(Date().timeIntervalSince1970 * 1000) - 1_000,
+                location: Fixtures.location))
+        }
         return SigningClient(configuration: configuration)
     }
 
@@ -449,13 +453,15 @@ struct RelayTargetTests {
         events: CredentialEventChannel? = nil,
         directoryLabel: String,
         quota: (any QuotaRelayCounting)? = nil,
-        onRiskControl: (@Sendable (String) -> Void)? = nil
+        onRiskControl: (@Sendable (String) -> Void)? = nil,
+        relayHealth: RelayHealth? = nil,
+        seedCache: Bool = true
     ) throws -> (RelayTarget.Context, URL) {
         let directory = try makeTempDirectory(directoryLabel)
-        let client = makeSigningClient(directory: directory, control: control)
+        let client = makeSigningClient(directory: directory, control: control, seedCache: seedCache)
         return (RelayTarget.Context(
             signingClient: client, credentialEvents: events, quota: quota,
-            onRiskControl: onRiskControl), directory)
+            onRiskControl: onRiskControl, relayHealth: relayHealth), directory)
     }
 
     private func relayRouteTarget(port: Int, targetModel: String? = "glm-5.3") -> RoutingSnapshot.RouteTarget {
@@ -2395,7 +2401,7 @@ struct RelayTargetTests {
     }
 
     private func makeForwardFixture(
-        relayPort: Int, backupPort: Int?
+        relayPort: Int, backupPort: Int?, fallbackEdgePort: Int? = nil
     ) throws -> ForwardFixture {
         let relayVendorID = UUID()
         var vendors = [Vendor(
@@ -2405,7 +2411,20 @@ struct RelayTargetTests {
         var mapping = ModelMapping(
             sourceModel: "claude-sonnet-5", targetModel: "glm-5.3",
             targetVendorID: relayVendorID, isEnabled: true)
-        if let backupPort {
+        if fallbackEdgePort != nil {
+            // The Task-7 fallback edge: keyless until the mint, canonicalized
+            // models, Claude-only fields stripped.
+            let edgeVendor = Vendor(
+                id: UUID(), name: "z.ai API key (fallback)",
+                baseURL: "http://127.0.0.1:\(fallbackEdgePort!)/api/anthropic",
+                apiKey: "", readTimeoutSeconds: 10,
+                supportsThinkingBlocks: true,
+                stripsClaudeOnlyRequestFields: true,
+                applyGLMCanonicalization: true)
+            vendors.append(edgeVendor)
+            mapping.backupTargetVendorID = edgeVendor.id
+            mapping.backupTargetModel = "glm-5.3"
+        } else if let backupPort {
             let backupVendor = Vendor(
                 id: UUID(), name: "Backup Vendor",
                 baseURL: "http://127.0.0.1:\(backupPort)",
@@ -2659,6 +2678,480 @@ struct RelayTargetTests {
         #expect(relay.requestCount == 3)
         #expect(backup.requestCount == 1)
         #expect(sleeper.delays.count == 2)
+        finishChannel(client)
+    }
+
+    // MARK: - ProxyForwarder + Task 7 (degraded machine, fallback edge)
+
+    /// Lock-guarded mutable clock for RelayHealth injection.
+    private final class HealthClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var instant = Date()
+
+        func advance(_ seconds: TimeInterval) {
+            lock.lock(); instant = instant.addingTimeInterval(seconds); lock.unlock()
+        }
+
+        var now: Date {
+            lock.lock(); defer { lock.unlock() }
+            return instant
+        }
+    }
+
+    /// The full mint chain served in-memory (info → list → copy) with an
+    /// incrementing secret per run, so a forced re-mint mints a NEW key.
+    /// `fixedSecret` pins every run to secret-1 (the re-mint-returns-same-
+    /// key case).
+    private final class EdgeMintStub: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _runs = 0
+        private var _secretIndex = 0
+        var fixedSecret = false
+
+        var runs: Int {
+            lock.lock(); defer { lock.unlock() }
+            return _runs
+        }
+
+        func respond(path: String) throws -> (Int, Data) {
+            func json(_ object: [String: Any]) -> Data {
+                (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
+            }
+            if path.contains("getCustomerInfo") {
+                lock.lock(); _runs += 1; lock.unlock()
+                return (200, json(["code": 0, "data": ["organizations": [
+                    ["id": "org-1", "name": "默认机构", "projects": [["id": "proj-1", "name": "默认项目"]]],
+                ]]]))
+            }
+            if path.contains("/copy/") {
+                lock.lock()
+                _secretIndex += 1
+                let secret = fixedSecret ? "secret-1" : "secret-\(_secretIndex)"
+                lock.unlock()
+                return (200, json(["code": 0, "data": ["secretKey": secret]]))
+            }
+            if path.hasSuffix("/api_keys") {
+                return (200, json(["code": 0, "data": ["list": [["id": "apiKey-1", "name": "zcode-api-key"]]]]))
+            }
+            throw NSError(domain: "EdgeMintStub", code: 1)
+        }
+    }
+
+    /// A RelayHealth whose fallback edge is the fixture's stub edge.
+    private func makeEdgeHealth(
+        edgePort: Int, clock: HealthClock = HealthClock(), stub: EdgeMintStub
+    ) -> (RelayHealth, HealthClock) {
+        var minterConfiguration = ApiKeyMinter.Configuration()
+        minterConfiguration.bizJWTProvider = { "biz-jwt" }
+        minterConfiguration.execute = { request in
+            try stub.respond(path: request.url?.path ?? "")
+        }
+        var configuration = RelayHealth.Configuration()
+        configuration.fallbackEdgeBaseURL = "http://127.0.0.1:\(edgePort)/api/anthropic"
+        configuration.minter = ApiKeyMinter(configuration: minterConfiguration)
+        configuration.now = { clock.now }
+        return (RelayHealth(configuration: configuration), clock)
+    }
+
+    @Test func forwardSigningFailureServesViaFallbackEdge() async throws {
+        let relay = MockRelayServer(scripts: [])
+        let relayPort = try await relay.start()
+        let edge = MockRelayServer(scripts: [.json(["id": "msg_edge_1"])])
+        let edgePort = try await edge.start()
+        defer {
+            Task { await relay.shutdown() }
+            Task { await edge.shutdown() }
+        }
+        let control = SigningControl()
+        control.failHandshakeFromCount = 0  // every handshake fails
+        let stub = EdgeMintStub()
+        let (health, _) = makeEdgeHealth(edgePort: edgePort, stub: stub)
+        let (context, _) = try makeRelayContext(
+            control: control, directoryLabel: "fwdedge", relayHealth: health)
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil, fallbackEdgePort: edgePort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client)
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .ok)
+        #expect(sawEnd)
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["id"] as? String == "msg_edge_1")
+
+        // Nothing reached the relay; the edge served with the minted
+        // credential on x-api-key (no authorization), GLM-canonical model.
+        #expect(relay.requestCount == 0)
+        #expect(stub.runs == 1)
+        let edgeRequest = try #require(edge.requests.first)
+        #expect(edgeRequest.headers["x-api-key"] == "apiKey-1.secret-1")
+        #expect(edgeRequest.headers["authorization"] == nil)
+        let sentJSON = try #require(try JSONSerialization.jsonObject(with: edgeRequest.body) as? [String: Any])
+        #expect(sentJSON["model"] as? String == "GLM-5.3")  // glm-5.3 → canonical
+
+        // The machine entered degraded with the base probe interval.
+        let state = await health.currentState()
+        guard case .degradedSigning(_, let backoff) = state else {
+            Issue.record("expected degradedSigning, got \(state)"); return
+        }
+        #expect(backoff == 60)
+        finishChannel(client)
+    }
+
+    @Test func forwardDegradedServesFallbackUntilProbeRecovers() async throws {
+        let relay = MockRelayServer(scripts: [.json(["id": "msg_relay_ok"])])
+        let relayPort = try await relay.start()
+        let edge = MockRelayServer(scripts: [
+            .json(["id": "msg_edge_1"]), .json(["id": "msg_edge_2"]),
+        ])
+        let edgePort = try await edge.start()
+        defer {
+            Task { await relay.shutdown() }
+            Task { await edge.shutdown() }
+        }
+        let control = SigningControl()
+        control.failHandshakeFromCount = 0  // handshake fails (nothing reaches the relay)
+        let stub = EdgeMintStub()
+        let (health, clock) = makeEdgeHealth(edgePort: edgePort, stub: stub)
+        let (context, _) = try makeRelayContext(
+            control: control, directoryLabel: "fwdprobe", relayHealth: health)
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil, fallbackEdgePort: edgePort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        // Request 1 (healthy → attempt): handshake fails → degraded, edge serves.
+        let client1 = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client1)
+        let (head1, body1, _) = try drainClientResponse(client1)
+        #expect(head1.status == .ok)
+        #expect(try JSONSerialization.jsonObject(with: body1) as? [String: Any] != nil)
+        finishChannel(client1)
+
+        // Request 2 (degraded, probe not due): edge serves with NO relay work.
+        let client2 = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client2)
+        let (head2, _, _) = try drainClientResponse(client2)
+        #expect(head2.status == .ok)
+        #expect(relay.requestCount == 0)
+        #expect(edge.requestCount == 2)
+        finishChannel(client2)
+
+        // Request 3 (probe due after the base interval): the chain recovered
+        // (handshakes succeed again) — the relay serves and health resets.
+        control.failHandshakeFromCount = nil
+        clock.advance(61)
+        let client3 = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client3)
+        let (head3, body3, _) = try drainClientResponse(client3)
+        #expect(head3.status == .ok)
+        let json3 = try #require(try JSONSerialization.jsonObject(with: body3) as? [String: Any])
+        #expect(json3["id"] as? String == "msg_relay_ok")
+        #expect(relay.requestCount == 1)
+        #expect(edge.requestCount == 2)  // unchanged — the probe served from the relay
+        #expect(await health.currentState() == .healthy)
+        finishChannel(client3)
+    }
+
+    @Test func forwardCredentialsExpiredServesFallbackWithoutDegrading() async throws {
+        let relay = MockRelayServer(scripts: [])
+        let relayPort = try await relay.start()
+        let edge = MockRelayServer(scripts: [.json(["id": "msg_edge_expired"])])
+        let edgePort = try await edge.start()
+        defer {
+            Task { await relay.shutdown() }
+            Task { await edge.shutdown() }
+        }
+        // Cold cache + no store + a location: the chain can only answer
+        // reloginRequired — the credentialsExpired outcome.
+        let control = SigningControl()
+        let stub = EdgeMintStub()
+        let (health, _) = makeEdgeHealth(edgePort: edgePort, stub: stub)
+        let events = CredentialEventChannel()
+        let (context, _) = try makeRelayContext(
+            control: control, events: events, directoryLabel: "fwdcredexp",
+            relayHealth: health, seedCache: false)
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil, fallbackEdgePort: edgePort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client)
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .ok)
+        #expect(sawEnd)
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["id"] as? String == "msg_edge_expired")
+        #expect(relay.requestCount == 0)
+
+        // No probe state was entered (recovery = re-login) and the re-login
+        // event surfaced.
+        #expect(await health.currentState() == .healthy)
+        #expect(events.events.contains { event in
+            if case .expired = event { return true }
+            return false
+        })
+        finishChannel(client)
+    }
+
+    @Test func forwardRiskControlServesFallbackThenBlocksRelayAttempts() async throws {
+        let riskBody = MockRelayServer.Script.json(
+            ["code": 3012, "msg": "risk control triggered"], status: 400)
+        let relay = MockRelayServer(scripts: [riskBody])
+        let relayPort = try await relay.start()
+        let edge = MockRelayServer(scripts: [
+            .json(["id": "msg_edge_risk_1"]), .json(["id": "msg_edge_risk_2"]),
+        ])
+        let edgePort = try await edge.start()
+        defer {
+            Task { await relay.shutdown() }
+            Task { await edge.shutdown() }
+        }
+        let control = SigningControl()
+        let stub = EdgeMintStub()
+        let (health, _) = makeEdgeHealth(edgePort: edgePort, stub: stub)
+        let (context, _) = try makeRelayContext(
+            control: control, directoryLabel: "fwdrisk7", relayHealth: health)
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil, fallbackEdgePort: edgePort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        // Request 1: the relay's risk answer starts the cooldown; the edge serves.
+        let client1 = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client1)
+        let (head1, body1, _) = try drainClientResponse(client1)
+        #expect(head1.status == .ok)
+        let json1 = try #require(try JSONSerialization.jsonObject(with: body1) as? [String: Any])
+        #expect(json1["id"] as? String == "msg_edge_risk_1")
+        #expect(relay.requestCount == 1)
+
+        // Request 2 (cooldown active): the relay attempt is BLOCKED — the
+        // edge serves again without any relay work.
+        let client2 = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client2)
+        let (head2, body2, _) = try drainClientResponse(client2)
+        #expect(head2.status == .ok)
+        let json2 = try #require(try JSONSerialization.jsonObject(with: body2) as? [String: Any])
+        #expect(json2["id"] as? String == "msg_edge_risk_2")
+        #expect(relay.requestCount == 1)
+        #expect(edge.requestCount == 2)
+        finishChannel(client1)
+        finishChannel(client2)
+    }
+
+    @Test func forwardRiskCooldownWithoutFallbackAnswersClear502() async throws {
+        let riskBody = MockRelayServer.Script.json(
+            ["code": 3012, "msg": "risk control triggered"], status: 400)
+        let relay = MockRelayServer(scripts: [riskBody])
+        let relayPort = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (health, _) = makeEdgeHealth(edgePort: 1, stub: EdgeMintStub())
+        let (context, _) = try makeRelayContext(
+            control: control, directoryLabel: "fwdrisk502", relayHealth: health)
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        // Request 1 surfaces the risk 502 and starts the cooldown.
+        let client1 = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client1)
+        let (head1, body1, sawEnd1) = try drainClientResponse(client1)
+        #expect(head1.status == .badGateway)
+        #expect(sawEnd1)
+        let error1 = try #require(
+            (try JSONSerialization.jsonObject(with: body1) as? [String: Any])?["error"] as? [String: Any])
+        #expect((error1["message"] as? String)?.localizedCaseInsensitiveContains("risk") == true)
+
+        // Request 2: cooldown + no fallback → the clear blocked-502, and
+        // the relay is never touched again.
+        let client2 = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client2)
+        let (head2, body2, _) = try drainClientResponse(client2)
+        #expect(head2.status == .badGateway)
+        let error2 = try #require(
+            (try JSONSerialization.jsonObject(with: body2) as? [String: Any])?["error"] as? [String: Any])
+        #expect((error2["message"] as? String)?.localizedCaseInsensitiveContains("cooldown") == true)
+        #expect(relay.requestCount == 1)
+        finishChannel(client1)
+        finishChannel(client2)
+    }
+
+    @Test func forwardFallback401RemintsOnceAndRetries() async throws {
+        let relay = MockRelayServer(scripts: [])
+        let relayPort = try await relay.start()
+        let edge = MockRelayServer(scripts: [
+            .json(["error": ["type": "authentication_error", "message": "bad key"]], status: 401),
+            .json(["id": "msg_edge_after_remint"]),
+        ])
+        let edgePort = try await edge.start()
+        defer {
+            Task { await relay.shutdown() }
+            Task { await edge.shutdown() }
+        }
+        let control = SigningControl()
+        control.failHandshakeFromCount = 0
+        let stub = EdgeMintStub()
+        let (health, _) = makeEdgeHealth(edgePort: edgePort, stub: stub)
+        let (context, _) = try makeRelayContext(
+            control: control, directoryLabel: "fwd401", relayHealth: health)
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil, fallbackEdgePort: edgePort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client)
+        let (head, body, sawEnd) = try drainClientResponse(client)
+        #expect(head.status == .ok)
+        #expect(sawEnd)
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["id"] as? String == "msg_edge_after_remint")
+
+        // Exactly two edge exchanges (401 → re-mint → retry) and two mint
+        // chain runs (initial + forced); the retry carried the NEW key.
+        #expect(edge.requestCount == 2)
+        #expect(stub.runs == 2)
+        let retry = try #require(edge.requests.last)
+        #expect(retry.headers["x-api-key"] == "apiKey-1.secret-2")
+        finishChannel(client)
+    }
+
+    @Test func forwardFallback401SurfacesWhenRemintReturnsSameKey() async throws {
+        let relay = MockRelayServer(scripts: [])
+        let relayPort = try await relay.start()
+        let unauthorized = MockRelayServer.Script.json(
+            ["error": ["type": "authentication_error", "message": "bad key"]], status: 401)
+        let edge = MockRelayServer(scripts: [unauthorized, unauthorized])
+        let edgePort = try await edge.start()
+        defer {
+            Task { await relay.shutdown() }
+            Task { await edge.shutdown() }
+        }
+        let control = SigningControl()
+        control.failHandshakeFromCount = 0
+        let stub = EdgeMintStub()
+        stub.fixedSecret = true
+        let (health, _) = makeEdgeHealth(edgePort: edgePort, stub: stub)
+        let (context, _) = try makeRelayContext(
+            control: control, directoryLabel: "fwd401same", relayHealth: health)
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil, fallbackEdgePort: edgePort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client)
+        let (head, _, sawEnd) = try drainClientResponse(client)
+        // One forced re-mint that yielded the same key: the 401 surfaces,
+        // no retry loop.
+        #expect(head.status == .unauthorized)
+        #expect(sawEnd)
+        #expect(edge.requestCount == 1)
+        #expect(stub.runs == 2)
+        finishChannel(client)
+    }
+
+    @Test func forwardFallbackNoBalanceSurfacesAndCoolsTheKey() async throws {
+        // A HEALTHY relay (rate-limited after retry) still falls back — and
+        // the fallback's no-balance answer must NOT launder relay state.
+        let limited = MockRelayServer.Script.json(
+            ["type": "error", "error": ["type": "rate_limit_error", "message": "rate limited"]],
+            status: 429)
+        let relay = MockRelayServer(scripts: [limited, limited, limited, limited, limited, limited])
+        let relayPort = try await relay.start()
+        let noBalance = MockRelayServer.Script.json(
+            ["code": 1113, "msg": "insufficient quota"], status: 429)
+        let edge = MockRelayServer(scripts: [noBalance, noBalance])
+        let edgePort = try await edge.start()
+        defer {
+            Task { await relay.shutdown() }
+            Task { await edge.shutdown() }
+        }
+        let control = SigningControl()
+        let stub = EdgeMintStub()
+        let (health, clock) = makeEdgeHealth(edgePort: edgePort, clock: HealthClock(), stub: stub)
+        let (context, _) = try makeRelayContext(
+            control: control, directoryLabel: "fwd1113", relayHealth: health)
+        context.rateLimitBackoff = 0.05
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil, fallbackEdgePort: edgePort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        // Request 1: relay rate-limited after retry → fallback answers 1113;
+        // the response surfaces and the KEY cools — the relay machine stays
+        // healthy (never launder).
+        let client1 = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client1)
+        let (head1, body1, _) = try drainClientResponse(client1)
+        #expect(head1.status == .tooManyRequests)
+        let json1 = try #require(try JSONSerialization.jsonObject(with: body1) as? [String: Any])
+        #expect((json1["code"] as? Int) == 1113)
+        #expect(await health.currentState() == .healthy)
+        #expect(await health.isFallbackKeyCooling() == true)
+        finishChannel(client1)
+
+        // Request 2 (within the 1 h key cooldown): the edge cannot serve, so
+        // the configured-but-unserveable backup answers the 502-unreachable
+        // terminal — the same shape the pre-Task-7 backup path produced.
+        let client2 = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client2)
+        let (head2, body2, _) = try drainClientResponse(client2)
+        #expect(head2.status == .badGateway)
+        let error2 = try #require(
+            (try JSONSerialization.jsonObject(with: body2) as? [String: Any])?["error"] as? [String: Any])
+        #expect((error2["message"] as? String)?.localizedCaseInsensitiveContains("unreachable") == true)
+        #expect(relay.requestCount == 4)
+        #expect(edge.requestCount == 1)  // the edge was never re-asked
+        finishChannel(client2)
+
+        // After the cooldown lifts the cached key serves again.
+        clock.advance(3601)
+        let client3 = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client3)
+        let (head3, _, _) = try drainClientResponse(client3)
+        #expect(head3.status == .tooManyRequests)  // the 1113 surfaces again, key re-cools
+        #expect(relay.requestCount == 6)
+        #expect(edge.requestCount == 2)
+        finishChannel(client3)
+    }
+
+    @Test func forwardQuotaExhaustedDoesNotServeTheFallbackEdge() async throws {
+        // The fallback edge bills the SAME weekly quota — a quota-exhausted
+        // relay must answer its 429-shaped terminal, never the edge.
+        let relay = MockRelayServer(scripts: [.json(
+            ["code": 1113, "msg": "insufficient quota"], status: 429)])
+        let relayPort = try await relay.start()
+        let edge = MockRelayServer(scripts: [.json(["id": "should_not_serve"])])
+        let edgePort = try await edge.start()
+        defer {
+            Task { await relay.shutdown() }
+            Task { await edge.shutdown() }
+        }
+        let control = SigningControl()
+        let (health, _) = makeEdgeHealth(edgePort: edgePort, stub: EdgeMintStub())
+        let (context, _) = try makeRelayContext(
+            control: control, directoryLabel: "fwdquota7", relayHealth: health)
+        let fixture = try makeForwardFixture(relayPort: relayPort, backupPort: nil, fallbackEdgePort: edgePort)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let client = EmbeddedChannel()
+        await forward(fixture, httpClient: httpClient, context: context, channel: client)
+        let (head, body, _) = try drainClientResponse(client)
+        #expect(head.status == .tooManyRequests)
+        let error = try #require(
+            (try JSONSerialization.jsonObject(with: body) as? [String: Any])?["error"] as? [String: Any])
+        #expect(error["type"] as? String == "rate_limit_error")
+        #expect(relay.requestCount == 1)
+        #expect(edge.requestCount == 0)
         finishChannel(client)
     }
 }

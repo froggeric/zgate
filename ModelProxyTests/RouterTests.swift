@@ -547,9 +547,9 @@ struct RouterTests {
         let data = try JSONEncoder().encode(config)
         let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
 
-        // Vendors: relay + splash, no secrets.
+        // Vendors: relay + splash + the Task-7 fallback edge, no secrets.
         let vendors = try #require(json["vendors"] as? [[String: Any]])
-        #expect(vendors.count == 2)
+        #expect(vendors.count == 3)
         let relay = try #require(vendors.first { ($0["name"] as? String) == "zcode relay" })
         #expect(relay["baseURL"] as? String == "https://zcode.z.ai/api/v1/zcode-plan/anthropic")
         #expect(relay["vendorKind"] as? String == "relay")
@@ -557,6 +557,12 @@ struct RouterTests {
         let splash = try #require(vendors.first { ($0["name"] as? String) == "splash (local)" })
         #expect(splash["baseURL"] as? String == "http://127.0.0.1:8123")  // 2026-11-18: off 8000 (webserver conflicts)
         #expect(splash["replayPolicy"] as? String == "portableOnly")
+        let edge = try #require(vendors.first { ($0["name"] as? String) == "z.ai API key (fallback)" })
+        #expect(edge["baseURL"] as? String == ApiKeyMinter.fallbackBaseURL)
+        #expect(edge["vendorKind"] as? String == "anthropic")
+        #expect(edge["apiKey"] as? String == "")  // minted lazily at runtime
+        #expect(edge["stripsClaudeOnlyRequestFields"] as? Bool == true)
+        #expect(edge["applyGLMCanonicalization"] as? Bool == true)
 
         // Rules, ordered (v2.1 + qwen levers 2026-11-18): auto-peak twin
         // (DISABLED), auto, sonnet-qwen (DISABLED), sonnet, haiku-qwen
@@ -611,6 +617,10 @@ struct RouterTests {
         #expect(mappings[7]["targetModel"] as? String == "GLM-5.3")
         #expect(mappings[7]["isEnabled"] as? Bool == true)
         #expect(mappings[8]["catchAll"] as? Bool == true)
+        // Task 7: the terminal fallback rule carries the API-key edge as its
+        // backup — the degraded machine's serving target.
+        #expect(mappings[8]["backupTargetVendorID"] as? String == (edge["id"] as? String))
+        #expect(mappings[8]["backupTargetModel"] as? String == "GLM-5.3-Flash")
 
         // Targets point at the vendors by id — every rule rides the relay
         // (the splash vendor stays configured but unreferenced by defaults).

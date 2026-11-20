@@ -1055,6 +1055,56 @@ struct SigningClientTests {
         let session2 = try await client2.ensureSession()
         #expect(session2.apiKeyId == ChainFixtures.location.apiKeyId)
     }
+
+    // MARK: - Biz JWT exposure (relay fidelity Task 7: ApiKeyMinter)
+
+    @Test func currentBizJWTServesFromCacheWithoutAnyNetwork() async throws {
+        let mock = SigningMock()
+        installMock(mock)
+        let directory = try makeTempDirectory()
+        try seedCache(directory: directory)
+        let client = SigningClient(configuration: makeConfiguration(
+            clock: mock.clock, storeLoader: { nil }, cacheDirectory: directory))
+
+        let jwt = try await client.currentBizJWT()
+
+        #expect(jwt == ChainFixtures.bizJwt())
+        // Zero chain traffic — not even a mint.
+        #expect(mock.count(matching: "access_tokens") == 0)
+        #expect(mock.count(matching: "z/login") == 0)
+    }
+
+    @Test func currentBizJWTBuildsTheChainWhenCacheIsCold() async throws {
+        let mock = SigningMock()
+        installMock(mock)
+        let directory = try makeTempDirectory()
+        let client = SigningClient(configuration: makeConfiguration(
+            clock: mock.clock, storeLoader: { try syntheticStore() }, cacheDirectory: directory))
+
+        let jwt = try await client.currentBizJWT()
+
+        // The full ladder ran (login → mint → handshake) and the fresh
+        // login JWT — the one the chain persisted — is what comes back.
+        #expect(jwt == mock.bizJwtForLogin)
+        #expect(mock.count(matching: "z/login") == 1)
+        #expect(mock.count(matching: "access_tokens") == 1)
+
+        // And the exposure did not consume the signing session.
+        #expect(await client.currentPhase() == .signed)
+    }
+
+    @Test func currentBizJWTThrowsWhenNoChainIsPossible() async throws {
+        let mock = SigningMock()
+        installMock(mock)
+        let directory = try makeTempDirectory()
+        // Cold cache, no store: buildChain demands a relogin before network.
+        let client = SigningClient(configuration: makeConfiguration(
+            clock: mock.clock, storeLoader: { nil }, cacheDirectory: directory))
+
+        await #expect(throws: SigningClientError.reloginRequired(.storeUnavailable)) {
+            _ = try await client.currentBizJWT()
+        }
+    }
 }
 
 /// Live smoke (executor-run, never CI): one real chain build against api.z.ai
@@ -1154,4 +1204,5 @@ struct SigningClientLiveSmokeTests {
         try assertKeyWorks(session2, "build2")
         print("[zgate-smoke] build2 z/login requests: 0 (cached biz session)")
     }
+
 }

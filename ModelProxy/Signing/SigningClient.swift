@@ -210,6 +210,25 @@ actor SigningClient {
             servedUnsigned: servedUnsigned)
     }
 
+    /// The biz JWT for the unsigned `api/biz` family — relay fidelity
+    /// Task 7's fallback-edge mint chain (`ApiKeyMinter`). Served from the
+    /// on-disk biz-session cache when usable (zero network); otherwise one
+    /// chain build runs the full existing ladder (cache → store z/login →
+    /// mint-validated) and the refreshed cache is re-read. The JWT value
+    /// never appears in logs or errors.
+    func currentBizJWT() async throws -> String {
+        let nowMs = currentMs()
+        if let cached = cache.load(), cached.isUsable(nowMs: nowMs) {
+            return cached.bizJwt
+        }
+        _ = try await ensureSession()
+        if let refreshed = cache.load(), refreshed.isUsable(nowMs: currentMs()) {
+            return refreshed.bizJwt
+        }
+        throw SigningClientError.malformedResponse(
+            stage: .mint, reason: "biz session unavailable after chain build")
+    }
+
     /// Returns a valid signing session, building or refreshing as needed.
     ///
     /// - Valid session → returned directly (until `refreshMargin` before

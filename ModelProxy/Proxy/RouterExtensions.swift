@@ -288,6 +288,7 @@ struct ClassRuleTable: Sendable {
             supportsAnthropicCountTokens: vendor.supportsAnthropicCountTokens,
             repairsAnthropicToolCalls: vendor.repairsAnthropicToolCalls,
             stripsClaudeOnlyRequestFields: vendor.stripsClaudeOnlyRequestFields,
+            applyGLMCanonicalization: vendor.applyGLMCanonicalization,
             vendorKind: vendor.vendorKind)
     }
 }

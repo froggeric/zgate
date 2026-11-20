@@ -432,7 +432,7 @@ struct ModelProxyTests {
         // 8788 is zbridge's); names/upstreams stay upstream model-proxy's;
         // vendors + rules are the spec §2 default routing table (pinned in
         // detail by RouterTests).
-        #expect(config.vendors.count == 2)
+        #expect(config.vendors.count == 3)  // relay + splash + Task-7 fallback edge
         #expect(config.clients.count == 2)
         #expect(config.clients[0].clientName == "Claude Code")
         #expect(config.clients[0].port == 8787)

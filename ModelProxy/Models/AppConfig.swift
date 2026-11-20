@@ -246,12 +246,28 @@ extension AppConfig {
             supportsThinkingBlocks: true,
             supportsAnthropicCountTokens: false,
             vendorKind: .relay)
+        // Unsigned fallback edge (relay fidelity Task 7): the
+        // `api.z.ai/api/anthropic` API-key channel the degraded machine
+        // serves through while the signed chain is down. The key (minted
+        // lazily via the /copy chain, `ApiKeyMinter`) persists here as
+        // `apiKey`; the same weekly quota is billed.
+        let fallbackEdge = Vendor(
+            name: "z.ai API key (fallback)",
+            baseURL: ApiKeyMinter.fallbackBaseURL,
+            apiKey: "",
+            connectTimeoutSeconds: 10,
+            readTimeoutSeconds: 300,
+            supportsThinkingBlocks: true,
+            stripsClaudeOnlyRequestFields: true,
+            applyGLMCanonicalization: true)
         let splash = Vendor(
             name: "splash (local)",
             baseURL: "http://127.0.0.1:8123",
             apiKey: "",
             replayPolicy: .portableOnly)
-        config.vendors = [relay, splash]
+        // Order matters: migration 7 identifies splash as the FIRST
+        // non-relay vendor, so the fallback edge must sit AFTER it.
+        config.vendors = [relay, splash, fallbackEdge]
 
         let peakHours = RuleCondition(
             type: .timeWindow, days: .weekdays, from: "07:00", to: "11:00", tz: "Europe/Paris")
@@ -302,6 +318,7 @@ extension AppConfig {
                 matchClass: .opus),
             ModelMapping(
                 sourceModel: "fallback", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id,
+                backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: fallbackEdge.id,
                 catchAll: true),
         ]
         config.splash = SplashSettings.defaultSeeded()

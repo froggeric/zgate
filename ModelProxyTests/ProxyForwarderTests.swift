@@ -189,6 +189,37 @@ struct ProxyForwarderTests {
         #expect(ProxyForwarder.upstreamHeaders(from: request, target: stripping)["anthropic-version"] == ["2023-06-01"])
     }
 
+    @Test func fallbackEdgeHeadersCarryAPIKeyWithoutAuthorization() {
+        // CLI zai-api provider template: the credential rides x-api-key and
+        // replaces the authorization header entirely.
+        let request: HTTPHeaders = ["anthropic-version": "2023-06-01"]
+        let edge = RoutingSnapshot.RouteTarget(
+            baseURL: ApiKeyMinter.fallbackBaseURL,
+            apiKey: "ak-1.sk-1",
+            vendorName: "z.ai API key (fallback)",
+            vendorID: UUID(),
+            targetModel: "GLM-5.3-Flash",
+            isPassthrough: false,
+            connectTimeoutSeconds: 10,
+            readTimeoutSeconds: 300,
+            signingDomain: .compatibleThirdParty,
+            replayPolicy: .portableOnly,
+            stripsClaudeOnlyRequestFields: true,
+            applyGLMCanonicalization: true)
+
+        let headers = ProxyForwarder.upstreamHeaders(from: request, target: edge)
+        #expect(headers["x-api-key"] == ["ak-1.sk-1"])
+        #expect(!headers.contains(name: "authorization"))
+        #expect(headers["host"] == ["api.z.ai"])
+        #expect(headers["anthropic-version"] == ["2023-06-01"])
+
+        // Every other vendor keeps the Bearer + x-api-key pair.
+        let plain = countTokensTarget(supportsCountTokens: true, isPassthrough: false)
+        let plainHeaders = ProxyForwarder.upstreamHeaders(from: request, target: plain)
+        #expect(plainHeaders["authorization"] == ["Bearer vendor-key"])
+        #expect(plainHeaders["x-api-key"] == ["vendor-key"])
+    }
+
     @Test func restoredThinkingBlockCountMeasuresOnlyBlocksTheClientDidNotSend() throws {
         func body(thinkingBlocks: Int) throws -> Data {
             let thinking = Array(repeating: ["type": "thinking", "thinking": "t"], count: thinkingBlocks)

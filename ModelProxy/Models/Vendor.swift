@@ -14,6 +14,7 @@ enum VendorDefaults {
     static let supportsAnthropicCountTokens = true
     static let repairsAnthropicToolCalls = false
     static let stripsClaudeOnlyRequestFields = false
+    static let applyGLMCanonicalization = false
 
     static func isDeepSeekBaseURL(_ baseURL: String) -> Bool {
         if let host = URL(string: baseURL)?.host?.lowercased() {
@@ -54,6 +55,11 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
     var repairsAnthropicToolCalls: Bool
     /// Whether ModelProxy removes Claude-only request fields and `anthropic-beta` before forwarding.
     var stripsClaudeOnlyRequestFields: Bool
+    /// Whether the outgoing top-level `model` value runs through
+    /// `RelayTarget.canonicalModel` before forwarding (documented
+    /// routing-compatibility transform — the GLM canonical wire name, so
+    /// retired names never leak raw). Seeded on the Task-7 fallback edge.
+    var applyGLMCanonicalization: Bool
     /// How this vendor is authenticated: static key (`.anthropic`) or the
     /// signed zcode relay (`.relay`). Legacy configs decode as `.anthropic`.
     var vendorKind: VendorKind
@@ -75,6 +81,7 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
         supportsAnthropicCountTokens: Bool? = nil,
         repairsAnthropicToolCalls: Bool? = nil,
         stripsClaudeOnlyRequestFields: Bool = VendorDefaults.stripsClaudeOnlyRequestFields,
+        applyGLMCanonicalization: Bool? = nil,
         vendorKind: VendorKind = .anthropic,
         signingDomain: SigningDomain? = nil,
         replayPolicy: TranscriptReplayPolicy? = nil
@@ -94,6 +101,8 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
         self.repairsAnthropicToolCalls = repairsAnthropicToolCalls
             ?? VendorDefaults.repairsAnthropicToolCalls(forBaseURL: baseURL)
         self.stripsClaudeOnlyRequestFields = stripsClaudeOnlyRequestFields
+        self.applyGLMCanonicalization = applyGLMCanonicalization
+            ?? VendorDefaults.applyGLMCanonicalization
         self.vendorKind = vendorKind
         self.signingDomain = resolvedSigningDomain
         // The relay speaks the Anthropic protocol end to end: transcript
@@ -115,6 +124,7 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
         case supportsAnthropicCountTokens
         case repairsAnthropicToolCalls
         case stripsClaudeOnlyRequestFields
+        case applyGLMCanonicalization
         case vendorKind
         case signingDomain
         case replayPolicy
@@ -138,6 +148,8 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
             ?? VendorDefaults.repairsAnthropicToolCalls(forBaseURL: baseURL)
         stripsClaudeOnlyRequestFields = (try? c.decodeIfPresent(Bool.self, forKey: .stripsClaudeOnlyRequestFields))
             ?? VendorDefaults.stripsClaudeOnlyRequestFields
+        applyGLMCanonicalization = (try? c.decodeIfPresent(Bool.self, forKey: .applyGLMCanonicalization))
+            ?? VendorDefaults.applyGLMCanonicalization
         let decodedVendorKind = (try? c.decodeIfPresent(VendorKind.self, forKey: .vendorKind))
             ?? .anthropic
         vendorKind = decodedVendorKind

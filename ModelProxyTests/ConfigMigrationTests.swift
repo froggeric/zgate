@@ -436,3 +436,115 @@ extension ConfigMigrationTests {
         #expect(!plain.contains("credentialStoreBase"))
     }
 }
+
+// MARK: - Migration 10 (relay fidelity Task 7: fallback edge)
+
+extension ConfigMigrationTests {
+
+    /// A config in the pre-Task-7 shape: default matrix minus the fallback
+    /// vendor and the catch-all's backup.
+    private func preTask7Config() -> AppConfig {
+        legacyConfig().also { c in
+            c.vendors.removeAll { ApiKeyMinter.isFallbackEdge($0.baseURL) }
+            if let i = c.modelMappings.firstIndex(where: { $0.catchAll }) {
+                c.modelMappings[i].backupTargetVendorID = nil
+                c.modelMappings[i].backupTargetModel = nil
+            }
+        }
+    }
+
+    @Test func defaultRoutingSeedsFallbackEdgeAndCatchAllBackup() throws {
+        let config = AppConfig.makeZGateDefaultRouting(AppConfig())
+        let edge = config.vendors.first { ApiKeyMinter.isFallbackEdge($0.baseURL) }
+        let edgeVendor = try #require(edge)
+        #expect(edgeVendor.vendorKind == .anthropic)
+        #expect(edgeVendor.apiKey.isEmpty)  // minted lazily at runtime
+        #expect(edgeVendor.stripsClaudeOnlyRequestFields)
+        #expect(edgeVendor.applyGLMCanonicalization)
+        let catchAll = config.modelMappings.first { $0.catchAll }
+        #expect(catchAll?.backupTargetVendorID == edgeVendor.id)
+        #expect(catchAll?.backupTargetModel == catchAll?.targetModel)
+    }
+
+    @Test func migrationSeedsFallbackVendorAndCatchAllBackup() throws {
+        let before = preTask7Config()
+        let after = ConfigStore.applyMigrations(before)
+
+        let edge = after.vendors.first { ApiKeyMinter.isFallbackEdge($0.baseURL) }
+        let edgeVendor = try #require(edge)
+        #expect(edgeVendor.vendorKind == .anthropic)
+        #expect(edgeVendor.stripsClaudeOnlyRequestFields)
+        #expect(edgeVendor.applyGLMCanonicalization)
+        #expect(edgeVendor.readTimeoutSeconds == 300)
+
+        let catchAll = after.modelMappings.first { $0.catchAll }
+        #expect(catchAll?.backupTargetVendorID == edgeVendor.id)
+        #expect(catchAll?.backupTargetModel == catchAll?.targetModel)
+        // Everything else about the catch-all is untouched.
+        if let beforeRule = before.modelMappings.first(where: { $0.catchAll }),
+           let afterRule = after.modelMappings.first(where: { $0.catchAll }) {
+            #expect(afterRule.id == beforeRule.id)
+            #expect(afterRule.targetModel == beforeRule.targetModel)
+            #expect(afterRule.targetVendorID == beforeRule.targetVendorID)
+            #expect(afterRule.isEnabled == beforeRule.isEnabled)
+        }
+    }
+
+    @Test func fallbackMigrationIsIdempotent() {
+        let once = ConfigStore.applyMigrations(preTask7Config())
+        let twice = ConfigStore.applyMigrations(once)
+        #expect(once.vendors.map(\.id) == twice.vendors.map(\.id))
+        #expect(once.vendors.count == twice.vendors.count)
+        #expect(once.modelMappings.map(\.id) == twice.modelMappings.map(\.id))
+        #expect(once.modelMappings.count == twice.modelMappings.count)
+        let edgeCount = twice.vendors.filter { ApiKeyMinter.isFallbackEdge($0.baseURL) }.count
+        #expect(edgeCount == 1)
+    }
+
+    @Test func migrationReusesAUserEditedFallbackVendorWithoutDuplicating() {
+        var edited = preTask7Config()
+        let userEdge = Vendor(
+            name: "my own edge", baseURL: ApiKeyMinter.fallbackBaseURL,
+            apiKey: "ak.existing", readTimeoutSeconds: 42)
+        edited.vendors.append(userEdge)
+
+        let after = ConfigStore.applyMigrations(edited)
+
+        let edges = after.vendors.filter { ApiKeyMinter.isFallbackEdge($0.baseURL) }
+        #expect(edges.count == 1)
+        #expect(edges.first?.id == userEdge.id)
+        #expect(edges.first?.apiKey == "ak.existing")  // never clobbered
+        #expect(edges.first?.readTimeoutSeconds == 42)
+        let catchAll = after.modelMappings.first { $0.catchAll }
+        #expect(catchAll?.backupTargetVendorID == userEdge.id)  // attached to the existing row
+    }
+
+    @Test func migrationLeavesAUserConfiguredCatchAllBackupAlone() {
+        var edited = preTask7Config()
+        let ownBackup = Vendor(name: "my backup", baseURL: "https://api.deepseek.com/anthropic", apiKey: "k")
+        edited.vendors.append(ownBackup)
+        if let i = edited.modelMappings.firstIndex(where: { $0.catchAll }) {
+            edited.modelMappings[i].backupTargetVendorID = ownBackup.id
+            edited.modelMappings[i].backupTargetModel = "deepseek-v4-pro[1m]"
+        }
+
+        let after = ConfigStore.applyMigrations(edited)
+
+        let catchAll = after.modelMappings.first { $0.catchAll }
+        #expect(catchAll?.backupTargetVendorID == ownBackup.id)
+        #expect(catchAll?.backupTargetModel == "deepseek-v4-pro[1m]")
+        // The fallback vendor is still seeded (available for manual use),
+        // it just does not displace the user's backup.
+        #expect(after.vendors.contains { ApiKeyMinter.isFallbackEdge($0.baseURL) })
+    }
+
+    @Test func migrationWithoutACatchAllRuleSeedsOnlyTheVendor() {
+        var noCatchAll = preTask7Config()
+        noCatchAll.modelMappings.removeAll { $0.catchAll }
+
+        let after = ConfigStore.applyMigrations(noCatchAll)
+
+        #expect(after.vendors.contains { ApiKeyMinter.isFallbackEdge($0.baseURL) })
+        #expect(!after.modelMappings.contains { $0.catchAll })
+    }
+}

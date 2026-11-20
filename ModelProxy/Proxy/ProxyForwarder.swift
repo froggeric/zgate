@@ -852,10 +852,10 @@ enum ProxyForwarder {
 
     // MARK: - Relay execution (signed ladder)
 
-    /// Relay-kind execution: the signed ladder (RelayTarget) plus the 429
-    /// next-rule fallback that mirrors the plain failover path. Returns the
-    /// streamable response + serving target, or a terminal the caller writes
-    /// to the client when no response survived the policy.
+    /// Relay-kind execution: the signed ladder (RelayTarget) plus Task 7's
+    /// degraded machine. Returns the streamable response + serving target,
+    /// or a terminal the caller writes to the client when no response
+    /// survived the policy.
     private static func executeRelay(
         head: HTTPRequestHead,
         bodyData: Data,
@@ -873,6 +873,39 @@ enum ProxyForwarder {
                 anthropicType: "api_error",
                 message: "Relay vendor '\(primaryTarget.vendorName)' requires signing but no signing context is configured."))
         }
+        let relayHealth = relayContext.relayHealth
+
+        // Task 7 admission: while the relay plane is degraded, the signed
+        // ladder runs only on the probe cadence; a risk cooldown blocks
+        // relay attempts outright. Without a health actor (legacy contexts,
+        // tests) everything attempts, exactly like before.
+        if let relayHealth {
+            let admission = await relayHealth.admission()
+            switch admission {
+            case .attempt, .probe:
+                break
+            case .serveViaFallback, .riskBlocked:
+                if let served = await Self.serveRuleBackup(
+                    head: head, bodyData: bodyData, primaryTarget: primaryTarget, model: model,
+                    router: router, httpClient: httpClient, routeState: &routeState, requestID: requestID,
+                    relayContext: relayContext, relayHealth: relayHealth,
+                    allowRelayBackup: false, reason: "Relay degraded")
+                {
+                    return served
+                }
+                if admission == .riskBlocked {
+                    return (nil, nil, RelayTarget.UpstreamTerminal(
+                        status: 502, anthropicType: "api_error",
+                        message: "Relay risk-control cooldown active — attempts blocked without retry."))
+                }
+                // Degraded with no usable fallback configured: today's
+                // behavior — the signed ladder runs and its own terminal
+                // answers on failure.
+                AppLog.proxy.info(
+                    "[Proxy] [\(requestID)] Relay degraded with no fallback target — attempting signed ladder")
+            }
+        }
+
         let outcome = await RelayTarget.execute(
             head: head,
             bodyData: bodyData,
@@ -881,53 +914,191 @@ enum ProxyForwarder {
             context: relayContext,
             requestID: requestID)
 
-        // Rate-limited after its backoff retry, or concurrency-limited after
-        // both in-place retries (Task 6): the retries already ran inside the
-        // ladder — fall back to the rule's next target if one exists, else
-        // answer 529.
-        let callerFallback: Bool
         switch outcome {
         case .rateLimitedAfterRetry, .concurrencyLimitedAfterRetries:
-            callerFallback = true
-        default:
-            callerFallback = false
+            // The retries already ran inside the ladder — fall back to the
+            // rule's next target if one exists, else answer 529. The chain
+            // demonstrably works (a business answer arrived): a probe in
+            // flight has recovered.
+            await relayHealth?.noteRelayServed()
+            if let served = await Self.serveRuleBackup(
+                head: head, bodyData: bodyData, primaryTarget: primaryTarget, model: model,
+                router: router, httpClient: httpClient, routeState: &routeState, requestID: requestID,
+                relayContext: relayContext, relayHealth: relayHealth,
+                allowRelayBackup: true, reason: "Rate limited")
+            {
+                return served
+            }
+            return (nil, nil, Self.terminal(for: outcome))
+        case .signingUnavailable, .transportFailed:
+            // Signing-class failure: enter/advance the degraded machine, then
+            // serve THIS request via the fallback edge instead of a 502.
+            await relayHealth?.noteSigningFailure()
+            if let served = await Self.serveRuleBackup(
+                head: head, bodyData: bodyData, primaryTarget: primaryTarget, model: model,
+                router: router, httpClient: httpClient, routeState: &routeState, requestID: requestID,
+                relayContext: relayContext, relayHealth: relayHealth,
+                allowRelayBackup: false, reason: "Signing unavailable")
+            {
+                return served
+            }
+            return (nil, nil, Self.terminal(for: outcome))
+        case .credentialsExpired:
+            // Recovery is an interactive re-login, not a timed probe: relay
+            // health stays untouched (the re-login event already fired) and
+            // the request serves via the fallback edge.
+            if let served = await Self.serveRuleBackup(
+                head: head, bodyData: bodyData, primaryTarget: primaryTarget, model: model,
+                router: router, httpClient: httpClient, routeState: &routeState, requestID: requestID,
+                relayContext: relayContext, relayHealth: relayHealth,
+                allowRelayBackup: false, reason: "Credentials expired")
+            {
+                return served
+            }
+            return (nil, nil, Self.terminal(for: outcome))
+        case .riskControl:
+            // The risk event fired inside the ladder; the cooldown starts and
+            // this request serves via the fallback edge.
+            await relayHealth?.noteRiskControl()
+            if let served = await Self.serveRuleBackup(
+                head: head, bodyData: bodyData, primaryTarget: primaryTarget, model: model,
+                router: router, httpClient: httpClient, routeState: &routeState, requestID: requestID,
+                relayContext: relayContext, relayHealth: relayHealth,
+                allowRelayBackup: false, reason: "Risk control")
+            {
+                return served
+            }
+            return (nil, nil, Self.terminal(for: outcome))
+        case .quotaExhausted:
+            // The fallback edge bills the SAME weekly quota — serving it
+            // would 1113 too. The 429-shaped terminal answers (the chain
+            // worked: the quota poll has already ticked).
+            await relayHealth?.noteRelayServed()
+            return (nil, nil, Self.terminal(for: outcome))
+        case .responded(let response):
+            if Int(response.status.code) < 400 { routeState.failCount = 0 }
+            await relayHealth?.noteRelayServed()
+            return (response, primaryTarget, nil)
         }
-        if callerFallback {
-            if let allTargets = await router.targets(for: model), allTargets.count > 1 {
-                let backupTarget = (primaryTarget.vendorID == allTargets[0].vendorID) ? allTargets[1] : allTargets[0]
+    }
+
+    /// The rule's backup serve, shared by the rate-limit fallback and Task
+    /// 7's degraded fallback. nil ONLY when the rule has no backup target
+    /// at all — the caller then answers its own terminal. A relay-kind
+    /// backup runs its own signed ladder (skipped under signing
+    /// degradation — a dead chain cannot serve a signed backup); any other
+    /// backup serves through `executeUpstream` with the fallback edge's key
+    /// lifecycle applied.
+    private static func serveRuleBackup(
+        head: HTTPRequestHead,
+        bodyData: Data,
+        primaryTarget: RoutingSnapshot.RouteTarget,
+        model: String,
+        router: RequestRouter,
+        httpClient: HTTPClient,
+        routeState: inout RoutingSnapshot.RouteState,
+        requestID: String,
+        relayContext: RelayTarget.Context,
+        relayHealth: RelayHealth?,
+        allowRelayBackup: Bool,
+        reason: String
+    ) async -> (HTTPClientResponse?, RoutingSnapshot.RouteTarget?, RelayTarget.UpstreamTerminal?)? {
+        guard let allTargets = await router.targets(for: model), allTargets.count > 1 else {
+            return nil
+        }
+        let backupTarget = (primaryTarget.vendorID == allTargets[0].vendorID) ? allTargets[1] : allTargets[0]
+        AppLog.proxy.info(
+            "[Proxy] [\(requestID)] \(reason) on relay \(primaryTarget.vendorName), failing over to \(backupTarget.vendorName)"
+        )
+        if backupTarget.vendorKind == .relay {
+            guard allowRelayBackup else {
                 AppLog.proxy.info(
-                    "[Proxy] [\(requestID)] Rate limited on relay \(primaryTarget.vendorName), failing over to \(backupTarget.vendorName)"
-                )
-                if backupTarget.vendorKind == .relay {
-                    // A relay backup runs its own signed ladder (no further fallback).
-                    switch await RelayTarget.execute(
-                        head: head, bodyData: bodyData, target: backupTarget,
-                        httpClient: httpClient, context: relayContext, requestID: requestID)
-                    {
-                    case .responded(let response):
-                        if Int(response.status.code) < 400 { routeState.failCount = 0 }
-                        return (response, backupTarget, nil)
-                    case let terminalOutcome:
-                        return (nil, nil, Self.terminal(for: terminalOutcome))
-                    }
-                }
-                if let backupResponse = await Self.executeUpstream(
-                    head: head, bodyData: bodyData, target: backupTarget,
-                    httpClient: httpClient, requestID: requestID)
-                {
-                    if Int(backupResponse.status.code) < 400 { routeState.failCount = 0 }
-                    return (backupResponse, backupTarget, nil)
-                }
-                return (nil, nil, RelayTarget.UpstreamTerminal(
-                    status: 502, anthropicType: "api_error", message: "Upstream unreachable"))
+                    "[Proxy] [\(requestID)] Relay-kind backup \(backupTarget.vendorName) skipped: the signing chain is the failure")
+                return nil
+            }
+            // A relay backup runs its own signed ladder (no further fallback).
+            switch await RelayTarget.execute(
+                head: head, bodyData: bodyData, target: backupTarget,
+                httpClient: httpClient, context: relayContext, requestID: requestID)
+            {
+            case .responded(let response):
+                if Int(response.status.code) < 400 { routeState.failCount = 0 }
+                await relayHealth?.noteRelayServed()
+                return (response, backupTarget, nil)
+            case let terminalOutcome:
+                return (nil, nil, Self.terminal(for: terminalOutcome))
+            }
+        }
+        if let backupResponse = await Self.executeBackupUpstream(
+            head: head, bodyData: bodyData, target: backupTarget,
+            httpClient: httpClient, requestID: requestID, relayHealth: relayHealth)
+        {
+            if Int(backupResponse.status.code) < 400 { routeState.failCount = 0 }
+            return (backupResponse, backupTarget, nil)
+        }
+        return (nil, nil, RelayTarget.UpstreamTerminal(
+            status: 502, anthropicType: "api_error", message: "Upstream unreachable"))
+    }
+
+    /// One upstream serve on a rule backup. When the target is the fallback
+    /// edge, its key lifecycle applies: the credential resolves lazily
+    /// (stored config key first, mint on empty), a 401 re-mints ONCE and
+    /// retries once, and a no-balance 1113 cools the key for 1 h (the
+    /// response surfaces — never retried). Fallback outcomes NEVER touch
+    /// the relay machine (the never-launder rule); non-fallback-edge
+    /// backups serve exactly like before.
+    private static func executeBackupUpstream(
+        head: HTTPRequestHead,
+        bodyData: Data,
+        target: RoutingSnapshot.RouteTarget,
+        httpClient: HTTPClient,
+        requestID: String,
+        relayHealth: RelayHealth?
+    ) async -> HTTPClientResponse? {
+        guard let relayHealth, await relayHealth.isFallbackEdge(target.baseURL) else {
+            return await Self.executeUpstream(
+                head: head, bodyData: bodyData, target: target,
+                httpClient: httpClient, requestID: requestID)
+        }
+        // Resolve the credential: a stored (config-seeded) key wins; an
+        // empty one mints lazily. nil (cooling / mint failed / no minter)
+        // means the edge cannot serve this request.
+        var key = target.apiKey
+        if key.isEmpty {
+            guard let minted = await relayHealth.fallbackKey() else { return nil }
+            key = minted
+        }
+        guard var response = await Self.executeUpstream(
+            head: head, bodyData: bodyData, target: target.withAPIKey(key),
+            httpClient: httpClient, requestID: requestID, apiKeyOnlyAuth: true)
+        else { return nil }
+
+        // A 401 means the credential is stale server-side: re-mint once and
+        // retry once; anything after that (or an unchanged key) surfaces.
+        if Int(response.status.code) == 401 {
+            let (_, rewrapped401) = await RelayTarget.drainErrorBody(response)
+            if let fresh = await relayHealth.fallbackKey(forceRemint: true), fresh != key,
+                let retry = await Self.executeUpstream(
+                    head: head, bodyData: bodyData, target: target.withAPIKey(fresh),
+                    httpClient: httpClient, requestID: requestID, apiKeyOnlyAuth: true)
+            {
+                response = retry
+            } else {
+                response = rewrapped401
             }
         }
 
-        if case .responded(let response) = outcome {
-            if Int(response.status.code) < 400 { routeState.failCount = 0 }
-            return (response, primaryTarget, nil)
+        // A no-balance fallback (business code 1113, parsed JSON only) cools
+        // the KEY for 1 h; the response surfaces and the relay machine is
+        // untouched.
+        if Int(response.status.code) >= 400 {
+            let (error, rewrapped) = await RelayTarget.drainErrorBody(response)
+            if error.code == 1113 {
+                await relayHealth.noteFallbackKeyNoBalance()
+            }
+            return rewrapped
         }
-        return (nil, nil, Self.terminal(for: outcome))
+        return response
     }
 
     /// Maps a relay outcome that produced no streamable response to the
@@ -1025,17 +1196,22 @@ enum ProxyForwarder {
     }
 
     /// Build and execute a single upstream request for a given target.
+    /// `apiKeyOnlyAuth` overrides the fallback-edge header derivation (the
+    /// degraded serve path KNOWS it is serving the edge even when the
+    /// configured edge URL is not the pinned constant).
     private static func executeUpstream(
         head: HTTPRequestHead,
         bodyData: Data,
         target: RoutingSnapshot.RouteTarget,
         httpClient: HTTPClient,
-        requestID: String
+        requestID: String,
+        apiKeyOnlyAuth: Bool? = nil
     ) async -> HTTPClientResponse? {
         let finalURLString = target.baseURL.trimmingCharacters(in: .init(charactersIn: "/")) + head.uri
         guard URL(string: finalURLString) != nil else { return nil }
 
-        let upstreamHeaders = Self.upstreamHeaders(from: head.headers, target: target)
+        let upstreamHeaders = Self.upstreamHeaders(
+            from: head.headers, target: target, apiKeyOnlyAuth: apiKeyOnlyAuth)
 
         var bodyData = bodyData
         if !target.isPassthrough, target.stripsClaudeOnlyRequestFields {
@@ -1048,8 +1224,23 @@ enum ProxyForwarder {
             }
         }
 
-        // Replace model field using prepared body.
-        if let targetModel = target.targetModel {
+        // Replace model field using prepared body. Vendors flagged
+        // applyGLMCanonicalization (the fallback edge) run the value through
+        // RelayTarget.canonicalModel first — a documented
+        // routing-compatibility transform so retired GLM names never leak
+        // raw on that path.
+        if target.applyGLMCanonicalization {
+            if let source = target.targetModel ?? RelayTarget.bodyModelField(bodyData) {
+                let canonical = RelayTarget.canonicalModel(source)
+                let replacement = Self.replaceModelField(in: bodyData, with: canonical)
+                bodyData = replacement.data
+                if replacement.replaced, canonical != source {
+                    AppLog.proxy.debug(
+                        "[Proxy] [\(requestID)] Model canonicalized for vendor=\(target.vendorName): \(source) → \(canonical)"
+                    )
+                }
+            }
+        } else if let targetModel = target.targetModel {
             let replacement = Self.replaceModelField(in: bodyData, with: targetModel)
             bodyData = replacement.data
             let delta = replacement.newLength - replacement.originalLength
@@ -1079,8 +1270,14 @@ enum ProxyForwarder {
     }
 
     /// Headers sent upstream: hop-by-hop headers dropped, and for mapped vendors the vendor's key
-    /// replaces the client's credentials.
-    static func upstreamHeaders(from requestHeaders: HTTPHeaders, target: RoutingSnapshot.RouteTarget) -> HTTPHeaders {
+    /// replaces the client's credentials. `apiKeyOnlyAuth` (nil = derive from
+    /// the pinned fallback-edge URL) selects the CLI zai-api template where
+    /// the credential rides `x-api-key` and replaces the authorization header.
+    static func upstreamHeaders(
+        from requestHeaders: HTTPHeaders,
+        target: RoutingSnapshot.RouteTarget,
+        apiKeyOnlyAuth: Bool? = nil
+    ) -> HTTPHeaders {
         var upstreamHeaders = HTTPHeaders()
         for (name, value) in requestHeaders {
             let lower = name.lowercased()
@@ -1094,8 +1291,16 @@ enum ProxyForwarder {
         if !target.isPassthrough {
             upstreamHeaders.remove(name: "authorization")
             upstreamHeaders.remove(name: "x-api-key")
-            upstreamHeaders.add(name: "Authorization", value: "Bearer \(target.apiKey)")
-            upstreamHeaders.add(name: "x-api-key", value: target.apiKey)
+            let edgeAuth = apiKeyOnlyAuth ?? ApiKeyMinter.isFallbackEdge(target.baseURL)
+            if edgeAuth {
+                // CLI zai-api provider template (relay fidelity Task 7): the
+                // credential rides `x-api-key` and REPLACES the authorization
+                // header entirely.
+                upstreamHeaders.add(name: "x-api-key", value: target.apiKey)
+            } else {
+                upstreamHeaders.add(name: "Authorization", value: "Bearer \(target.apiKey)")
+                upstreamHeaders.add(name: "x-api-key", value: target.apiKey)
+            }
         }
         if let host = URL(string: target.baseURL)?.host {
             upstreamHeaders.remove(name: "host")

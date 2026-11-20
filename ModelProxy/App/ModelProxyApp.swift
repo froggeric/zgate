@@ -29,6 +29,23 @@ struct ModelProxyApp: App {
             configStore.config.relayClientVersion = version
             configStore.save()
         }
+        // Fallback-edge key persistence (relay fidelity Task 7): a minted
+        // `api.z.ai/api/anthropic` credential lands in the fallback
+        // vendor's `apiKey` (config.json is the project's key store), and
+        // the routing snapshot hot-reloads so future serves carry it.
+        server.fallbackKeySink = { [weak configStore, weak server] key in
+            guard let configStore else { return }
+            guard let index = configStore.config.vendors.firstIndex(where: {
+                ApiKeyMinter.isFallbackEdge($0.baseURL)
+            }) else { return }
+            guard configStore.config.vendors[index].apiKey != key else { return }
+            configStore.config.vendors[index].apiKey = key
+            if let server {
+                configStore.saveAndReload(proxyServer: server)
+            } else {
+                configStore.save()
+            }
+        }
         _loginItemService = State(initialValue: LoginItemService())
         // Menu-bar icon (quota ring with the ZΓ mark inside) reads the same
         // model the popover renders; the slow tick keeps the ring fresh
