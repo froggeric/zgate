@@ -143,6 +143,13 @@ plan-token/sig lengths Tasks 4–5 need). Whitelisted non-credential headers are
 - `x-release-channel` is no longer listed (the CLI sends it only when env-provided) and
   `x-zcode-session-features` is never sent (empty) — the earlier 28-header capture's
   `x-release-channel: production` was the one extra name; the other 27 are live-confirmed.
+- `x-session-id` semantics (Task 3): derived per conversation from the inbound Claude Code
+  `x-claude-code-session-id` (sanitized: lowercased, ASCII hex + `-`, 8–64 chars, ≥ 8 after
+  cleaning; garbage falls back to ZGate's per-process UUID). One derived id feeds the header,
+  the PoW challenge, AND the sig message — the server sees a single session id everywhere.
+  `x-claude-code-agent-id` present → `x-zcode-session-type: subagent` with the per-agent id
+  `<session>-<8-hex sha256(agentID)>`; otherwise `main` (CLI `sess_` per-conversation parity).
+  The CC headers are only read, never forwarded.
 
 ### Relay request/response body shapes (18:25Z, typed, zero values — for Task 5)
 

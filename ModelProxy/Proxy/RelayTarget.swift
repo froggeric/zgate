@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import NIOCore
 import NIOFoundationCompat
@@ -45,7 +46,6 @@ enum RelayTarget {
     static let title = "Z Code@cli"
     static let zcodeAgent = "glm"
     static let querySource = "main_turn"
-    static let sessionType = "main"
     static let clientLanguage = "en-US"
     /// Relay 429: one retry after this backoff before fallback / 529.
     static let defaultRateLimitBackoff: TimeInterval = 1
@@ -92,8 +92,10 @@ enum RelayTarget {
     }
 
     /// Per-process wiring handed down through ProxyForwarder (built by the
-    /// server layer). One per app run: the session id stays stable like
-    /// zbridge's per-process SESSION_ID, and it feeds PoW + the sig message.
+    /// server layer). One per app run: `sessionID` is the FALLBACK relay
+    /// session id, used when a request carries no usable Claude Code session
+    /// header — the per-conversation identity itself is derived per request
+    /// (`SessionIdentity.derive`).
     final class Context {
         let signingClient: SigningClient
         let credentialEvents: CredentialEventChannel?
@@ -105,7 +107,8 @@ enum RelayTarget {
         /// Task 1): consulted per request in `sendOnce`. nil = fail-open —
         /// the pinned target URL serves as-is (tests, isolated test host).
         let endpointConfig: (any EndpointResolving)?
-        /// Stable per-process relay session id (`x-session-id`).
+        /// Per-process fallback relay session id (`x-session-id` when the
+        /// inbound CC session header is absent or garbage).
         let sessionID = UUID().uuidString.lowercased()
         /// Relay 429 backoff before the single retry (tests shorten it).
         var rateLimitBackoff: TimeInterval = RelayTarget.defaultRateLimitBackoff
@@ -130,6 +133,51 @@ enum RelayTarget {
         }
     }
 
+    /// Per-conversation relay session identity, derived once per exchange at
+    /// `execute()` entry from the inbound Claude Code headers (mirroring the
+    /// CLI's per-conversation `sess_` semantics; the CC headers are only
+    /// read, never forwarded). ONE identity feeds everything the server sees:
+    /// the `x-session-id` header, the PoW challenge input, and the Ed25519
+    /// sig message — self-consistent by construction.
+    struct SessionIdentity: Equatable, Sendable {
+        static let mainType = "main"
+        static let subagentType = "subagent"
+
+        /// `x-session-id` — also the PoW + sig-message session id.
+        let id: String
+        /// `x-zcode-session-type` — `main` or `subagent`.
+        let type: String
+
+        /// A sanitized inbound conversation id wins; absent/garbage falls
+        /// back to the per-process id. A present agent id marks a subagent
+        /// turn with its own per-agent derived id (CLI `subagent_agent_`
+        /// sessions parity).
+        static func derive(from head: HTTPRequestHead, fallback: String) -> SessionIdentity {
+            let base = sanitize(head.headers.first(name: ProxyForwarder.claudeCodeSessionHeader))
+                ?? fallback
+            guard let agentID = head.headers.first(name: ProxyForwarder.claudeCodeAgentHeader),
+                !agentID.isEmpty
+            else {
+                return SessionIdentity(id: base, type: mainType)
+            }
+            return SessionIdentity(id: "\(base)-\(shortHash(agentID))", type: subagentType)
+        }
+
+        /// Lowercases and keeps only ASCII hex characters and `-`; ids under
+        /// 8 chars (before or after cleaning) or over 64 are rejected —
+        /// garbage falls back to the per-process id.
+        static func sanitize(_ raw: String?) -> String? {
+            guard let raw, raw.count >= 8, raw.count <= 64 else { return nil }
+            let cleaned = raw.lowercased().filter { ($0.isASCII && $0.isHexDigit) || $0 == "-" }
+            return cleaned.count >= 8 ? cleaned : nil
+        }
+
+        /// First 8 hex chars of SHA-256 — the per-agent session suffix.
+        static func shortHash(_ s: String) -> String {
+            SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined().prefix(8).description
+        }
+    }
+
     // MARK: - Exchange
 
     /// One relay exchange with the full failure policy applied.
@@ -148,6 +196,11 @@ enum RelayTarget {
         // 25-request trigger counts exchanges, not client requests.
         context.quota?.noteRelayedRequest()
 
+        // Session identity is derived ONCE per exchange from the inbound CC
+        // headers (fallback: the per-process id) — the header, PoW, and sig
+        // use this one id for every send in the ladder, retries included.
+        let identity = SessionIdentity.derive(from: head, fallback: context.sessionID)
+
         // Signing first: a cold start waits for the handshake here, and a
         // handshake failure NEVER falls back to an unsigned request.
         let session: SigningSession
@@ -164,12 +217,13 @@ enum RelayTarget {
         }
         context.noteSignedSessionEstablished()
         return await sendSigned(
-            head: head, bodyData: bodyData, target: target, httpClient: httpClient,
+            head: head, identity: identity, bodyData: bodyData, target: target, httpClient: httpClient,
             session: session, context: context, requestID: requestID)
     }
 
     private static func sendSigned(
         head: HTTPRequestHead,
+        identity: SessionIdentity,
         bodyData: Data,
         target: RoutingSnapshot.RouteTarget,
         httpClient: HTTPClient,
@@ -180,7 +234,7 @@ enum RelayTarget {
         let wireBody = Self.wireBody(bodyData: bodyData, target: target)
         do {
             let response = try await sendOnce(
-                head: head, wireBody: wireBody, target: target, httpClient: httpClient,
+                head: head, identity: identity, wireBody: wireBody, target: target, httpClient: httpClient,
                 session: session, signed: true, context: context, requestID: requestID)
             switch Int(response.status.code) {
             case 200..<300:
@@ -188,11 +242,12 @@ enum RelayTarget {
                 return .responded(response)
             case 401:
                 return await handleReject(
-                    response: response, session: session, head: head, wireBody: wireBody, target: target,
+                    response: response, session: session, head: head, identity: identity,
+                    wireBody: wireBody, target: target,
                     httpClient: httpClient, context: context, requestID: requestID)
             case 429:
                 return await handleRateLimited(
-                    response: response, head: head, wireBody: wireBody, target: target,
+                    response: response, head: head, identity: identity, wireBody: wireBody, target: target,
                     httpClient: httpClient, session: session, signed: true,
                     context: context, requestID: requestID)
             default:
@@ -216,6 +271,7 @@ enum RelayTarget {
         response: HTTPClientResponse,
         session: SigningSession,
         head: HTTPRequestHead,
+        identity: SessionIdentity,
         wireBody: Data,
         target: RoutingSnapshot.RouteTarget,
         httpClient: HTTPClient,
@@ -240,7 +296,7 @@ enum RelayTarget {
             let fresh = try await context.signingClient.ensureSession(force: true)
             AppLog.proxy.info("[Proxy] [\(requestID)] Relay 401 x2 — chain rebuilt, retrying once")
             let retry = try await sendOnce(
-                head: head, wireBody: wireBody, target: target, httpClient: httpClient,
+                head: head, identity: identity, wireBody: wireBody, target: target, httpClient: httpClient,
                 session: fresh, signed: true, context: context, requestID: requestID)
             switch Int(retry.status.code) {
             case 200..<300:
@@ -255,7 +311,7 @@ enum RelayTarget {
                 return .credentialsExpired(reason)
             case 429:
                 return await handleRateLimited(
-                    response: retry, head: head, wireBody: wireBody, target: target,
+                    response: retry, head: head, identity: identity, wireBody: wireBody, target: target,
                     httpClient: httpClient, session: fresh, signed: true,
                     context: context, requestID: requestID)
             default:
@@ -272,7 +328,7 @@ enum RelayTarget {
                 AppLog.proxy.warning(
                     "[Proxy] [\(requestID)] Relay rebuild failed (\(reason)) — one unsigned fail-open attempt")
                 return await sendFailOpen(
-                    head: head, wireBody: wireBody, target: target, httpClient: httpClient,
+                    head: head, identity: identity, wireBody: wireBody, target: target, httpClient: httpClient,
                     session: session, context: context, requestID: requestID, previousMessage: message)
             }
             AppLog.proxy.error("[Proxy] [\(requestID)] Relay rebuild failed cold: \(reason)")
@@ -289,6 +345,7 @@ enum RelayTarget {
     private static func handleRateLimited(
         response: HTTPClientResponse,
         head: HTTPRequestHead,
+        identity: SessionIdentity,
         wireBody: Data,
         target: RoutingSnapshot.RouteTarget,
         httpClient: HTTPClient,
@@ -303,7 +360,7 @@ enum RelayTarget {
         try? await Task.sleep(nanoseconds: backoffNanos)
         do {
             let retry = try await sendOnce(
-                head: head, wireBody: wireBody, target: target, httpClient: httpClient,
+                head: head, identity: identity, wireBody: wireBody, target: target, httpClient: httpClient,
                 session: session, signed: signed, context: context, requestID: requestID)
             switch Int(retry.status.code) {
             case 200..<300:
@@ -311,7 +368,8 @@ enum RelayTarget {
                 return .responded(retry)
             case 401:
                 return await handleReject(
-                    response: retry, session: session, head: head, wireBody: wireBody, target: target,
+                    response: retry, session: session, head: head, identity: identity,
+                    wireBody: wireBody, target: target,
                     httpClient: httpClient, context: context, requestID: requestID)
             case 429:
                 return .rateLimitedAfterRetry
@@ -325,6 +383,7 @@ enum RelayTarget {
 
     private static func sendFailOpen(
         head: HTTPRequestHead,
+        identity: SessionIdentity,
         wireBody: Data,
         target: RoutingSnapshot.RouteTarget,
         httpClient: HTTPClient,
@@ -335,7 +394,7 @@ enum RelayTarget {
     ) async -> Outcome {
         do {
             let response = try await sendOnce(
-                head: head, wireBody: wireBody, target: target, httpClient: httpClient,
+                head: head, identity: identity, wireBody: wireBody, target: target, httpClient: httpClient,
                 session: session, signed: false, context: context, requestID: requestID)
             switch Int(response.status.code) {
             case 200..<300:
@@ -352,7 +411,7 @@ enum RelayTarget {
                 // Same rate-limit policy as the signed path: one backoff
                 // retry (also unsigned), then the caller's decision.
                 return await handleRateLimited(
-                    response: response, head: head, wireBody: wireBody, target: target,
+                    response: response, head: head, identity: identity, wireBody: wireBody, target: target,
                     httpClient: httpClient, session: session, signed: false,
                     context: context, requestID: requestID)
             default:
@@ -369,6 +428,7 @@ enum RelayTarget {
     /// failures or no match leave the pinned URL untouched).
     private static func sendOnce(
         head: HTTPRequestHead,
+        identity: SessionIdentity,
         wireBody: Data,
         target: RoutingSnapshot.RouteTarget,
         httpClient: HTTPClient,
@@ -391,7 +451,7 @@ enum RelayTarget {
         var request = HTTPClientRequest(url: urlString)
         request.method = head.method
         request.headers = try relayHeaders(
-            session: session, signed: signed, sessionID: context.sessionID,
+            session: session, signed: signed, identity: identity,
             zcodeAuthorization: zcodeAuthorization)
         request.body = .bytes(wireBody)
         return try await httpClient.execute(
@@ -408,10 +468,13 @@ enum RelayTarget {
     /// `zcodeAuthorization` (endpoint routing flagged this request) adds the
     /// `x-zcode-authorization` Bearer header right after `authorization` —
     /// that one is ZGate's routing header, not part of the CLI static face.
+    /// The session identity (per-conversation, `SessionIdentity.derive`)
+    /// supplies `x-session-id`, `x-zcode-session-type`, AND the PoW/sig
+    /// session id — one id everywhere the server looks.
     static func relayHeaders(
         session: SigningSession,
         signed: Bool,
-        sessionID: String,
+        identity: SessionIdentity,
         zcodeAuthorization: String? = nil
     ) throws -> HTTPHeaders {
         var headers = HTTPHeaders()
@@ -433,11 +496,11 @@ enum RelayTarget {
         headers.add(name: "x-os-category", value: osCategory)
         headers.add(name: "x-os-version", value: osVersion)
         headers.add(name: "x-request-id", value: UUID().uuidString.lowercased())
-        headers.add(name: "x-zcode-session-type", value: sessionType)
+        headers.add(name: "x-zcode-session-type", value: identity.type)
         headers.add(name: "x-zcode-trace-id", value: UUID().uuidString.lowercased())
         headers.add(name: "x-query-id", value: UUID().uuidString.lowercased())
         headers.add(name: "x-zcode-query-source", value: querySource)
-        headers.add(name: "x-session-id", value: sessionID)
+        headers.add(name: "x-session-id", value: identity.id)
         // The CLI sends its beta flag only when set (ours always is).
         if !anthropicBeta.isEmpty {
             headers.add(name: "anthropic-beta", value: anthropicBeta)
@@ -446,13 +509,13 @@ enum RelayTarget {
             let ts = String(currentMs())
             let nonce = randomHex32()
             guard let pow = CryptoCore.pow(
-                apiKeyId: session.apiKeyId, appId: appId, sessionId: sessionID, ts: ts)
+                apiKeyId: session.apiKeyId, appId: appId, sessionId: identity.id, ts: ts)
             else {
                 throw RelayTargetError.signingMaterialUnavailable("proof-of-work search exhausted")
             }
             let message = CryptoCore.requestSigMessage(
                 apiKeyId: session.apiKeyId, ts: ts, version: clientVersion,
-                sessionId: sessionID, nonce: nonce)
+                sessionId: identity.id, nonce: nonce)
             let sig: String
             do {
                 sig = try CryptoCore.sign(message: Data(message.utf8), privateKey: session.privateKey)

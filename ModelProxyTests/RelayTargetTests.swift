@@ -467,10 +467,21 @@ struct RelayTargetTests {
             vendorKind: .relay)
     }
 
-    private func postHead(uri: String = "/v1/messages") -> HTTPRequestHead {
+    /// The inbound client request head. The optional Claude Code identity
+    /// headers (session/agent) ride along so session-derivation tests can
+    /// exercise the real inbound face — the relay never forwards them.
+    private func postHead(
+        uri: String = "/v1/messages", claudeSessionID: String? = nil, agentID: String? = nil
+    ) -> HTTPRequestHead {
         var head = HTTPRequestHead(version: .http1_1, method: .POST, uri: uri)
         head.headers.add(name: "x-api-key", value: "client-key")
         head.headers.add(name: "anthropic-version", value: "2023-06-01")
+        if let claudeSessionID {
+            head.headers.add(name: ProxyForwarder.claudeCodeSessionHeader, value: claudeSessionID)
+        }
+        if let agentID {
+            head.headers.add(name: ProxyForwarder.claudeCodeAgentHeader, value: agentID)
+        }
         return head
     }
 
@@ -692,20 +703,23 @@ struct RelayTargetTests {
         ]
 
         let signed = try RelayTarget.relayHeaders(
-            session: session, signed: true, sessionID: "sid")
+            session: session, signed: true,
+            identity: RelayTarget.SessionIdentity(id: "sid", type: "main"))
         #expect(signed.map { $0.name } == identity + signer + ["x-api-key"])
         #expect(signed["user-agent"] == ["ZCode/0.17.1 ai-sdk/anthropic/3.0.81"])
 
         // Unsigned fail-open attempt: identity + auth only — the signer block
         // is the CLI signer's, so it never rides an unsigned request.
         let unsigned = try RelayTarget.relayHeaders(
-            session: session, signed: false, sessionID: "sid")
+            session: session, signed: false,
+            identity: RelayTarget.SessionIdentity(id: "sid", type: "main"))
         #expect(unsigned.map { $0.name } == identity + ["x-api-key"])
 
         // The Task 1 routing header rides immediately after `authorization`
         // (it is ZGate's, not part of the CLI static face).
         let routed = try RelayTarget.relayHeaders(
-            session: session, signed: true, sessionID: "sid",
+            session: session, signed: true,
+            identity: RelayTarget.SessionIdentity(id: "sid", type: "main"),
             zcodeAuthorization: "synthetic-zcode-jwt")
         let routedNames = routed.map { $0.name }
         #expect(routedNames == {
@@ -715,6 +729,8 @@ struct RelayTargetTests {
         }() + signer + ["x-api-key"])
     }
 
+    /// No inbound CC headers → the per-process UUID stays the session id,
+    /// stable across requests — the pre-Task-3 face, now the fallback.
     @Test func sessionIDStaysStableAcrossRequests() async throws {
         let relay = MockRelayServer(scripts: [])
         let port = try await relay.start()
@@ -737,6 +753,212 @@ struct RelayTargetTests {
         }
         #expect(relay.requestCount == 2)
         #expect(relay.requests[0].headers["x-session-id"] == relay.requests[1].headers["x-session-id"])
+        #expect(relay.requests[0].headers["x-session-id"] == context.sessionID)
+        #expect(relay.requests[0].headers["x-zcode-session-type"] == "main")
+    }
+
+    // MARK: - Session identity (AC: per-conversation id, subagent type, fallback)
+
+    /// Sanitize: lowercase, keep ASCII hex (digits included) + `-`, accept
+    /// 8–64 chars before cleaning and ≥ 8 after — anything else → nil.
+    @Test func sessionIdentitySanitizeAcceptsHexDashWithinBounds() {
+        let uuid = "1b0e0c6e-9d8a-4c3f-8e2d-2f9a6d4b1c0e"
+        #expect(RelayTarget.SessionIdentity.sanitize(uuid) == uuid)
+        #expect(RelayTarget.SessionIdentity.sanitize(uuid.uppercased()) == uuid)
+        // Digits are hex characters — a digit-heavy conversation uuid must
+        // survive cleaning byte-for-byte (lowercased).
+        #expect(RelayTarget.SessionIdentity.sanitize("04cbf1c5-caed-4278-91ab-c3d0e5f6a7b8")
+            == "04cbf1c5-caed-4278-91ab-c3d0e5f6a7b8")
+        // Non-hex characters are dropped; what survives must still be ≥ 8.
+        #expect(RelayTarget.SessionIdentity.sanitize("zz1b0e0c6e9d8azz") == "1b0e0c6e9d8a")
+        #expect(RelayTarget.SessionIdentity.sanitize("zzzzzzzzzzzzzzzz") == nil)
+        // Length bounds: 8 passes, 7 fails, 64 passes, 65 fails.
+        #expect(RelayTarget.SessionIdentity.sanitize("12345678") == "12345678")
+        #expect(RelayTarget.SessionIdentity.sanitize("1234567") == nil)
+        #expect(RelayTarget.SessionIdentity.sanitize(String(repeating: "a", count: 64))
+            == String(repeating: "a", count: 64))
+        #expect(RelayTarget.SessionIdentity.sanitize(String(repeating: "a", count: 65)) == nil)
+        #expect(RelayTarget.SessionIdentity.sanitize(nil) == nil)
+    }
+
+    /// shortHash: first 8 hex chars of SHA-256 — pinned against the
+    /// well-known empty-string digest, stable, input-sensitive.
+    @Test func sessionIdentityShortHashIsFirstEightHexOfSHA256() {
+        #expect(RelayTarget.SessionIdentity.shortHash("") == "e3b0c442")
+        let hash = RelayTarget.SessionIdentity.shortHash("agent-77")
+        #expect(hash.count == 8)
+        #expect(hash.allSatisfy { $0.isHexDigit && ($0.isLowercase || $0.isNumber) })
+        #expect(hash == RelayTarget.SessionIdentity.shortHash("agent-77"))
+        #expect(hash != RelayTarget.SessionIdentity.shortHash("agent-78"))
+    }
+
+    /// derive: conversation header → sanitized id (main); agent header →
+    /// per-agent subagent id; absent/garbage session header → per-process
+    /// fallback base.
+    @Test func sessionIdentityDeriveRules() {
+        let fallback = "0d8a6e1f-2c3b-4d5e-9f8a-7b6c5d4e3f2a"
+        let conversation = "5f4e3d2c-1b0a-4c9d-8e7f-6a5b4c3d2e1f"
+
+        // No CC headers: the per-process fallback, main.
+        #expect(RelayTarget.SessionIdentity.derive(from: postHead(), fallback: fallback)
+            == RelayTarget.SessionIdentity(id: fallback, type: "main"))
+
+        // Conversation header (uppercased inbound — sanitized to lowercase).
+        let conversed = postHead(claudeSessionID: conversation.uppercased())
+        #expect(RelayTarget.SessionIdentity.derive(from: conversed, fallback: fallback)
+            == RelayTarget.SessionIdentity(id: conversation, type: "main"))
+
+        // Agent header: subagent turn with its own per-agent id.
+        let subagentHead = postHead(claudeSessionID: conversation, agentID: "agent-77")
+        let subagent = RelayTarget.SessionIdentity.derive(from: subagentHead, fallback: fallback)
+        #expect(subagent.type == "subagent")
+        #expect(subagent.id == "\(conversation)-\(RelayTarget.SessionIdentity.shortHash("agent-77"))")
+
+        // Garbage conversation id: the fallback is the base (the agent header
+        // still marks the turn and derives its own id from that base).
+        let garbage = postHead(claudeSessionID: "zzzzzzzzzzzzzzzz", agentID: "agent-77")
+        let garbageIdentity = RelayTarget.SessionIdentity.derive(from: garbage, fallback: fallback)
+        #expect(garbageIdentity.id == "\(fallback)-\(RelayTarget.SessionIdentity.shortHash("agent-77"))")
+        #expect(garbageIdentity.type == "subagent")
+
+        // Empty agent header = not present (still main).
+        let emptyAgent = postHead(claudeSessionID: conversation, agentID: "")
+        #expect(RelayTarget.SessionIdentity.derive(from: emptyAgent, fallback: fallback).type == "main")
+    }
+
+    /// Relay level: the inbound CC conversation header drives `x-session-id`
+    /// — identical across requests in one conversation, distinct across
+    /// conversations, never the per-process fallback — and PoW + sig are
+    /// bound to the DERIVED id (the server sees one session id everywhere).
+    @Test func ccSessionHeaderDrivesSessionIDAndSigningInputs() async throws {
+        let relay = MockRelayServer(scripts: [])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "ccsess")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let conversation = "5f4e3d2c-1b0a-4c9d-8e7f-6a5b4c3d2e1f"
+        for _ in 0..<2 {
+            let outcome = await RelayTarget.execute(
+                head: postHead(claudeSessionID: conversation),
+                bodyData: requestBody(model: "glm-5.3"),
+                target: relayRouteTarget(port: port), httpClient: httpClient,
+                context: context, requestID: "t-ccsess")
+            guard case .responded = outcome else {
+                Issue.record("expected responded, got \(outcome)")
+                return
+            }
+        }
+        let otherConversation = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeffff0000"
+        let outcome = await RelayTarget.execute(
+            head: postHead(claudeSessionID: otherConversation),
+            bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-ccsess")
+        guard case .responded = outcome else {
+            Issue.record("expected responded, got \(outcome)")
+            return
+        }
+
+        #expect(relay.requestCount == 3)
+        let first = relay.requests[0].headers
+        let second = relay.requests[1].headers
+        let third = relay.requests[2].headers
+        #expect(first["x-session-id"] == conversation)
+        #expect(first["x-session-id"] == second["x-session-id"])
+        #expect(third["x-session-id"] == otherConversation)
+        #expect(first["x-session-id"] != third["x-session-id"])
+        #expect(first["x-session-id"] != context.sessionID)
+        #expect(first["x-zcode-session-type"] == "main")
+
+        // PoW + Ed25519 sig use the derived id — not the per-process fallback.
+        let session = try await context.signingClient.ensureSession()
+        let ts = try #require(first["x-client-ts"])
+        let pow = try #require(first["x-client-pow"])
+        #expect(CryptoCore.verifyPow(
+            apiKeyId: session.apiKeyId, appId: "zcode", sessionId: conversation,
+            ts: ts, pow: pow))
+        let nonce = try #require(first["x-client-nonce"])
+        let sig = try #require(first["x-client-sig"])
+        let sigBytes = try #require(Data(base64Encoded: sig))
+        let publicKey = try Curve25519.Signing.PrivateKey(rawRepresentation: Fixtures.ed25519Seed).publicKey
+        let message = CryptoCore.requestSigMessage(
+            apiKeyId: session.apiKeyId, ts: ts, version: "0.17.1",
+            sessionId: conversation, nonce: nonce)
+        #expect(publicKey.isValidSignature(sigBytes, for: Data(message.utf8)))
+    }
+
+    /// Relay level: an inbound agent-id header marks the turn `subagent` with
+    /// the per-agent derived session id — and PoW binds to that same id.
+    @Test func agentHeaderMarksSubagentWithPerAgentSessionID() async throws {
+        let relay = MockRelayServer(scripts: [])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "ccagent")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        let conversation = "5f4e3d2c-1b0a-4c9d-8e7f-6a5b4c3d2e1f"
+        let outcome = await RelayTarget.execute(
+            head: postHead(claudeSessionID: conversation, agentID: "agent-77"),
+            bodyData: requestBody(model: "glm-5.3"),
+            target: relayRouteTarget(port: port), httpClient: httpClient,
+            context: context, requestID: "t-ccagent")
+        guard case .responded = outcome else {
+            Issue.record("expected responded, got \(outcome)")
+            return
+        }
+
+        let headers = try #require(relay.requests.first).headers
+        let expected = "\(conversation)-\(RelayTarget.SessionIdentity.shortHash("agent-77"))"
+        #expect(headers["x-session-id"] == expected)
+        #expect(headers["x-zcode-session-type"] == "subagent")
+        // Distinct from both the conversation id and the per-process fallback.
+        #expect(expected != conversation)
+        #expect(headers["x-session-id"] != context.sessionID)
+
+        let session = try await context.signingClient.ensureSession()
+        let ts = try #require(headers["x-client-ts"])
+        let pow = try #require(headers["x-client-pow"])
+        #expect(CryptoCore.verifyPow(
+            apiKeyId: session.apiKeyId, appId: "zcode", sessionId: expected,
+            ts: ts, pow: pow))
+    }
+
+    /// Relay level: garbage inbound session ids (non-hex, <8 chars, >64
+    /// chars) all fall back to the per-process UUID with type `main` —
+    /// identical to the no-header face.
+    @Test func garbageSessionHeadersFallBackToProcessSessionID() async throws {
+        let relay = MockRelayServer(scripts: [])
+        let port = try await relay.start()
+        defer { Task { await relay.shutdown() } }
+        let control = SigningControl()
+        let (context, directory) = try makeRelayContext(control: control, directoryLabel: "ccgarbage")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+
+        for garbage in ["short", "zzzzzzzzzzzzzzzz", String(repeating: "a", count: 65)] {
+            let outcome = await RelayTarget.execute(
+                head: postHead(claudeSessionID: garbage),
+                bodyData: requestBody(model: "glm-5.3"),
+                target: relayRouteTarget(port: port), httpClient: httpClient,
+                context: context, requestID: "t-ccgarbage")
+            guard case .responded = outcome else {
+                Issue.record("expected responded, got \(outcome)")
+                return
+            }
+        }
+        #expect(relay.requestCount == 3)
+        for request in relay.requests {
+            #expect(request.headers["x-session-id"] == context.sessionID)
+            #expect(request.headers["x-zcode-session-type"] == "main")
+        }
     }
 
     // MARK: - Body rewrite (AC: model rewritten, rest byte-unchanged)
@@ -1346,7 +1568,8 @@ struct RelayTargetTests {
             expiresAtMs: .max,
             marginRelaxed: false)
         let headers = try RelayTarget.relayHeaders(
-            session: session, signed: false, sessionID: "sid",
+            session: session, signed: false,
+            identity: RelayTarget.SessionIdentity(id: "sid", type: "main"),
             zcodeAuthorization: "synthetic-zcode-jwt")
         let names = headers.map { $0.name }
         let authorization = try #require(names.firstIndex(of: "authorization"))
@@ -1354,7 +1577,8 @@ struct RelayTargetTests {
         #expect(headers["x-zcode-authorization"] == ["Bearer synthetic-zcode-jwt"])
 
         let bare = try RelayTarget.relayHeaders(
-            session: session, signed: false, sessionID: "sid")
+            session: session, signed: false,
+            identity: RelayTarget.SessionIdentity(id: "sid", type: "main"))
         #expect(!bare.map { $0.name }.contains("x-zcode-authorization"))
     }
 
