@@ -8,6 +8,11 @@ struct TrafficEntry: Identifiable, Sendable {
     enum RouteType: Sendable {
         case passthrough
         case mapped(targetModel: String)
+        /// Served through the off-peak ticket plane (wave 2). Carries the
+        /// substituted wire model so the row reads "GLM-5.3 · off-peak"
+        /// instead of the legacy misleading "pass" (2026-11-21: live rows
+        /// made queued requests look like unmapped passthrough).
+        case offPeak(targetModel: String?)
         case blocked
     }
 
@@ -75,6 +80,10 @@ struct TrafficEntry: Identifiable, Sendable {
     let ttft: TimeInterval?
     /// Output tokens from this request; nil when unavailable (blocked, replay, or no usage data).
     let outputTokens: Int?
+    /// Input tokens (context size) of this request; nil when the serving
+    /// path had no usage event. Folded = fresh + cache reads, matching the
+    /// daily stats convention.
+    let inputTokens: Int?
     /// Claude Code request class; nil when the client sent no hint.
     private(set) var requestClass: RequestClass?
 
@@ -86,6 +95,7 @@ struct TrafficEntry: Identifiable, Sendable {
         duration: TimeInterval? = nil,
         ttft: TimeInterval? = nil,
         outputTokens: Int? = nil,
+        inputTokens: Int? = nil,
         timestamp: Date = .now
     ) {
         self.id = UUID()
@@ -96,6 +106,7 @@ struct TrafficEntry: Identifiable, Sendable {
         self.duration = duration
         self.ttft = ttft
         self.outputTokens = outputTokens
+        self.inputTokens = inputTokens
         self.timestamp = timestamp
     }
 
@@ -132,6 +143,8 @@ struct TrafficEntry: Identifiable, Sendable {
             return "pass"
         case .mapped(let targetModel):
             return targetModel
+        case .offPeak(let targetModel):
+            return targetModel.map { "\($0) · off-peak" } ?? "off-peak"
         case .blocked:
             return "blocked"
         }
@@ -180,6 +193,12 @@ struct TrafficEntry: Identifiable, Sendable {
     /// Compact output-token count ("1.2k"); "—" when unavailable.
     var tokensDisplayText: String {
         outputTokens.map { $0.compactTokenString } ?? "—"
+    }
+
+    /// Compact input-token count — the request's context size ("30.2k");
+    /// "—" when the serving path produced no usage event.
+    var inputTokensDisplayText: String {
+        inputTokens.map { $0.compactTokenString } ?? "—"
     }
 
     private static let rowTimeFormatter: DateFormatter = {

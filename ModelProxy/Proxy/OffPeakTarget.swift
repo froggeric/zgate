@@ -251,6 +251,7 @@ enum OffPeakTarget {
         private let lock = NSLock()
         private var headSent = false
         private var closed = false
+        private var firstChunkAtValue: Date?
 
         init(channel: any Channel, requestID: String) {
             self.channel = channel
@@ -290,10 +291,20 @@ enum OffPeakTarget {
         /// downstream write (client disconnect).
         func writeChunk(_ chunk: ByteBuffer) async throws {
             guard chunk.readableBytes > 0 else { return }
+            lock.withLock {
+                if firstChunkAtValue == nil { firstChunkAtValue = Date.now }
+            }
             try await ensureHead()
             try await channel.writeAndFlush(
                 NIOAny(HTTPServerResponsePart.body(.byteBuffer(chunk)))
             ).get()
+        }
+
+        /// Time of the first DATA chunk written downstream (keepalives
+        /// excluded) — the surface's TTFT, read after orchestration.
+        var firstChunkAt: Date? {
+            lock.lock(); defer { lock.unlock() }
+            return firstChunkAtValue
         }
 
         /// Terminal failure, dual-mode: before the head it is a real
@@ -813,8 +824,10 @@ enum OffPeakTarget {
         let statsModel = model
         let sourceModelForStats = rawModel
         nonisolated(unsafe) var capturedOutputTokens: Int?
+        nonisolated(unsafe) var capturedInputTokens: Int?
         let onUsage: ResponseRelay.UsageCallback = { [tokenStatsStore] input, output, cacheRead in
             capturedOutputTokens = output
+            capturedInputTokens = input
             if let tokenStatsStore, let vendorID {
                 Task { @MainActor in
                     tokenStatsStore.add(
@@ -823,6 +836,7 @@ enum OffPeakTarget {
                 }
             }
         }
+        let sink = KeepaliveBridge(channel: channel, requestID: requestID)
         let deps = Dependencies(
             config: config,
             ticketClient: ticketClient,
@@ -830,7 +844,7 @@ enum OffPeakTarget {
             requestID: requestID,
             now: defaultNow,
             sleep: defaultSleep,
-            sink: KeepaliveBridge(channel: channel, requestID: requestID),
+            sink: sink,
             dataPlaneExecute: context.dataPlaneExecute,
             settle: { ticketID in
                 Task { await settleClient.settle(ticketID: ticketID) }
@@ -853,11 +867,13 @@ enum OffPeakTarget {
         if let trafficLog {
             let entry = TrafficEntry(
                 model: model,
-                routeType: .passthrough,
+                routeType: .offPeak(targetModel: model),
                 requestKind: .generation,
                 httpStatus: clientVisibleStatus(finalState),
                 duration: Date.now.timeIntervalSince(startedAt),
-                outputTokens: capturedOutputTokens)
+                ttft: sink.firstChunkAt.map { $0.timeIntervalSince(startedAt) },
+                outputTokens: capturedOutputTokens,
+                inputTokens: capturedInputTokens)
             let requestClass = ProxyForwarder.claudeCodeRequestClass(from: head.headers)
             await MainActor.run { trafficLog.append(entry.with(requestClass: requestClass)) }
         }

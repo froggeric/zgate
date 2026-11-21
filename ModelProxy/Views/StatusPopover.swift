@@ -704,6 +704,8 @@ struct StatusPopover: View {
                 .frame(width: 48, alignment: .trailing)
             Text("tok/s")
                 .frame(width: 46, alignment: .trailing)
+            Text("in")
+                .frame(width: 52, alignment: .trailing)
             Text("code")
                 .frame(width: 34, alignment: .trailing)
         }
@@ -797,6 +799,11 @@ private struct TrafficRowView: View {
                 .foregroundStyle(.tertiary)
                 .frame(width: 46, alignment: .trailing)
 
+            Text(entry.inputTokensDisplayText)
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .frame(width: 52, alignment: .trailing)
+
             Text("\(entry.httpStatus)")
                 .font(.subheadline.monospacedDigit())
                 .foregroundStyle(statusColor)
@@ -823,7 +830,11 @@ private struct TrafficRowView: View {
         // announce a unit for a number that does not exist.
         let tps = entry.tokensPerSecondDisplayText
         let tpsSpoken = tps == "—" ? tps : "\(tps) tok/s"
-        return "\(entry.timeDisplayText), \(entry.displayModelLabel), \(entry.classTargetDisplayLabel), HTTP \(entry.httpStatus), TTFT \(entry.ttftDisplayText), \(tpsSpoken)"
+        var summary = "\(entry.timeDisplayText), \(entry.displayModelLabel), \(entry.classTargetDisplayLabel), HTTP \(entry.httpStatus), TTFT \(entry.ttftDisplayText), \(tpsSpoken)"
+        if let input = entry.inputTokens, input > 0 {
+            summary += ", \(input.compactTokenString) input tokens"
+        }
+        return summary
     }
 
 }

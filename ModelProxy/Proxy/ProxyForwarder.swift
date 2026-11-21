@@ -569,10 +569,11 @@ enum ProxyForwarder {
             ? .passthrough
             : .mapped(targetModel: usedTarget.targetModel ?? model)
 
-        // Capture output tokens + first-body-byte time for TTFT/TPS display
-        // in the traffic log. Safe: both fire during `await relay()` below,
-        // reads happen after relay returns.
+        // Capture output+input tokens + first-body-byte time for
+        // TTFT/TPS/size display in the traffic log. Safe: all fire during
+        // `await relay()` below, reads happen after relay returns.
         nonisolated(unsafe) var capturedOutputTokens: Int?
+        nonisolated(unsafe) var capturedInputTokens: Int?
         nonisolated(unsafe) var capturedFirstByteAt: Date?
 
         let sourceModelForStats: String? = usedTarget.isPassthrough ? nil : model
@@ -581,6 +582,7 @@ enum ProxyForwarder {
         let vendorID = usedTarget.vendorID
         let onUsage: ResponseRelay.UsageCallback = { [tokenStatsStore] input, output, cacheRead in
             capturedOutputTokens = output
+            capturedInputTokens = input
             if let vendorID {
                 Task { @MainActor in
                     tokenStatsStore.add(vendorID: vendorID, model: statsModel, input: input, output: output, cacheRead: cacheRead, sourceModel: sourceModelForStats)
@@ -642,7 +644,8 @@ enum ProxyForwarder {
             httpStatus: statusCode,
             duration: duration,
             ttft: capturedFirstByteAt.map { $0.timeIntervalSince(startTime) },
-            outputTokens: capturedOutputTokens
+            outputTokens: capturedOutputTokens,
+            inputTokens: capturedInputTokens
         )
         await MainActor.run { trafficLog.append(entry.with(requestClass: requestClass)) }
     }

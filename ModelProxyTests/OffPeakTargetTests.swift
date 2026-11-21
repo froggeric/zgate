@@ -975,6 +975,60 @@ struct OffPeakTargetTests {
         #expect(sourceRecord.outputTokens > 0)
     }
 
+    /// The traffic row a served request appends (wave-2 polish, 2026-11-21):
+    /// the off-peak label (not the legacy misleading "pass"), a TTFT from
+    /// the first data chunk, and the input-token size — so a queued or
+    /// served off-peak request reads unambiguously in the popover.
+    @Test("served request's traffic row carries off-peak label, ttft, and input size")
+    func asyncServeTrafficRow() async throws {
+        let stub = OffPeakStubServer()
+        let port = try await stub.start()
+        defer { Task { await stub.shutdown() } }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+        stub.respond = { request in
+            switch request.path {
+            case "/api/v1/off-peak/ticket/availability":
+                return .envelope(Self.availabilityTrue)
+            case "/api/v1/off-peak/ticket":
+                return .envelope(Self.takeTicket(id: "tkt-row", state: "ready"))
+            case OffPeakTarget.dataPlanePath:
+                return Script(
+                    status: 200,
+                    headers: ["content-type": "text/event-stream"],
+                    chunks: [Data(Self.sseFrames.utf8)])
+            default:
+                return Script(status: 404, chunks: [Data(#"{"code":404}"#.utf8)])
+            }
+        }
+
+        let trafficLog = await MainActor.run { TrafficLog() }
+        let channel = EmbeddedChannel()
+        let state = await OffPeakTarget.serve(
+            head: asyncMessagesHead(),
+            body: bodyBuffer(Self.requestBody(model: "zai/GLM-5.3[1m]")),
+            channel: channel,
+            context: makeContext(
+                config: enabledConfig(origin: "http://127.0.0.1:\(port)"),
+                httpClient: httpClient),
+            targetModel: "glm-4.7",
+            trafficLog: trafficLog,
+            tokenStatsStore: nil,
+            vendorID: nil,
+            requestID: "t-row")
+        #expect(state == .done)
+
+        let row = await MainActor.run { trafficLog.entries.last }
+        let entry = try #require(row)
+        // targetModel "glm-4.7" canonicalizes through the retired-alias
+        // table to the current wire name.
+        #expect(entry.routeDisplayLabel == "GLM-5.3 · off-peak")
+        #expect(entry.httpStatus == 200)
+        #expect(entry.ttft != nil)  // first data chunk — the queue/serve wait precedes it
+        let input = try #require(entry.inputTokens)
+        #expect(input > 0)
+    }
+
     // MARK: - Orchestrator: availability wait + keepalives + happy stream
 
     @Test func orchestrateWaitsForAvailabilityWithKeepalivesThenRelaysUntouchedAndSettles()
