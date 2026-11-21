@@ -13,7 +13,7 @@ when signed — `x-api-key` is never sent on the relay plane (live-verified
 2026-11-20, probe B; the fallback edge vendor keeps its own `x-api-key`
 auth on its separate plane).
 
-## The five documented routing-compatibility transforms
+## The six documented routing-compatibility transforms
 
 The relay path performs exactly these request transforms (documented
 routing-compatibility transforms — nothing else in the body is modified, per
@@ -26,6 +26,46 @@ the project constraint):
 | 3 | `max_tokens` clamp | `ProxyForwarder.clampMaxTokensField` | A top-level out-of-range `max_tokens` is clamped into `[1, 131072]` before send (the relay 400s code 1210 otherwise). Byte-identical when absent or in range. |
 | 4 | Session derivation | `RelayTarget.SessionIdentity.derive` | ONE per-conversation identity derived per exchange from the inbound Claude Code session header (read, never forwarded) feeds everything upstream: `x-session-id`, the PoW challenge input, and the Ed25519 signature message — mirroring the official CLI's `sess_` semantics. Subagent-typed headers keep their type; a garbage or absent header falls back to a per-process id (subagent-typed when the request looks like one). |
 | 5 | Endpoint routing | `EndpointConfigService` / `EndpointMapping` (`ModelProxy/Services/`) | The request URL is resolved through the server's `agent/configs` snapshot (see below). Fail-open: a failed, slow, invalid or missing snapshot never blocks or fails a request — the pinned URL serves. |
+| 6 | Safeguards pair strip | `ProxyForwarder.stripSafeguardsField` (`ModelProxy/Proxy/ProxyForwarder.swift`) | Auto mode's server-side safety-check request rides a top-level `safeguards` body field paired with an `anthropic-beta` value; the relay and off-peak planes rebuild their header face so the paired value never rides — the field is removed with it by byte-preserving splice (see the next section). Byte-identical when absent. Applies to relay-kind targets in `ProxyForwarder.forward` and both entries of `OffPeakTarget.serve`. |
+
+## Auto-mode safeguards pair (server-side classifier review)
+
+Claude Code's **auto mode** can ask the server to review actions as part of
+the session's own `POST /v1/messages` requests — no separate endpoint. The
+ask rides as a pair: an `anthropic-beta` header value (observed in the
+2.1.311 client: `dangerous-tool-use-2026-09-03`) plus a top-level
+`safeguards` body field; verdicts return as a `safeguard_results` field in
+the response (see `code.claude.com/docs/en/permission-modes#server-side-classifier-review`
+and the LLM-gateway compatibility guide's pair rule).
+
+**Why the strip.** The relay plane (`RelayTarget.relayHeaders`) and the
+off-peak data plane (`OffPeakTarget.dataPlaneRequest`) each build their own
+CLI-faithful header face — the client's `anthropic-beta` value never rides
+either plane. Forwarding the `safeguards` field without its header is the
+broken pair the gateway protocol forbids: if the upstream answers **400**
+while the field rides (for any reason — quota, context length, a future
+stricter relay), Claude Code blames the safety-check request and **denies
+every auto-mode tool use for the conversation** until `/clear` or `/compact`.
+So the field is dropped together with its header — transform #6 above.
+
+**Behavior behind this proxy.** Neither half reaches the upstream, so
+responses never carry `safeguard_results` — Claude Code falls back to its
+**own local classifier requests** (ordinary `/v1/messages` calls through the
+normal model routing, billed like any other call). That is the intended
+state: the upstream is the zcode relay, which cannot perform Anthropic's
+server-side review (live-verified 2026-11-21: the relay ignores a lone
+`safeguards` field, HTTP 200 either way). Clients that want to skip the
+futile server ask entirely can set `CLAUDE_CODE_AUTO_MODE_SERVER=0`.
+
+**Mechanics.** Byte-preserving splice of the top-level member only
+(`ProxyForwarder.stripSafeguardsField` — no JSON round-trip, the
+byte-identical-body invariant holds); nested `safeguards` keys and
+occurrences inside message-content strings are untouched. Static mapped
+vendors already strip the field when "strip Claude-only request fields" is
+enabled (`safeguards` is in `claudeOnlyBodyFields`); passthrough forwards
+both halves untouched. Tests: `ModelProxyTests/SafeguardsPairStripTests.swift`
+(byte-level), `OffPeakTargetTests.asyncServeStripsSafeguardsFieldFromDataPlaneBody`
+(serve-level wiring).
 
 ## Endpoint discovery (`agent/configs`)
 

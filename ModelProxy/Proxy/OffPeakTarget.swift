@@ -812,6 +812,19 @@ enum OffPeakTarget {
             wireBody = ProxyForwarder.replaceModelField(in: bodyData, with: canonical).data
             model = canonical
         }
+        // Pair-preserving safeguards strip (auto mode server-side review):
+        // the data plane builds its own header face (dataPlaneRequest) with
+        // the constant CLI beta — the client's `anthropic-beta` value paired
+        // with the `safeguards` body field never rides, so the field must
+        // not ride alone (same broken-pair rule as the relay plane; see
+        // stripSafeguardsField).
+        let strippedWireBody = ProxyForwarder.stripSafeguardsField(in: wireBody)
+        if strippedWireBody.count != wireBody.count {
+            AppLog.proxy.debug(
+                "[OffPeak] [\(requestID)] Stripped safeguards field for off-peak data plane (auto-mode review pair)"
+            )
+            wireBody = strippedWireBody
+        }
 
         let ticketClient = context.makeTicketClient()
         let settleClient = ticketClient

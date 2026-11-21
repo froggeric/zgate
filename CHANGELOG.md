@@ -4,6 +4,23 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
+## Unreleased
+
+### 2026-11-21 — auto-mode compatibility: safeguards pair strip
+
+- **Claude Code auto mode no longer trips over its server-side safety
+  check on the relay and off-peak planes.** Auto mode's check rides the
+  session's own requests as a top-level `safeguards` body field paired
+  with an `anthropic-beta` value; both planes rebuild their header face,
+  so the paired value never rode while the field did — the broken pair
+  that makes any upstream 400 while it rides get blamed on the safety
+  check, denying every auto-mode tool use for the conversation. The field
+  is now removed together with its header by a byte-preserving splice
+  (nothing else in the body touched); Claude Code then uses its own local
+  classifier requests, its documented fallback behind a gateway. Static
+  vendors with "strip Claude-only request fields" already stripped the
+  field; passthrough is untouched.
+
 ## 2.11 (2)
 
 ### 2026-11-21 — hotfix: the coding-plan key mint never completed

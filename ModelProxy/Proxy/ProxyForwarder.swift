@@ -437,6 +437,23 @@ enum ProxyForwarder {
         if !target.isPassthrough && target.vendorKind != .relay {
             forwardBodyData = Self.sanitizeToolsForVendor(in: forwardBodyData)
         }
+        // Pair-preserving safeguards strip (auto mode server-side review):
+        // the relay plane rebuilds its header face (RelayTarget.relayHeaders),
+        // so the `anthropic-beta` value paired with the `safeguards` body
+        // field never rides; the field must not ride alone. Forwarded alone
+        // it is the broken pair the gateway protocol warns about — an
+        // upstream 400 while it rides makes Claude Code blame the safety-check
+        // request and deny every auto-mode tool use for the conversation.
+        // Dropping the field with its header keeps the client on its
+        // documented local-classifier fallback (no `safeguard_results` in
+        // relay responses either way).
+        if target.vendorKind == .relay {
+            let strippedBody = Self.stripSafeguardsField(in: forwardBodyData)
+            if strippedBody.count != forwardBodyData.count {
+                AppLog.proxy.debug("[Proxy] [\(requestID)] Stripped safeguards field for relay plane (auto-mode review pair)")
+                forwardBodyData = strippedBody
+            }
+        }
         let toolCatalog = ToolCallInputGuard.ToolCatalog.fromRequestBody(forwardBodyData)
 
         // 4. Build and send upstream request. Off-peak rule targets gate onto
@@ -1676,6 +1693,129 @@ enum ProxyForwarder {
         return nil
     }
 
+    /// Byte range covering the complete top-level `"key":<value>` member —
+    /// the key's opening quote through the value's last byte, excluding the
+    /// separating comma — or nil when the key is absent at the top level or
+    /// its value cannot be scanned. Sibling of `topLevelModelValueRange`
+    /// (same depth-1 key scan, any JSON value type).
+    private static func topLevelMemberRange(in bytes: [UInt8], key: String) -> Range<Int>? {
+        let quote: UInt8 = 34
+        let colon: UInt8 = 58
+        let openObject: UInt8 = 123
+        let closeObject: UInt8 = 125
+        let openArray: UInt8 = 91
+        let closeArray: UInt8 = 93
+        let keyBytes = Array(key.utf8)
+
+        var index = 0
+        var depth = 0
+
+        while index < bytes.count {
+            let byte = bytes[index]
+
+            if byte == quote {
+                guard let (stringRange, nextIndex) = Self.parseJSONString(in: bytes, startingAt: index) else {
+                    return nil
+                }
+
+                if depth == 1 {
+                    var cursor = nextIndex
+                    while cursor < bytes.count, Self.isWhitespace(bytes[cursor]) {
+                        cursor += 1
+                    }
+
+                    if cursor < bytes.count, bytes[cursor] == colon, bytes[stringRange].elementsEqual(keyBytes) {
+                        let memberStart = index
+                        cursor += 1
+                        while cursor < bytes.count, Self.isWhitespace(bytes[cursor]) {
+                            cursor += 1
+                        }
+                        guard cursor < bytes.count,
+                              let valueEnd = Self.scanJSONValueEnd(in: bytes, startingAt: cursor) else {
+                            return nil
+                        }
+                        return memberStart..<valueEnd
+                    }
+                }
+
+                index = nextIndex
+                continue
+            }
+
+            switch byte {
+            case openObject, openArray:
+                depth += 1
+            case closeObject, closeArray:
+                depth = max(0, depth - 1)
+            default:
+                break
+            }
+
+            index += 1
+        }
+
+        return nil
+    }
+
+    /// Index one past the last byte of the JSON value starting at `start`
+    /// (string, object, array, number, or `true`/`false`/`null` literal), or
+    /// nil when the byte does not start a scannable value. Composite values
+    /// are walked string-aware so braces inside strings never count.
+    private static func scanJSONValueEnd(in bytes: [UInt8], startingAt start: Int) -> Int? {
+        let quote: UInt8 = 34
+        let openObject: UInt8 = 123
+        let closeObject: UInt8 = 125
+        let openArray: UInt8 = 91
+        let closeArray: UInt8 = 93
+        let comma: UInt8 = 44
+        guard start < bytes.count else { return nil }
+
+        switch bytes[start] {
+        case quote:
+            guard let (_, nextIndex) = Self.parseJSONString(in: bytes, startingAt: start) else {
+                return nil
+            }
+            return nextIndex
+        case openObject, openArray:
+            let closesAt = bytes[start] == openObject ? closeObject : closeArray
+            var depth = 1
+            var index = start + 1
+            while index < bytes.count {
+                let byte = bytes[index]
+                if byte == quote {
+                    guard let (_, nextIndex) = Self.parseJSONString(in: bytes, startingAt: index) else {
+                        return nil
+                    }
+                    index = nextIndex
+                    continue
+                }
+                if byte == openObject || byte == openArray {
+                    depth += 1
+                } else if byte == closeObject || byte == closeArray {
+                    depth -= 1
+                    if depth == 0 {
+                        return byte == closesAt ? index + 1 : nil
+                    }
+                }
+                index += 1
+            }
+            return nil
+        default:
+            // Number or literal: consume the token run and require it to end
+            // at a delimiter, so a malformed value is never half-removed.
+            var index = start
+            while index < bytes.count,
+                  Self.isJSONNumberByte(bytes[index]) || (97...122).contains(bytes[index]) {
+                index += 1
+            }
+            guard index > start,
+                  index == bytes.count || Self.isWhitespace(bytes[index])
+                  || bytes[index] == comma || bytes[index] == closeObject || bytes[index] == closeArray
+            else { return nil }
+            return index
+        }
+    }
+
     /// Bytes that may appear inside a JSON number token: digits plus
     /// `-`, `+`, `.`, `e`, `E`.
     private static func isJSONNumberByte(_ byte: UInt8) -> Bool {
@@ -2094,6 +2234,48 @@ enum ProxyForwarder {
             return ClaudeOnlyFieldStripResult(bodyData: bodyData, removedFields: [])
         }
         return ClaudeOnlyFieldStripResult(bodyData: encoded, removedFields: removed)
+    }
+
+    /// Remove the top-level `safeguards` member while preserving every other
+    /// byte (the relay plane's byte-identical body invariant). Auto mode's
+    /// server-side review rides this field plus its `anthropic-beta` value as
+    /// a pair; the relay face cannot forward the header, so the field is
+    /// dropped with it and Claude Code classifies locally per its documented
+    /// no-`safeguard_results` fallback. No-op when the field is absent or the
+    /// body cannot be scanned. Unlike `stripClaudeOnlyRequestFields` this is
+    /// byte surgery, not a JSON round-trip.
+    static func stripSafeguardsField(in bodyData: Data) -> Data {
+        let bytes = [UInt8](bodyData)
+        guard let memberRange = Self.topLevelMemberRange(in: bytes, key: "safeguards") else {
+            return bodyData
+        }
+
+        // Swallow exactly one adjacent separator comma so the result stays
+        // valid JSON: the one after the member when present, else the one
+        // before it.
+        var lower = memberRange.lowerBound
+        var upper = memberRange.upperBound
+        var cursor = upper
+        while cursor < bytes.count, Self.isWhitespace(bytes[cursor]) {
+            cursor += 1
+        }
+        if cursor < bytes.count, bytes[cursor] == 44 /* , */ {
+            upper = cursor + 1
+        } else {
+            var back = lower
+            while back > 0, Self.isWhitespace(bytes[back - 1]) {
+                back -= 1
+            }
+            if back > 0, bytes[back - 1] == 44 {
+                lower = back - 1
+            }
+        }
+
+        var result = Data()
+        result.reserveCapacity(bytes.count - (upper - lower))
+        result.append(contentsOf: bytes[0..<lower])
+        result.append(contentsOf: bytes[upper..<bytes.count])
+        return result
     }
 
     /// Remove tool definitions that mapped vendors cannot handle.

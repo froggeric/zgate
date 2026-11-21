@@ -447,13 +447,17 @@ struct OffPeakTargetTests {
     private static let frameStop = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
     private static var sseFrames: String { frameStart + frameDelta + frameUsage + frameStop }
 
-    private static func requestBody(model: String = "zai/GLM-5.3[1m]", stream: Bool = true) -> Data {
-        let json: [String: Any] = [
+    private static func requestBody(
+        model: String = "zai/GLM-5.3[1m]", stream: Bool = true,
+        safeguards: [String: Any]? = nil
+    ) -> Data {
+        var json: [String: Any] = [
             "model": model,
             "max_tokens": 64,
             "stream": stream,
             "messages": [["role": "user", "content": "héllo"]],
         ]
+        if let safeguards { json["safeguards"] = safeguards }
         return (try! JSONSerialization.data(withJSONObject: json))
     }
 
@@ -973,6 +977,68 @@ struct OffPeakTargetTests {
             Self.todayStatsSnapshot()?.sourceModelUsage["zai/GLM-5.3[1m]"])
         #expect(sourceRecord.inputTokens > 0)
         #expect(sourceRecord.outputTokens > 0)
+    }
+
+    /// Pair-preserving safeguards strip (auto-mode server-side review): the
+    /// off-peak data plane builds its own header face, so the `safeguards`
+    /// body field must not ride the wire body alone (its paired
+    /// `anthropic-beta` value never reaches that plane). The strip composes
+    /// with model canonicalization; every other field survives, and the
+    /// client's streamed answer is relayed untouched. Byte-level behavior of
+    /// the strip itself is covered by SafeguardsPairStripTests.
+    @Test("served request's data-plane body drops the safeguards field, keeps the rest")
+    func asyncServeStripsSafeguardsFieldFromDataPlaneBody() async throws {
+        let stub = OffPeakStubServer()
+        let port = try await stub.start()
+        defer { Task { await stub.shutdown() } }
+        let httpClient = makeHTTPClient()
+        defer { Task { try? await httpClient.shutdown() } }
+        stub.respond = { request in
+            switch request.path {
+            case "/api/v1/off-peak/ticket/availability":
+                return .envelope(Self.availabilityTrue)
+            case "/api/v1/off-peak/ticket":
+                return .envelope(Self.takeTicket(id: "tkt-sg", state: "ready"))
+            case OffPeakTarget.dataPlanePath:
+                return Script(
+                    status: 200,
+                    headers: ["content-type": "text/event-stream"],
+                    chunks: [Data(Self.sseFrames.utf8)])
+            default:
+                return Script(status: 404, chunks: [Data(#"{"code":404}"#.utf8)])
+            }
+        }
+
+        let channel = EmbeddedChannel()
+        let state = await OffPeakTarget.serve(
+            head: asyncMessagesHead(),
+            body: bodyBuffer(
+                Self.requestBody(safeguards: ["type": "auto_mode", "actions": ["bash"]])),
+            channel: channel,
+            context: makeContext(
+                config: enabledConfig(origin: "http://127.0.0.1:\(port)"),
+                httpClient: httpClient),
+            targetModel: nil,
+            trafficLog: nil,
+            tokenStatsStore: nil,
+            vendorID: nil,
+            requestID: "t-sg")
+        #expect(state == .done)
+
+        // Wire body: safeguards gone, everything else intact.
+        let dataPlane = try #require(stub.requests(at: OffPeakTarget.dataPlanePath).first)
+        let sentJSON = try #require(dataPlane.jsonBody)
+        #expect(sentJSON["safeguards"] == nil)
+        #expect(sentJSON["model"] as? String == "GLM-5.3")
+        #expect(sentJSON["max_tokens"] as? Int == 64)
+        #expect(sentJSON["stream"] as? Bool == true)
+        #expect(
+            (sentJSON["messages"] as? [[String: Any]])?.first?["content"] as? String == "héllo")
+        // The client still got its streamed answer untouched.
+        let (head, body, sawEnd) = try drain(channel)
+        #expect(head.status == .ok)
+        #expect(sawEnd)
+        #expect(body == Data(Self.sseFrames.utf8))
     }
 
     /// The traffic row a served request appends (wave-2 polish, 2026-11-21):
