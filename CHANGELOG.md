@@ -4,7 +4,7 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
-## Unreleased
+## 2.11 (1)
 
 ### 2026-11-20 — off-peak wave 2: Settings toggle, automatic status, rule-target routing
 

@@ -35,6 +35,24 @@ editable in Settings → Rules.
 | custom rule → `ZCode Off-Peak` (opt-in) | ZCode off-peak ticket plane | rule's backup | **no default rule targets it** — attach the seeded ZCode Off-Peak vendor to a rule (Settings → Rules); window open + surface enabled + `stream: true` → ticket plane, any gate closed → backup; non-streaming requests NEVER queue; no (non-off-peak) backup → 503 `off_peak_unavailable` |
 | fallback (catch-all, incl. unknown/local qwen ids) | zcode relay `GLM-5.3-Flash` | api.z.ai edge | no request is ever dropped |
 
+**v2.11 off-peak as a first-class citizen (2026-11-21):** the off-peak
+surface (Settings → General → Off-Peak, default OFF) routes generation
+through ZCode's off-peak ticket queue: enabling it polls window
+availability automatically every 300 s (live status line + popover row,
+and it mints the coding-plan key on the first poll), and any routing rule
+can target the seeded **ZCode Off-Peak** vendor — window open + surface
+enabled + streaming rides the ticket plane, anything else (closed,
+disabled, non-streaming) serves the rule's backup, so interactive traffic
+is never captured unattended (a non-streaming request can never queue or
+see the stream-only error through a rule; no usable backup answers a
+clear 503, and the rule editor requires a backup up front). Rule-routed
+off-peak requests record token stats under the vendor. The manual
+`/async/…` route family remains for batch harnesses, and every toggle in
+the app now shows a colored enabled-state (an app accent is defined;
+previously all switches rendered grey under the macOS Graphite accent) —
+details in
+[`docs/05-features/2026-11-20-offpeak-wave2.md`](docs/05-features/2026-11-20-offpeak-wave2.md).
+
 **v2.10 relay fidelity & resilience (2026-11-20):** the relay path mirrors
 the official zcode CLI wire face exactly (ordered headers, UA, per-
 conversation session ids feeding the proof-of-work and signature inputs),
@@ -44,18 +62,8 @@ routing-compatibility transforms). Upstream failures are classified by
 business code with bounded retry policies, connect failures retry on a
 short ladder, and a signing outage degrades to a signing-free `api.z.ai`
 fallback edge with half-open recovery (an expired login recovers by
-signing in again). The **off-peak surface** (Settings → General →
-Off-Peak, default OFF) routes generation through ZCode's off-peak ticket
-queue: enabling it polls window availability automatically (live status
-line + popover row, and it mints the coding-plan key on the first poll),
-and any routing rule can target the seeded **ZCode Off-Peak** vendor —
-window open + streaming rides the ticket plane, anything else (closed,
-disabled, non-streaming) serves the rule's backup, so interactive traffic
-is never captured unattended. The manual `/async/…` route family remains
-for batch harnesses — details in
-[`docs/05-features/2026-11-20-offpeak-wave2.md`](docs/05-features/2026-11-20-offpeak-wave2.md)
-(wave-1 surface:
-[`docs/05-features/2026-11-20-relay-fidelity-resilience.md`](docs/05-features/2026-11-20-relay-fidelity-resilience.md)).
+signing in again) — wave-1 details in
+[`docs/05-features/2026-11-20-relay-fidelity-resilience.md`](docs/05-features/2026-11-20-relay-fidelity-resilience.md).
 The class rules above carry no rule-level backup; when signing degrades,
 their traffic is served directly by the fallback edge instead.
 
