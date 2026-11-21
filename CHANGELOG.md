@@ -4,6 +4,19 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
+## 2.11 (2)
+
+### 2026-11-21 — hotfix: the coding-plan key mint never completed
+
+- **Fixed a mint-chain parsing bug** that made the off-peak availability
+  status show "missingCodingPlanKey" forever: the api-keys list step
+  threw on its (perfectly successful) HTTP 200 because the payload
+  carries its entries as a `data` array, which the response gate treated
+  as an envelope error; the entry walker also looked for the wrong field
+  names and required an `id` the live entries don't carry. Verified
+  against the live api.z.ai shapes; the mint now completes, so enabling
+  off-peak mints the key on the first availability poll as designed.
+
 ## 2.11 (1)
 
 ### 2026-11-20 — off-peak wave 2: Settings toggle, automatic status, rule-target routing
