@@ -199,6 +199,48 @@ struct ApiKeyMinterTests {
         return (404, Data())
     }
 
+    // MARK: - Live wire shapes (regression, 2026-11-21)
+
+    /// The REAL api.z.ai answers, byte-shaped as probed live: customer
+    /// info keys orgs by `organizationId`/`projectId`; the api_keys LIST
+    /// is `{"total":…, "data":[…]}` — no envelope code, data an ARRAY,
+    /// entries keyed by `apiKey` with NO `id` field; copy answers the
+    /// dict envelope with `secretKey`. Before the fix, `call()` threw
+    /// `envelope(200, nil)` on the list step and the mint never completed
+    /// (live symptom: off-peak status "missingCodingPlanKey").
+    private static let liveCustomerInfo = Data("""
+        {"code":200,"msg":"Operation successful","data":{"organizations":[
+        {"organizationId":"org-live","organizationName":"默认机构","isDefault":true,
+         "projects":[{"projectId":"proj-live","projectName":"默认项目","isDefault":true}]}
+        ]}}
+        """.utf8)
+
+    private static let liveKeyList = Data(#"{"total":9,"data":[{"useApiKeyUserId":"u1","apiKey":"ak-hex-32-chars","secretKey":"*****masked","name":"zcode-api-key","isHidden":false,"keyType":1,"createTime":"2026-01-01"},{"apiKey":"ak-other","secretKey":"*****other","name":"Claude Code","isHidden":false}]}"#.utf8)
+
+    private static let liveCopy = Data(#"{"code":200,"data":{"secretKey":"sk-live"}}"#.utf8)
+
+    @Test func mintAgainstTheLiveWireShapes() async throws {
+        let stub = BizStubServer()
+        let port = try await stub.start()
+        defer { Task { await stub.shutdown() } }
+        stub.respond = { [self] request in
+            respond(request, customerInfo: Self.liveCustomerInfo, keysList: Self.liveKeyList, copyPayload: Self.liveCopy)
+        }
+
+        let credential = try await minter(origin: "http://127.0.0.1:\(port)").mint()
+
+        // The named live entry is found by `apiKey` (no id field) and the
+        // copy reveal assembles `{apiKey}.{secretKey}`.
+        #expect(credential == "ak-hex-32-chars.sk-live")
+        #expect(stub.paths == [
+            "/api/biz/customer/getCustomerInfo",
+            "/api/biz/v1/organization/org-live/projects/proj-live/api_keys",
+            "/api/biz/v1/organization/org-live/projects/proj-live/api_keys/copy/ak-hex-32-chars",
+        ])
+        // The named key exists — no create POST.
+        #expect(stub.recorded.allSatisfy { $0.method == "GET" })
+    }
+
     // MARK: - Happy path
 
     @Test func mintSelectsDefaultOrgAndProjectAndBuildsCredential() async throws {

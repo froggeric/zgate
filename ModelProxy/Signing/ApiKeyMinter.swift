@@ -136,10 +136,12 @@ nonisolated struct ApiKeyMinter: Sendable {
         if let payload = json["data"] as? [String: Any] {
             return payload
         }
-        if json["data"] == nil {
-            return json  // payload at the top level (no data envelope)
-        }
-        throw MintError.envelope(status: status, code: code)
+        // data absent (payload at the top level) OR an ARRAY — the live
+        // api_keys list answers `{"total":…, "data":[…]}` with no envelope
+        // code (live-verified 2026-11-21: HTTP 200, entries under `data`,
+        // each keyed by `apiKey`, no `id` field). The walkers read the
+        // entries off the top level either way.
+        return json
     }
 
     // MARK: - Payload walking (tolerant)
@@ -168,14 +170,19 @@ nonisolated struct ApiKeyMinter: Sendable {
         return (organizationId, projectId)
     }
 
-    /// The key entries of a list answer: `data` as an array, `data.list`,
-    /// `data.apiKeys`, or `data` itself when it is a single matching entry.
+    /// The key entries of a list answer: `data` as an array (the live
+    /// api_keys shape), `data.list`, `data.apiKeys`, `data.records`, or
+    /// `data` itself when it is a single matching entry. Live entries key
+    /// by `apiKey` with NO `id`/`apiKeyId` field (verified 2026-11-21) —
+    /// the single-entry detection accepts all three.
     private static func keyEntries(from data: [String: Any]) -> [[String: Any]] {
-        let list = arrayField(data["list"] ?? data["apiKeys"] ?? data["records"])
+        let list = arrayField(data["data"] ?? data["list"] ?? data["apiKeys"] ?? data["records"])
         if !list.isEmpty {
             return list
         }
-        if data["name"] != nil && (data["id"] != nil || data["apiKeyId"] != nil) {
+        if data["name"] != nil
+            && (data["apiKey"] != nil || data["id"] != nil || data["apiKeyId"] != nil)
+        {
             return [data]
         }
         return []
