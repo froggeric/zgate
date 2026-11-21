@@ -46,7 +46,11 @@ disabled, non-streaming) serves the rule's backup, so interactive traffic
 is never captured unattended (a non-streaming request can never queue or
 see the stream-only error through a rule; no usable backup answers a
 clear 503, and the rule editor requires a backup up front). Rule-routed
-off-peak requests record token stats under the vendor. The manual
+off-peak requests record token stats under the vendor, the request log
+labels them "GLM-5.3 · off-peak" (every row now also carries tok/s and a
+context-size column), and Claude Code auto mode works through ZGate (the
+orphaned `safeguards` field is stripped together with its unsendable
+header; set `CLAUDE_CODE_AUTO_MODE_SERVER=0` client-side). The manual
 `/async/…` route family remains for batch harnesses, and every toggle in
 the app now shows a colored enabled-state (an app accent is defined;
 previously all switches rendered grey under the macOS Graphite accent) —

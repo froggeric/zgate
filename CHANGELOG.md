@@ -4,9 +4,9 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
-## Unreleased
+## 2.11 (3)
 
-### 2026-11-21 — auto-mode compatibility: safeguards pair strip
+### 2026-11-21 — auto-mode compatibility + truthful request-log rows
 
 - **Claude Code auto mode no longer trips over its server-side safety
   check on the relay and off-peak planes.** Auto mode's check rides the
@@ -19,7 +19,15 @@ numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
   (nothing else in the body touched); Claude Code then uses its own local
   classifier requests, its documented fallback behind a gateway. Static
   vendors with "strip Claude-only request fields" already stripped the
-  field; passthrough is untouched.
+  field; passthrough is untouched. Pair with the client-side
+  `CLAUDE_CODE_AUTO_MODE_SERVER=0` (and optionally
+  `CLAUDE_CODE_AUTO_MODE_MODEL=glm-5.3-flash[1m]`) for working auto mode.
+- **Request-log rows now say what actually happened.** Off-peak serves
+  read "GLM-5.3 · off-peak" instead of the legacy "pass" (which read as
+  unmapped passthrough and hid queued requests); tok/s populates for
+  off-peak rows (TTFT = first data chunk, keepalives excluded); and a new
+  "in" column shows each request's context size in compact tokens (940 /
+  30.2K / 2.4M) on both the relay and off-peak paths.
 
 ## 2.11 (2)
 
