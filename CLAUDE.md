@@ -10,7 +10,9 @@ macOS menu bar app - transparent local API proxy for multi-vendor model routing.
 > App Store 上的 2.5 是**上游 model-proxy** 的发布，其合规文档 `docs/10-app-store-connect/`
 > 仅为上游参考，**不驱动本仓库的发布流程**（无需 ASC 提交、无需 URL 切换）。本仓库的
 > 发布流程：Release build → `scripts/notarize.sh`（签名+公证+staple）→ zip → GitHub
-> Release → `scripts/release-swap.sh` 换本地实例。
+> Release → `scripts/release-swap.sh` 换本地实例。两个脚本必须用 zsh 跑
+> （`zsh scripts/…`）：bash 下 notarize.sh 刷 `print: command not found`，
+> release-swap.sh 直接死在 `Args[1]: unbound variable`（zsh 数组从 1 计）。
 
 ## Document Truth Source
 
@@ -114,6 +116,13 @@ read it directly with `ls`/`head` (verified 2026-11-19):
   — an Anthropic-format error (`request_id: req_011C...`) means that model is **passthrough
   to Anthropic**; a different vendor/error means it's mapped. See
   `docs/09-lessons-learned/2026-06-11-proxy-transform-diagnosis.md` for the tool-call transform gating table.
+  - **Focused test runs must filter `ZGateTests/<Suite>`, never `ModelProxyTests/<Suite>`**
+    (sources live in ModelProxyTests/ but compile into the ZGateTests target — the
+    ModelProxyTests/ filter matches NO tests and vacuously "passes":
+    `xcodebuild test … -only-testing:ZGateTests/RouterTests`).
+  - **Verify external API shapes against the live wire, never invented fixtures**
+    (2026-11-21: ApiKeyMinter shipped broken — fixtures guessed field names the real
+    api/biz responses don't use). Probes keep credentials in shell vars, never printed.
 - **Verify proxy behavior end to end with `scripts/e2e/`** (real Claude Code → isolated,
   non-sandboxed E2E build on 19090/19092 → DeepSeek): `build.sh`, `up.sh`, `scenarios.sh`, `down.sh`.
   It never touches the installed app or your own Claude Code config. Rules and scenario list:
