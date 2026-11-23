@@ -68,9 +68,10 @@ enum RelayTarget {
     /// Deterministic, no jitter.
     static let connectRetryBackoff: TimeInterval = 0.5
 
-    /// zbridge `GLM_FAMILY` — canonical wire names of the GLM family.
+    /// zbridge `GLM_FAMILY` — canonical wire names of the GLM family
+    /// (GLM-5.4 added 2026-11-23 at launch, ahead of zbridge's own list).
     static let glmFamily: [String] = [
-        "GLM-5.3", "GLM-5.3-Flash", "GLM-5V-Turbo", "GLM-5.2", "GLM-5.1", "GLM-5.1-Highspeed",
+        "GLM-5.4", "GLM-5.3", "GLM-5.3-Flash", "GLM-5V-Turbo", "GLM-5.2", "GLM-5.1", "GLM-5.1-Highspeed",
         "GLM-5", "GLM-5-Turbo", "GLM-4.7", "GLM-4.7-FlashX", "GLM-4.7-Flash", "GLM-4.6", "GLM-4.5-Air",
         "GLM-4.5", "GLM-4.6V", "GLM-4.6V-Flash", "GLM-4.6V-FlashX", "GLM-4.1V-Thinking-FlashX",
         "GLM-4.1V-Thinking-Flash", "GLM-4-FlashX-250414", "GLM-4-Flash-250414", "GLM-4V-Flash",
@@ -1077,6 +1078,7 @@ enum RelayTarget {
             lowered = String(lowered.dropFirst(prefix.count))
         }
         if lowered.contains("flash") { return "GLM-5.3-Flash" }
+        if lowered.contains("glm-5.4") { return "GLM-5.4" }  // glm-5.4 and glm-5.4[1m] (2026-11-23 launch)
         if lowered.contains("glm-5.3") { return "GLM-5.3" }  // glm-5.3 and glm-5.3[1m]
         if let canon = glmCanon[lowered] { return canon }
         if lowered.hasPrefix("glm-") { return "GLM-5.3" }

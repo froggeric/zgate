@@ -595,6 +595,12 @@ struct RelayTargetTests {
         #expect(RelayTarget.canonicalModel("glm-4.7-flash") == "GLM-5.3-Flash")
         // Older family names still pass through verbatim.
         #expect(RelayTarget.canonicalModel("GLM-4.5-Air") == "GLM-4.5-Air")
+        // GLM-5.4 (2026-11-23 launch): the [1m] CC suffix must not ride the
+        // unknown-glm → main rewrite down to GLM-5.3; the name passes through.
+        #expect(RelayTarget.canonicalModel("glm-5.4") == "GLM-5.4")
+        #expect(RelayTarget.canonicalModel("glm-5.4[1m]") == "GLM-5.4")
+        #expect(RelayTarget.canonicalModel("GLM-5.4") == "GLM-5.4")
+        #expect(RelayTarget.canonicalModel("zai/glm-5.4[1m]") == "GLM-5.4")
         // Provider-qualified names strip the prefix before canonicalization.
         #expect(RelayTarget.canonicalModel("zai/GLM-5.3") == "GLM-5.3")
         #expect(RelayTarget.canonicalModel("bigmodel/glm-5.3") == "GLM-5.3")

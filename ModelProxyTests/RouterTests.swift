@@ -169,6 +169,20 @@ struct RouterTests {
         #expect(ModelClass.classify("glm-5.3-opus[1m]") == .opus)
     }
 
+    // MARK: - GLM-5.4 launch (2026-11-23)
+
+    @Test func classifyGLM54LaunchNames() {
+        // 2026-11-23 launch: the CC wire id is glm-5.4[1m] (opus/sonnet env
+        // alias target). It must classify opus-class, or the request skips
+        // the enabled 5.4 class rules and silently lands on the catch-all
+        // Flash rule (observed live 2026-11-23, hours-long misroute).
+        #expect(ModelClass.classify("glm-5.4") == .opus)
+        #expect(ModelClass.classify("glm-5.4[1m]") == .opus)
+        #expect(ModelClass.classify("GLM-5.4") == .opus)  // case-insensitive
+        // A flash variant of 5.4 must stay haiku: flash check runs first.
+        #expect(ModelClass.classify("glm-5.4-flash") == .haiku)
+    }
+
     @Test func classRulesRouteCCModels() {
         let fixture = makeFixture()
 
@@ -188,6 +202,12 @@ struct RouterTests {
 
         #expect(routedTarget(resolve(fixture, model: "claude-3-5-haiku-20241022"))?.targetModel == "local/qwen3.8-27b-q8")
         #expect(routedTarget(resolve(fixture, model: "claude-opus-4-6"))?.targetModel == "GLM-5.3")
+
+        // glm-5.4 (2026-11-23) classifies opus → the opus rule (fixture
+        // target GLM-5.3), NOT the terminal Flash fallback the live wire
+        // misroute served.
+        let glm54Target = routedTarget(resolve(fixture, model: "glm-5.4[1m]"))
+        #expect(glm54Target?.targetModel == "GLM-5.3")
 
         // auto rule (before class rules in the ordered table).
         let autoTarget = routedTarget(resolve(fixture, model: "auto"))

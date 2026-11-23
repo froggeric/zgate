@@ -7,10 +7,11 @@ extension ModelClass {
     /// Case-insensitive pattern map from the incoming Claude Code model name
     /// to its class; nil = no class matched (falls through to the terminal
     /// fallback rule). CC env aliases mean the wire names are GLM strings:
-    /// opus/sonnet both alias to `glm-5.3` (and `glm-5.3[1m]`), haiku to
-    /// `glm-5.3-flash`. v2.1 (ruling 2026-11-17): ALL deliberate work runs
-    /// opus-class, so the bare `glm-5.3` prefix maps to .opus; the flash
-    /// substring is still checked BEFORE the prefix (fast relay tier = haiku
+    /// opus/sonnet alias to the current main model — `glm-5.4[1m]` since the
+    /// 2026-11-23 launch (`glm-5.3` before) — haiku to `glm-5.3-flash`.
+    /// v2.1 (ruling 2026-11-17): ALL deliberate work runs
+    /// opus-class, so the bare glm main-model prefixes map to .opus; the flash
+    /// substring is still checked BEFORE the prefixes (fast relay tier = haiku
     /// class). Local qwen names match nothing here → terminal fallback.
     static func classify(_ model: String?) -> ModelClass? {
         guard let trimmed = model?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -23,6 +24,7 @@ extension ModelClass {
         if name.contains("opus") || name.contains("fable") { return .opus }
         if name.contains("sonnet") { return .sonnet }
         if name.hasPrefix("glm-5.3") { return .opus }  // bare glm-5.3 = main relay model (opus class)
+        if name.hasPrefix("glm-5.4") { return .opus }  // glm-5.4 (2026-11-23 launch) = main relay model
         if name == "default" || name.hasPrefix("auto") { return .auto }
         return nil  // unknown (incl. qwen names) → terminal fallback rule
     }
