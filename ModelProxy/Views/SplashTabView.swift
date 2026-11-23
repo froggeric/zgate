@@ -211,10 +211,12 @@ struct SplashTabView: View {
 
     var body: some View {
         Form {
+            // Update / install leads (2026-11-23): it is the tab's primary
+            // action, so it sits above the server controls.
+            installSection
             statusSection
             profilesSection
             storageSection
-            installSection
             logSection
         }
         .formStyle(.grouped)
@@ -381,7 +383,7 @@ struct SplashTabView: View {
     }
 
     /// Storage & cache settings (spec §3.6) — machine-level, so it sits
-    /// with the server concerns between Profiles and Binary.
+    /// with the server concerns between Profiles and Log.
     private var storageSection: some View {
         Section("Storage") {
             if let m = model { SplashStorageSection(model: m) }
