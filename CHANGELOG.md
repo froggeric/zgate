@@ -4,6 +4,36 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
+## Unreleased
+
+### 2026-11-23 — GLM-5.4 by default, Settings in front, a working update check
+
+- **A new GLM model no longer needs a ZGate release to route.** Class
+  rules matched `glm-` names against a fixed list of versions; the
+  2026-11-23 launch of GLM-5.4 was missing from it, so every request for
+  the new model skipped the class rules and was served by the catch-all
+  (GLM-5.3-Flash) with HTTP 200 and no warning. Any `glm-` name without
+  `flash` now classifies as the main model's class.
+- **Default routing serves GLM-5.4.** The `auto`, `sonnet` and `opus` rows
+  target `GLM-5.4` on fresh installs. Existing installs whose three rows
+  still match the untouched previous layout are moved once at launch; a
+  row that was edited in any way is left alone.
+- **Settings opens in front.** The popover's gear used to leave the panel
+  open and open Settings behind every other window. It now closes the
+  panel and brings Settings up focused. ZGate shows a Dock icon and a menu
+  bar while the Settings window is open, and returns to menu-bar-only when
+  it closes.
+- **ZGate's own update check works.** It looked for a release asset named
+  after the tag (`ZGate-v2.11.3.zip`); every published release names it
+  `ZGate-2.11.3.zip`, so About always said "cannot check" and the update
+  banner could never appear. Both names are accepted now.
+- **A shorter popover.** The rules summary (it truncated after two lines
+  and repeated Settings → Rules) and the `ANTHROPIC_BASE_URL` line are
+  gone from the popover. The base URL is still in Settings → Advanced →
+  Client setup and Settings → Clients → Quick start.
+- **Splash: update and install lead the tab.** The Binary row moved to the
+  top of Settings → Splash.
+
 ## 2.11 (3)
 
 ### 2026-11-21 — auto-mode compatibility + truthful request-log rows

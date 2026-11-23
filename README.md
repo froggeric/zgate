@@ -26,14 +26,21 @@ editable in Settings → Rules.
 
 | Match | Primary target | Backup | Notes |
 |---|---|---|---|
-| `auto` (no/unset model) | zcode relay `GLM-5.3` | — | Claude Code auto mode |
+| `auto` (no/unset model) | zcode relay `GLM-5.4` | — | Claude Code auto mode |
 | `haiku` class (incl. `glm-5.3-flash`) | zcode relay `GLM-5.3-Flash` | — | fast/background tier |
-| `sonnet` class | zcode relay `GLM-5.3` | — | v2.1: same serving as opus |
+| `sonnet` class | zcode relay `GLM-5.4` | — | same serving as opus |
 | `opus` class, weekdays 07:00–11:00 Europe/Paris | zcode relay `GLM-5.3-Flash` | — | peak twin — **disabled** by default (3× peak metering; dormant cost lever) |
-| `opus` class | zcode relay `GLM-5.3` | — | |
+| `opus` class | zcode relay `GLM-5.4` | — | |
 | `haiku`/`sonnet` (local qwen levers) | splash `local/qwen3.8-27b-q8` | relay `GLM-5.3-Flash` | **disabled** by default — one toggle in Settings → Rules takes that tier local (health-gated) |
 | custom rule → `ZCode Off-Peak` (opt-in) | ZCode off-peak ticket plane | rule's backup | **no default rule targets it** — attach the seeded ZCode Off-Peak vendor to a rule (Settings → Rules); window open + surface enabled + `stream: true` → ticket plane, any gate closed → backup; non-streaming requests NEVER queue; no (non-off-peak) backup → 503 `off_peak_unavailable` |
 | fallback (catch-all, incl. unknown/local qwen ids) | zcode relay `GLM-5.3-Flash` | api.z.ai edge | no request is ever dropped |
+
+**v2.2 defaults (2026-11-23, GLM-5.4 launch):** the `auto`, `sonnet` and
+`opus` rows serve `GLM-5.4` (`GLM-5.3` before). A new GLM model is a
+rule-target edit in Settings → Rules, not a ZGate release: any `glm-` name
+without `flash` classifies as the main model's class. Existing installs
+whose three rows still match the untouched previous layout are moved once
+at launch; a row that was edited in any way is left alone.
 
 **v2.11 off-peak as a first-class citizen (2026-11-21):** the off-peak
 surface (Settings → General → Off-Peak, default OFF) routes generation
@@ -72,7 +79,8 @@ The class rules above carry no rule-level backup; when signing degrades,
 their traffic is served directly by the fallback edge instead.
 
 **v2.1 routing (2026-11-17):** all deliberate work — the opus and sonnet
-tiers — goes to full `GLM-5.3`; fast/background chatter (the haiku tier)
+tiers — goes to the main relay model (`GLM-5.4` since v2.2, `GLM-5.3`
+before); fast/background chatter (the haiku tier)
 goes to `GLM-5.3-Flash`. The local qwen model is off all default routes
 (quality ruling, 2026-11-17). The peak twins (auto and opus) ship disabled
 by default — a dormant cost lever if relay peak metering is ever confirmed.
@@ -87,26 +95,44 @@ rule targets it.
 
 Claude Code sends the strings from its `ANTHROPIC_DEFAULT_OPUS_MODEL`,
 `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` env
-as the model field, and ZGate classifies those strings: a `haiku` or `flash`
-substring → haiku class (the fast tier), `opus`/`fable` → opus, `sonnet` →
-sonnet, a bare `glm-5.3` prefix → opus, unset or `auto*` → auto; anything
-unrecognized (local qwen ids) falls through to the terminal fallback rule.
-The aliases below (set 2026-11-17) deliberately land the opus and sonnet
-picks on the **same** class: all deliberate work — main thread and
-subagents — runs full GLM-5.3 on the relay, the haiku alias carries
-fast/background chatter on GLM-5.3-Flash, and the local qwen model is off
-all default routes (quality ruling, 2026-11-17):
+(or the `env` block of `~/.claude/settings.json`) as the model field — minus
+a `[1m]` suffix, which it strips before sending. ZGate classifies those
+strings: a `haiku` or `flash` substring → haiku class (the fast tier),
+`opus`/`fable` → opus, `sonnet` → sonnet, any other `glm-` name → opus (by
+family since 2026-11-23, so the next GLM version needs no ZGate change),
+unset or `auto*` → auto; anything unrecognized (local qwen ids) falls
+through to the terminal fallback rule.
 
-| CC pick | Alias | Class | Serves |
+Recommended: the bare aliases. They never change when z.ai or Anthropic
+ships a model, so a launch is a rule-target edit in ZGate and nothing else:
+
+| CC pick | Alias | Class | Serves (v2.2 defaults) |
 |---|---|---|---|
-| opus | `glm-5.3[1m]` | opus | relay GLM-5.3 |
-| sonnet | `glm-5.3[1m]` | opus | relay GLM-5.3 |
-| haiku | `glm-5.3-flash[1m]` | haiku | relay GLM-5.3-Flash |
+| opus | `opus` | opus | relay GLM-5.4 |
+| sonnet | `sonnet` | sonnet | relay GLM-5.4 |
+| haiku | `haiku` | haiku | relay GLM-5.3-Flash |
 
-Also set `CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144`: for model ids it doesn't
-recognize, Claude Code would otherwise shrink its context-window assumption
-— this pins it at 262,144. The variable is inert for the `[1m]` aliases,
-which keep their 1M assumption — the relay's real offering.
+The opus and sonnet picks deliberately serve the same model: all deliberate
+work — main thread and subagents — runs GLM-5.4 on the relay, the haiku
+alias carries fast/background chatter on GLM-5.3-Flash, and the local qwen
+model is off all default routes (quality ruling, 2026-11-17).
+
+- `CLAUDE_CODE_AUTO_MODE_MODEL=haiku` keeps Claude Code's auto-mode
+  classifier on the fast tier. Unset, it follows the sonnet alias — the main
+  model.
+- Rename any `modelSettings.<id>` entry together with the alias: Claude Code
+  matches those keys to the requested id, so a saved effort level is lost
+  when the id changes.
+- `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` lets the traffic list label main,
+  subagent, compaction and auxiliary requests.
+- `CLAUDE_CODE_MAX_CONTEXT_TOKENS` applies to ids Claude Code doesn't
+  recognize that carry no `[1m]`: with the bare aliases, `262144` arms
+  proactive compaction at a 242,144-token window. With a `[1m]` alias the
+  variable is inert and nothing arms proactive compaction — the session
+  keeps a 1M assumption.
+
+Measured on Claude Code 2.1.323. A configurator for these keys is planned —
+see [Roadmap](#roadmap).
 
 ## Requirements
 
@@ -161,7 +187,10 @@ registers/unregisters the login item).
 
 ### 4. Point Claude Code at ZGate
 
-Copy the env line from the popover (it shows the *actual bound port*):
+Set the base URL for every session in the `env` block of
+`~/.claude/settings.json`, or export it per shell. Settings → Advanced →
+Client setup and Settings → Clients → Quick start show it with the *actual
+bound port*:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
@@ -170,8 +199,8 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 8787 is the default Claude Code port on fresh installs (Codex listens on
 8789; 8788 is reserved by zbridge — this fork's retired Node.js predecessor —
 on this machine). If the configured port
-is taken, ZGate advances to the next free port — the popover line always
-tells the truth. Set the tier aliases too — see
+is taken, ZGate advances to the next free port — those two lines always
+tell the truth. Set the tier aliases too — see
 [Claude Code tier aliases](#claude-code-tier-aliases).
 
 ### 5. First request — two things to expect
@@ -216,7 +245,8 @@ instance instead of double-starting; when that instance dies, ZGate starts
 its own). The server is a ZGate child process: quitting ZGate stops it.
 Model profiles carry the full `splash serve` command line — switching the
 active profile restarts the server onto it; a new model (qwen4, say) is a
-new profile, no code change. The Binary row detects the chip (fork
+new profile, no code change. The Binary row — first on the tab since
+2026-11-23 — detects the chip (fork
 `splash-m1` for M1/M2, Homebrew `incoai/tap/splash` for M3+), checks the
 right repo for updates, and installs/updates accordingly — M1/M2 downloads
 the release tarball plus its `.sha256` sidecar, verifies the checksum
@@ -250,6 +280,11 @@ the release zip, verifies its SHA-256 digest and the developer Team ID,
 then runs the bundled swap script: the app quits, `/Applications/ZGate.app`
 is replaced with a backup kept, the new version reopens and health-checks
 (rolling back on failure). Automatic checks can be turned off in General.
+
+The check reads the release asset `ZGate-<version>.zip` (`ZGate-2.11.3.zip`
+for tag `v2.11.3`). Until 2026-11-23 it looked for the tag-verbatim name
+(`ZGate-v2.11.3.zip`), which no published release has, and answered "cannot
+check" for every one of them.
 
 ## Configuration
 
@@ -339,14 +374,18 @@ Gatekeeper prompts on any machine.
 
 ## Verify install
 
-- [ ] `ZGate.app` runs from `/Applications`, **no dock icon**, and the **ZΓ
-      status item is in the menu bar** — quota ring while the proxy serves
-      (arc = weekly remaining; dashed ring before the first successful
-      poll), pause symbol while paused, hourglass while launching, ⚠ on
-      error or when a login is needed
-- [ ] The popover's env line shows `http://127.0.0.1:<port>` and the Copy
-      button puts `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` on the
-      clipboard
+- [ ] `ZGate.app` runs from `/Applications`, **no dock icon** (one shows only
+      while the Settings window is open), and the **ZΓ status item is in the
+      menu bar** — quota ring while the proxy serves (arc = weekly
+      remaining; dashed ring before the first successful poll), pause
+      symbol while paused, hourglass while launching, ⚠ on error or when a
+      login is needed
+- [ ] The popover's gear closes the panel and opens Settings **in front and
+      focused**; closing Settings removes the dock icon, and the next click
+      on the status item opens the panel on the first try
+- [ ] Settings → Advanced → Client setup shows `http://127.0.0.1:<port>` and
+      its Copy button puts `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` on
+      the clipboard
 - [ ] One round-trip answers: `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
       claude -p "say OK"` replies `OK` through the signed relay
 - [ ] Request log rows for that round-trip are visible in the popover's
@@ -370,8 +409,14 @@ Gatekeeper prompts on any machine.
   building (give it a few seconds and retry), or no login is available — the
   credential row shows red; see above.
 - **Port 8787 already in use:** ZGate auto-advances to the next free port —
-  check the popover's env line for the actual port and export that. Port
-  edits in Settings need Pause/Resume (or relaunch) to rebind.
+  check Settings → Advanced → Client setup (or Clients → Quick start) for
+  the actual port and use that. Port edits in Settings need Pause/Resume
+  (or relaunch) to rebind.
+- **A tier answers the wrong model after a launch:** ZGate classifies
+  `glm-` names by family, so a new name routes as the main model — point the
+  rule's target at the new model in Settings → Rules. To confirm which model
+  actually answered, probe ZGate and read `"model"` in the response
+  ([`docs/09-lessons-learned/2026-11-23-new-model-name-fell-to-catchall.md`](docs/09-lessons-learned/2026-11-23-new-model-name-fell-to-catchall.md)).
 - **Splash down:** nothing in the default matrix routes to splash, so
   default routing is unaffected. Custom rules targeting splash are held
   back while its probe (`127.0.0.1:<splash port>`) fails and resume automatically when
@@ -386,6 +431,27 @@ Gatekeeper prompts on any machine.
   (`~/Library/Application Support/ZGate/`) when file logging is enabled
   (Settings → Debug). Logs never contain request/response bodies or
   credential values.
+
+## Roadmap
+
+What is planned, nearest first. Shipped work is in
+[`CHANGELOG.md`](CHANGELOG.md).
+
+- [ ] **Claude Code settings configurator** — design drafted in
+  [`docs/specs/2026-11-23-claude-settings-configurator-design.md`](docs/specs/2026-11-23-claude-settings-configurator-design.md).
+  ZGate shows whether Claude Code is set up for it, applies the recommended
+  keys to `~/.claude/settings.json` (stable `opus`/`sonnet`/`haiku` ids,
+  auto-mode model, gateway hint headers) after a diff, a confirmation and
+  a backup, and offers a `local` model id with its own context window.
+- [ ] **A model name that falls through should be visible** — today an
+  unrecognized name lands on the catch-all rule with no sign; the traffic
+  row should say so.
+- [ ] **Backup target for the main tiers** — the opus and sonnet rules carry
+  none; add `GLM-5.3` as backup and test the relay's `[1305]` overload path.
+- [ ] **Verify routes** — one click probes each tier through ZGate and shows
+  which model answered (deferred from the configurator).
+- [ ] **Test stability under parallel execution** — three tests pass alone
+  and serially but fail when the whole target runs in parallel.
 
 ## About / attribution
 

@@ -28,7 +28,7 @@ All project documents use `docs/00-AI-CONTEXT.md` as the single source of truth.
 | Decision rationale | `docs/03-decisions/` |
 | Feature behavior | `docs/05-features/` |
 | Dev guide / plans | `docs/06-plans/` |
-| Change history | `docs/07-changelog/` |
+| Change history / roadmap | `CHANGELOG.md` (repo root) and the Roadmap section of `README.md`; `docs/07-changelog/` keeps only the App Store release copy |
 | Lessons learned | `docs/09-lessons-learned/` |
 | App Store published pages + compliance | `docs/10-app-store-connect/` |
 | Release signing intel (partly superseded by 2.7.6) / E2E proof checklist | `docs/signing-notes.md`, `docs/e2e-checklist.md` |

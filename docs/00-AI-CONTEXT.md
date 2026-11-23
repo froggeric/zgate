@@ -18,9 +18,14 @@ full V4 signing chain in Swift) or a local model server (Splash), by model ID.
 Listens on localhost, intercepts Anthropic-format API requests, routes via
 exact-match mappings then class rules in config order (conditions: time
 window / quota / health), terminal catch-all last — no request is dropped.
+Class rules classify the requested model: `haiku`/`flash` → haiku,
+`opus`/`fable` → opus, `sonnet` → sonnet, any other `glm-` name → opus (by
+family since 2026-11-23 — a new GLM version needs no code change), unset or
+`auto*` → auto; an unrecognized name falls to the catch-all.
 
 **Key Files:**
 - `ModelProxy/Proxy/ProxyServer.swift` - NIO HTTP server
+- `ModelProxy/Proxy/RouterExtensions.swift` - model classification, class-rule table, rule conditions
 - `ModelProxy/Proxy/RequestRouter.swift` / `RoutingSnapshot.swift` - model matching, class rules, failover
 - `ModelProxy/Proxy/ResponseRelay.swift` - response forwarding (streaming + non-streaming)
 
@@ -61,21 +66,32 @@ routes through ZCode's Off-Peak ticket queue. Feature doc:
 ### Configuration
 
 Manages vendors, model mappings, routing rules, and client-specific settings
-(Claude Code / Codex).
+(Claude Code / Codex). Default routing is v2.2 (2026-11-23): `auto`, `sonnet`
+and `opus` → relay `GLM-5.4`, `haiku` → `GLM-5.3-Flash`, catch-all → flash
+backed by the api.z.ai fallback edge. Launch migrations 1–12 live in
+`ConfigStore.applyMigrations` (shape-gated, run once).
 
 **Key Files:**
 - `ModelProxy/Models/AppConfig.swift` - top-level config model, default routing
+- `ModelProxy/Services/ConfigStore.swift` - load/save, launch migrations
 - `ModelProxy/Models/Vendor.swift` - vendor definition (endpoint, vendorKind, models)
 - `ModelProxy/Models/ClientConfig.swift` - per-client settings (port, tier mappings)
 
 ### Menu Bar UI
 
-Status, quota ring, traffic log, token stats.
+Status, quota ring, traffic log, token stats, update banners. The popover
+carries no rules summary and no base-URL line (removed 2026-11-23); both
+live in Settings. The gear opens Settings in front through
+`SettingsPresenter`: a menu-bar app holds the foreground only as a regular
+app, so ZGate presents as regular (Dock icon, menu bar) while the Settings
+window is open.
 
 **Key Files:**
 - `ModelProxy/App/ModelProxyApp.swift` - app entry, MenuBarExtra
+- `ModelProxy/App/SettingsPresenter.swift` - Settings in front from the panel (policy switch, restore on close)
 - `ModelProxy/Views/StatusPopover.swift` - main popover view
 - `ModelProxy/Views/SettingsView.swift` - settings window
+- `ModelProxy/Services/UpdateCenter.swift`, `AppUpdateService.swift` - update checks (splash, ZGate), explicit-click self-update
 
 ## Tech Stack
 
@@ -98,7 +114,8 @@ Keychain; no SwiftData / Core Data).
 
 - Architecture: `docs/02-architecture/`
 - Decisions (ADRs): `docs/03-decisions/` — start with `2026-11-15-direct-endpoint-relay-connection.md`
-- Features: `docs/05-features/`; dev plans: `docs/06-plans/`; changelog: `docs/07-changelog/`
+- Features: `docs/05-features/`; dev plans: `docs/06-plans/`; design specs: `docs/specs/`
+- Changelog: `CHANGELOG.md` (repo root); roadmap: the Roadmap section of `README.md`. `docs/07-changelog/` keeps only the App Store release copy
 - Lessons learned: `docs/09-lessons-learned/`
 - Signing deep-dive: `docs/signing-notes.md`; build log: `docs/zgate-notes.md`
 - E2E verification + metering doctrine: `docs/e2e-checklist.md` (AC4 addenda)
