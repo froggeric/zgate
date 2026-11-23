@@ -7,12 +7,17 @@ extension ModelClass {
     /// Case-insensitive pattern map from the incoming Claude Code model name
     /// to its class; nil = no class matched (falls through to the terminal
     /// fallback rule). CC env aliases mean the wire names are GLM strings:
-    /// opus/sonnet alias to the current main model — `glm-5.4[1m]` since the
-    /// 2026-11-23 launch (`glm-5.3` before) — haiku to `glm-5.3-flash`.
+    /// opus/sonnet alias to the current main model — `glm-5.4` since the
+    /// 2026-11-23 launch (`glm-5.3` before; Claude Code strips a `[1m]`
+    /// suffix before sending) — haiku to `glm-5.3-flash`.
     /// v2.1 (ruling 2026-11-17): ALL deliberate work runs
-    /// opus-class, so the bare glm main-model prefixes map to .opus; the flash
-    /// substring is still checked BEFORE the prefixes (fast relay tier = haiku
-    /// class). Local qwen names match nothing here → terminal fallback.
+    /// opus-class, so ANY bare glm name maps to .opus by family, not by an
+    /// enumerated version list: the 2026-11-23 launch misrouted for hours
+    /// because the list only knew `glm-5.3` (lesson
+    /// `docs/09-lessons-learned/2026-11-23-new-model-name-fell-to-catchall.md`).
+    /// The flash substring is still checked BEFORE the family (fast relay
+    /// tier = haiku class). Local qwen names match nothing here → terminal
+    /// fallback.
     static func classify(_ model: String?) -> ModelClass? {
         guard let trimmed = model?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty else {
@@ -23,8 +28,7 @@ extension ModelClass {
         if name.contains("flash") { return .haiku }  // glm-5.3-flash = fast relay tier
         if name.contains("opus") || name.contains("fable") { return .opus }
         if name.contains("sonnet") { return .sonnet }
-        if name.hasPrefix("glm-5.3") { return .opus }  // bare glm-5.3 = main relay model (opus class)
-        if name.hasPrefix("glm-5.4") { return .opus }  // glm-5.4 (2026-11-23 launch) = main relay model
+        if name.hasPrefix("glm-") { return .opus }  // any main-model glm name = opus class
         if name == "default" || name.hasPrefix("auto") { return .auto }
         return nil  // unknown (incl. qwen names) → terminal fallback rule
     }

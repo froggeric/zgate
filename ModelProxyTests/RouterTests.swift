@@ -172,15 +172,30 @@ struct RouterTests {
     // MARK: - GLM-5.4 launch (2026-11-23)
 
     @Test func classifyGLM54LaunchNames() {
-        // 2026-11-23 launch: the CC wire id is glm-5.4[1m] (opus/sonnet env
-        // alias target). It must classify opus-class, or the request skips
-        // the enabled 5.4 class rules and silently lands on the catch-all
-        // Flash rule (observed live 2026-11-23, hours-long misroute).
+        // 2026-11-23 launch: settings name glm-5.4[1m] as the opus/sonnet
+        // alias target, and Claude Code strips the suffix on the wire — so
+        // both forms must classify opus-class, or the request skips the
+        // enabled 5.4 class rules and silently lands on the catch-all Flash
+        // rule (observed live 2026-11-23, hours-long misroute).
         #expect(ModelClass.classify("glm-5.4") == .opus)
         #expect(ModelClass.classify("glm-5.4[1m]") == .opus)
         #expect(ModelClass.classify("GLM-5.4") == .opus)  // case-insensitive
         // A flash variant of 5.4 must stay haiku: flash check runs first.
         #expect(ModelClass.classify("glm-5.4-flash") == .haiku)
+    }
+
+    /// Future-proof (2026-11-23 lesson): main-model GLM names classify by
+    /// family, not by an enumerated version list — the next launch must
+    /// route without a ZGate patch.
+    @Test func classifyIsGenericForFutureGLMNames() {
+        #expect(ModelClass.classify("glm-5.5") == .opus)
+        #expect(ModelClass.classify("glm-5.5[1m]") == .opus)
+        #expect(ModelClass.classify("GLM-6") == .opus)
+        // flash still wins over the family rule.
+        #expect(ModelClass.classify("glm-5.5-flash") == .haiku)
+        #expect(ModelClass.classify("GLM-6-Flash") == .haiku)
+        // Non-GLM unknowns keep falling to the terminal rule.
+        #expect(ModelClass.classify("some-qwen-model") == nil)
     }
 
     @Test func classRulesRouteCCModels() {
@@ -208,6 +223,9 @@ struct RouterTests {
         // misroute served.
         let glm54Target = routedTarget(resolve(fixture, model: "glm-5.4[1m]"))
         #expect(glm54Target?.targetModel == "GLM-5.3")
+
+        // A not-yet-released GLM name routes by family — same rule, no patch.
+        #expect(routedTarget(resolve(fixture, model: "glm-5.5[1m]"))?.targetModel == "GLM-5.3")
 
         // auto rule (before class rules in the ordered table).
         let autoTarget = routedTarget(resolve(fixture, model: "auto"))
