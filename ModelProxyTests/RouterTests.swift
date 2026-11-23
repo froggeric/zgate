@@ -622,7 +622,7 @@ struct RouterTests {
         #expect(autoPeak[0]["to"] as? String == "11:00")
         #expect(autoPeak[0]["tz"] as? String == "Europe/Paris")
         #expect(mappings[1]["matchClass"] as? String == "auto")
-        #expect(mappings[1]["targetModel"] as? String == "GLM-5.3")
+        #expect(mappings[1]["targetModel"] as? String == "GLM-5.4")
         // Qwen levers (2026-11-18): DISABLED rows to local splash qwen with
         // relay-Flash failover — single-toggle local routing per tier,
         // positioned to WIN when enabled.
@@ -631,7 +631,7 @@ struct RouterTests {
         #expect(mappings[2]["isEnabled"] as? Bool == false)
         #expect(mappings[2]["backupTargetModel"] as? String == "GLM-5.3-Flash")
         #expect(mappings[3]["matchClass"] as? String == "sonnet")
-        #expect(mappings[3]["targetModel"] as? String == "GLM-5.3")
+        #expect(mappings[3]["targetModel"] as? String == "GLM-5.4")
         #expect(mappings[4]["matchClass"] as? String == "haiku")
         #expect(mappings[4]["targetModel"] as? String == "local/qwen3.8-27b-q8")
         #expect(mappings[4]["isEnabled"] as? Bool == false)
@@ -652,7 +652,7 @@ struct RouterTests {
         #expect(peak[0]["to"] as? String == "11:00")
         #expect(peak[0]["tz"] as? String == "Europe/Paris")
         #expect(mappings[7]["matchClass"] as? String == "opus")
-        #expect(mappings[7]["targetModel"] as? String == "GLM-5.3")
+        #expect(mappings[7]["targetModel"] as? String == "GLM-5.4")
         #expect(mappings[7]["isEnabled"] as? Bool == true)
         #expect(mappings[8]["catchAll"] as? Bool == true)
         // Task 7: the terminal fallback rule carries the API-key edge as its
@@ -698,7 +698,7 @@ struct RouterTests {
             table().firstMatch(model: model, context: ConditionContext(now: Date(), health: nil, quota: nil))?.targets.first?.targetModel
         }
         #expect(firstTarget("glm-5.3-flash[1m]") == "GLM-5.3-Flash")
-        #expect(firstTarget("claude-sonnet-4-5") == "GLM-5.3")
+        #expect(firstTarget("claude-sonnet-4-5") == "GLM-5.4")
 
         // Enable the haiku lever → haiku-class goes local qwen.
         if let i = config.modelMappings.firstIndex(where: {
@@ -716,7 +716,7 @@ struct RouterTests {
         }
         #expect(firstTarget("claude-sonnet-4-5") == "local/qwen3.8-27b-q8")
         // Unrelated tiers untouched.
-        #expect(firstTarget("glm-5.3[1m]") == "GLM-5.3")
+        #expect(firstTarget("glm-5.3[1m]") == "GLM-5.4")
     }
 
     @Test func legacyConfigWithoutNewFieldsDecodesUnchanged() throws {
@@ -914,7 +914,7 @@ struct RouterTests {
         #expect(twins.count == 2 && twins.allSatisfy { $0.isEnabled == false })
         let qwenLevers = cfg.modelMappings.filter { $0.targetModel == "local/qwen3.8-27b-q8" }
         #expect(qwenLevers.count == 2 && qwenLevers.allSatisfy { !$0.isEnabled })
-        #expect(target("glm-5.3[1m]", monday9) == "GLM-5.3")        // twins disabled → big model always
+        #expect(target("glm-5.3[1m]", monday9) == "GLM-5.4")        // twins disabled → big model always
         #expect(target("glm-5.3-flash[1m]", monday9) == "GLM-5.3-Flash")
         #expect(target("qwen3.8-27b", monday9) == "GLM-5.3-Flash")  // catchAll: qwen off default routes
         // The cost lever still works: enable the opus twin → peak morning goes Flash.
@@ -953,9 +953,9 @@ struct RouterTests {
         // v2.1 default: the twin ships DISABLED — even inside the window,
         // auto-class (and opus-class) names get the big model.
         let disabled = makeTable()
-        #expect(target(disabled, model: "", date: monday) == "GLM-5.3")
-        #expect(target(disabled, model: "glm-5.3[1m]", date: monday) == "GLM-5.3")
-        #expect(target(disabled, model: "", date: afternoon) == "GLM-5.3")
+        #expect(target(disabled, model: "", date: monday) == "GLM-5.4")
+        #expect(target(disabled, model: "glm-5.3[1m]", date: monday) == "GLM-5.4")
+        #expect(target(disabled, model: "", date: afternoon) == "GLM-5.4")
 
         // The lever still works: enable the auto twin → peak morning goes Flash.
         if let i = defaultConfig.modelMappings.firstIndex(where: { $0.sourceModel == "auto (peak hours)" }) {
@@ -963,6 +963,6 @@ struct RouterTests {
         }
         let enabled = makeTable()
         #expect(target(enabled, model: "", date: monday) == "GLM-5.3-Flash")
-        #expect(target(enabled, model: "", date: afternoon) == "GLM-5.3")
+        #expect(target(enabled, model: "", date: afternoon) == "GLM-5.4")
     }
 }

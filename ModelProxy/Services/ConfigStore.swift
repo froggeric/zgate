@@ -298,6 +298,37 @@ final class ConfigStore {
             }
             config.offPeakVendorSeeded = true
         }
+        // Migration 12 (v2.2, GLM-5.4 launch 2026-11-23): the main tiers
+        // follow the new default. Gated on the FULL untouched v2.1 shape —
+        // exactly one enabled, condition-less, backup-less row in each of
+        // the auto/sonnet/opus classes, all targeting GLM-5.3 at the relay —
+        // so it runs once per config and never fights an edit (a pinned
+        // model, a backup, a condition or an extra row opts the whole set
+        // out; an enabled timed twin beside the plain row does not). Same
+        // value-gated contract as migration 5.
+        do {
+            let relayIDs = Set(config.vendors.filter { $0.vendorKind == .relay }.map(\.id))
+            var plainRows: [Int] = []
+            var untouched = true
+            for cls in [ModelClass.auto, .sonnet, .opus] {
+                let plain = config.modelMappings.indices.filter {
+                    config.modelMappings[$0].matchClass == cls && config.modelMappings[$0].isEnabled
+                        && (config.modelMappings[$0].conditions ?? []).isEmpty
+                }
+                guard plain.count == 1, let row = plain.first,
+                      config.modelMappings[row].targetModel == "GLM-5.3",
+                      config.modelMappings[row].backupTargetVendorID == nil,
+                      relayIDs.contains(config.modelMappings[row].targetVendorID)
+                else {
+                    untouched = false
+                    break
+                }
+                plainRows.append(row)
+            }
+            if untouched {
+                for row in plainRows { config.modelMappings[row].targetModel = "GLM-5.4" }
+            }
+        }
         return config
     }
 

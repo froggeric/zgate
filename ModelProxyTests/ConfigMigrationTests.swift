@@ -34,6 +34,96 @@ extension AppConfig {
         #expect(m[twin!].isEnabled == false)
     }
 
+    // MARK: - v2.2 defaults (GLM-5.4, 2026-11-23)
+
+    /// Enabled, condition-less class rules → target model (the plain tier
+    /// rows; disabled levers and timed twins are not part of the shape).
+    private func plainTierTargets(_ c: AppConfig) -> [ModelClass: String] {
+        var out: [ModelClass: String] = [:]
+        for m in c.modelMappings
+        where m.isEnabled && m.matchClass != nil && (m.conditions ?? []).isEmpty {
+            out[m.matchClass!] = m.targetModel
+        }
+        return out
+    }
+
+    private func setMainTierTargets(_ c: inout AppConfig, to model: String) {
+        for i in c.modelMappings.indices where c.modelMappings[i].isEnabled {
+            guard let cls = c.modelMappings[i].matchClass, cls != .haiku else { continue }
+            if (c.modelMappings[i].conditions ?? []).isEmpty { c.modelMappings[i].targetModel = model }
+        }
+    }
+
+    /// An install still on the untouched v2.1 shape: the three main tiers on
+    /// GLM-5.3 at the relay, no conditions, no backups.
+    private func untouchedV21Config() -> AppConfig {
+        AppConfig.makeZGateDefaultRouting(AppConfig()).also { c in
+            setMainTierTargets(&c, to: "GLM-5.3")
+        }
+    }
+
+    @Test func defaultMatrixTargetsGLM54ForTheMainTiers() {
+        let targets = plainTierTargets(AppConfig.makeZGateDefaultRouting(AppConfig()))
+        #expect(targets[.opus] == "GLM-5.4")
+        #expect(targets[.sonnet] == "GLM-5.4")
+        #expect(targets[.auto] == "GLM-5.4")
+        // The fast tier stays on flash.
+        #expect(targets[.haiku] == "GLM-5.3-Flash")
+    }
+
+    @Test func migration12RetargetsTheUntouchedV21Shape() {
+        let config = untouchedV21Config()
+        let beforeIDs = config.modelMappings.map(\.id)
+        let after = ConfigStore.applyMigrations(config)
+        let targets = plainTierTargets(after)
+        #expect(targets[.opus] == "GLM-5.4")
+        #expect(targets[.sonnet] == "GLM-5.4")
+        #expect(targets[.auto] == "GLM-5.4")
+        #expect(targets[.haiku] == "GLM-5.3-Flash")
+        // Same rows, same order.
+        #expect(after.modelMappings.map(\.id) == beforeIDs)
+        // Idempotent: a second pass changes nothing.
+        let twice = ConfigStore.applyMigrations(after)
+        #expect(twice.modelMappings.map(\.targetModel) == after.modelMappings.map(\.targetModel))
+    }
+
+    /// Any edit to those rows opts the WHOLE set out — a pinned model, a
+    /// backup target, a condition, or an extra rule in a main tier.
+    @Test func migration12LeavesEditedRulesAlone() {
+        let relayID = untouchedV21Config().vendors.first { $0.vendorKind == .relay }?.id
+        let edited: [(String, (inout AppConfig) -> Void)] = [
+            ("opus pinned by hand", { c in
+                if let i = c.modelMappings.firstIndex(where: { $0.matchClass == .opus && $0.isEnabled }) {
+                    c.modelMappings[i].targetModel = "GLM-4.6"
+                }
+            }),
+            ("sonnet carries a backup", { c in
+                if let i = c.modelMappings.firstIndex(where: { $0.matchClass == .sonnet && $0.isEnabled }) {
+                    c.modelMappings[i].backupTargetVendorID = relayID
+                }
+            }),
+            ("auto carries a condition", { c in
+                if let i = c.modelMappings.firstIndex(where: { $0.matchClass == .auto && $0.isEnabled }) {
+                    c.modelMappings[i].conditions = [RuleCondition(
+                        type: .quotaBelow, percent: 20)]
+                }
+            }),
+            ("an extra enabled opus row", { c in
+                if let opus = c.modelMappings.first(where: { $0.matchClass == .opus && $0.isEnabled }) {
+                    c.modelMappings.append(ModelMapping(
+                        sourceModel: "opus (second)", targetModel: "GLM-5.3",
+                        targetVendorID: relayID ?? UUID(), matchClass: .opus))
+                }
+            }),
+        ]
+        for (name, edit) in edited {
+            let config = untouchedV21Config().also(edit)
+            let after = ConfigStore.applyMigrations(config)
+            // Not one row is retargeted.
+            #expect(after.modelMappings.map(\.targetModel) == config.modelMappings.map(\.targetModel), "\(name)")
+        }
+    }
+
     @Test func migrationInsertsTwinIntoLegacyConfig() {
         let before = legacyConfig()
         let beforeIDs = before.modelMappings.map(\.id)

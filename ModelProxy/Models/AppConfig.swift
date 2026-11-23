@@ -294,16 +294,17 @@ extension AppConfig {
             AppConfig(clients: [claudeCodeClient, codexClient]))
     }
 
-    /// Default matrix — v2.1, owner ruling 2026-11-17 (supersedes the
-    /// 2026-11-16 correction of spec §2). Editable in Settings. Ordered
-    /// rules, first match wins: each peak twin sits before its plain rule so
-    /// it wins during the window only; a terminal catch-all fallback to
-    /// relay flash means no request is ever dropped for an unmatched model.
+    /// Default matrix — v2.2 (GLM-5.4 launch 2026-11-23) on the v2.1 shape
+    /// of the owner ruling 2026-11-17. Editable in Settings. Ordered rules,
+    /// first match wins: each peak twin sits before its plain rule so it
+    /// wins during the window only; a terminal catch-all fallback to relay
+    /// flash means no request is ever dropped for an unmatched model.
     ///
-    /// v2.1 semantics: ALL deliberate work runs opus-class GLM-5.3 on the
-    /// relay (sonnet and opus classes alike); haiku-class work rides the
-    /// fast relay tier GLM-5.3-Flash. Local qwen is OFF every default route
-    /// — its names match no class rule and fall to the catch-all.
+    /// v2.1 semantics: ALL deliberate work runs opus-class on the relay —
+    /// GLM-5.4 since v2.2, GLM-5.3 before (sonnet and opus classes alike);
+    /// haiku-class work rides the fast relay tier GLM-5.3-Flash. Local qwen
+    /// is OFF every default route — its names match no class rule and fall
+    /// to the catch-all.
     ///
     /// The two peak twins (weekdays 07:00–11:00 Paris → Flash) STAY in the
     /// matrix but ship DISABLED — a dormant cost lever (user ruling
@@ -371,7 +372,7 @@ extension AppConfig {
                 targetVendorID: relay.id, isEnabled: false,
                 matchClass: .auto, conditions: [peakHours]),
             ModelMapping(
-                sourceModel: "auto", targetModel: "GLM-5.3", targetVendorID: relay.id,
+                sourceModel: "auto", targetModel: "GLM-5.4", targetVendorID: relay.id,
                 matchClass: .auto),
             // Qwen levers (2026-11-18): DISABLED rows routing a tier to the
             // local splash qwen model with relay-Flash failover — enable in
@@ -386,9 +387,9 @@ extension AppConfig {
                 backupTargetModel: "GLM-5.3-Flash", backupTargetVendorID: relay.id,
                 isEnabled: false, matchClass: .sonnet),
             // v2.1: sonnet-class work → main opus-class relay model (was
-            // flash-tier metering under the 2026-11-16 ruling).
+            // flash-tier metering under the 2026-11-16 ruling). v2.2: GLM-5.4.
             ModelMapping(
-                sourceModel: "sonnet", targetModel: "GLM-5.3", targetVendorID: relay.id,
+                sourceModel: "sonnet", targetModel: "GLM-5.4", targetVendorID: relay.id,
                 matchClass: .sonnet),
             ModelMapping(
                 sourceModel: "haiku (local qwen)", targetModel: "local/qwen3.8-27b-q8",
@@ -405,7 +406,7 @@ extension AppConfig {
                 targetVendorID: relay.id, isEnabled: false,
                 matchClass: .opus, conditions: [peakHours]),
             ModelMapping(
-                sourceModel: "opus", targetModel: "GLM-5.3", targetVendorID: relay.id,
+                sourceModel: "opus", targetModel: "GLM-5.4", targetVendorID: relay.id,
                 matchClass: .opus),
             ModelMapping(
                 sourceModel: "fallback", targetModel: "GLM-5.3-Flash", targetVendorID: relay.id,
