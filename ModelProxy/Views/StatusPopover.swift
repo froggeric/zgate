@@ -11,6 +11,8 @@ struct StatusPopover: View {
     @Environment(UpdateCenter.self) private var updateCenter
     @Environment(AppUpdateService.self) private var appUpdate
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openSettings) private var openSettings
+    @Environment(\.dismiss) private var dismiss
     @State private var showCorruptBanner: Bool = false
     @State private var showingReloginAlert: Bool = false
     @State private var reloginMessage: String = ""
@@ -539,7 +541,15 @@ struct StatusPopover: View {
                     .accessibilityHint("Starts the local proxy server on configured ports.")
                 }
 
-                SettingsLink {
+                // Not a SettingsLink: from inside the menu-bar panel it left
+                // the panel open and Settings behind every other window.
+                // The panel is dismissed through SwiftUI's own action (never
+                // window.close(): that swallows the next menu-bar click), then
+                // SettingsPresenter brings Settings front. Why it has to
+                // switch the activation policy: its header comment.
+                Button {
+                    SettingsPresenter.shared.present(dismiss: { dismiss() }, open: { openSettings() })
+                } label: {
                     Image(systemName: "gear")
                 }
                 .buttonStyle(.bordered)
