@@ -53,11 +53,17 @@ struct ZGateRelease: Decodable, Sendable {
     let tag_name: String
     let assets: [ZGateReleaseAsset]
 
-    /// The one asset we can stage: exact `ZGate-<tag>.zip` name AND a
+    /// The one asset we can stage: a `ZGate-<version>.zip` name AND a
     /// sha256 digest to verify the download against. nil → cannot check.
+    /// Published assets carry the bare version (`ZGate-2.11.3.zip` for tag
+    /// `v2.11.3`); the tag-verbatim form (`ZGate-v2.11.3.zip`) is accepted
+    /// too. Until 2026-11-23 only the tag-verbatim form was, and the check
+    /// answered `cannotCheck` for every real release.
     var zipAsset: ZGateReleaseAsset? {
-        assets.first {
-            $0.name == "ZGate-\(tag_name).zip" && $0.digest?.hasPrefix("sha256:") == true
+        let version = tag_name.hasPrefix("v") ? String(tag_name.dropFirst()) : tag_name
+        let names = Set(["ZGate-\(version).zip", "ZGate-\(tag_name).zip"])
+        return assets.first {
+            names.contains($0.name) && $0.digest?.hasPrefix("sha256:") == true
         }
     }
 }

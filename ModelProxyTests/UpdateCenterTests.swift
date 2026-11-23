@@ -236,6 +236,36 @@ import Testing
         #expect(!center.hasActiveAlert)
     }
 
+    /// Regression (2026-11-23): the check answered `cannotCheck` from the day
+    /// it shipped — it looked for `ZGate-v<tag>.zip`, while every published
+    /// release names its asset `ZGate-<version>.zip` (no `v`). The fixtures
+    /// above were written in the invented shape, so they stayed green. This
+    /// is the real `releases/latest` shape captured from the wire on
+    /// 2026-11-23 (GitHub's extra fields omitted: the decoder reads name,
+    /// browser_download_url and digest only).
+    private func publishedV2113Payload() -> Data {
+        Data(
+            #"{"tag_name":"v2.11.3","assets":[{"name":"ZGate-2.11.3.zip","browser_download_url":"https://github.com/froggeric/zgate/releases/download/v2.11.3/ZGate-2.11.3.zip","digest":"sha256:\#(String(repeating: "ab", count: 32))","size":27959525,"content_type":"application/zip","state":"uploaded"}]}"#
+                .utf8)
+    }
+
+    @Test func publishedAssetNameChecksCleanly() async {
+        let stub = FetchStub()
+        stub.serve(publishedV2113Payload(), for: UpdateCenter.zgateReleasesURL)
+
+        // Behind the release: a real verdict and the alert, not cannotCheck.
+        let behind = makeCenter(stub: stub, current: (2, 11, 2))
+        await behind.checkNow(splash: false)
+        #expect(behind.zgateState == .available(tag: "v2.11.3", current: "2.11.2"))
+        #expect(behind.zgateAlert)
+
+        // On the release: up to date.
+        let current = makeCenter(stub: stub, current: (2, 11, 3))
+        await current.checkNow(splash: false)
+        #expect(current.zgateState == .upToDate)
+        #expect(!current.hasActiveAlert)
+    }
+
     /// Review fix 1: a failed current-version read must never fabricate an
     /// update alert — unparseable running version + valid latest → the
     /// honest degraded state, no alert.

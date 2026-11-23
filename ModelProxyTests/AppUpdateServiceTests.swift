@@ -163,6 +163,24 @@ import Testing
         await #expect(service.checkState(current: (2, 8, 9)) == .cannotCheck)
     }
 
+    /// Regression (2026-11-23): the published asset is `ZGate-<version>.zip`
+    /// (no `v`), e.g. `ZGate-2.11.3.zip` for tag `v2.11.3` — the check used to
+    /// require `ZGate-v2.11.3.zip` and answered `cannotCheck` for every real
+    /// release. The payload is the wire shape (extra GitHub fields omitted).
+    @Test func checkAcceptsThePublishedAssetName() async {
+        let stub = FetchStub()
+        stub.serve(Data(
+            #"{"tag_name":"v2.11.3","assets":[{"name":"ZGate-2.11.3.zip","browser_download_url":"https://github.com/froggeric/zgate/releases/download/v2.11.3/ZGate-2.11.3.zip","digest":"sha256:\#(String(repeating: "ab", count: 32))","size":27959525,"content_type":"application/zip","state":"uploaded"}]}"#
+                .utf8), for: AppUpdateService.releasesURL)
+        let service = makeService(stub: stub)
+        await #expect(service.checkState(current: (2, 11, 3)) == .upToDate)
+        await #expect(service.checkState(current: (2, 11, 2))
+            == .available(tag: "v2.11.3", current: "2.11.2"))
+        // stage() downloads from this URL: it must be the published asset.
+        #expect(service.lastCheckedRelease?.zipAsset?.browser_download_url
+            == URL(string: "https://github.com/froggeric/zgate/releases/download/v2.11.3/ZGate-2.11.3.zip"))
+    }
+
     // MARK: - Stage
 
     @Test func digestMismatchAbortsStaging() async throws {
