@@ -117,8 +117,9 @@ enum EnvExportLine: Sendable {
 
     /// Quick-start command for a Clients-tab row: the same env export
     /// (actual bound port, 127.0.0.1 host — identical semantics to
-    /// `claudeLine`) plus the tool launch. One formatter so the popover
-    /// env line and the tab's command can never disagree.
+    /// `claudeLine`) plus the tool launch. One formatter so the Advanced
+    /// tab's client-setup line and this command can never disagree. (The
+    /// popover's own copy of the line was removed 2026-11-23.)
     static func quickStartCommand(client: ClientConfig, boundPort: Int?) -> String {
         let port = boundPort ?? client.port
         let tool: String
@@ -134,44 +135,6 @@ enum EnvExportLine: Sendable {
         // compaction and auxiliary requests.
         let hints = tool == "claude" ? " CLAUDE_CODE_GATEWAY_HINT_HEADERS=1" : ""
         return baseURLLine(port: port) + hints + " && \(tool)"
-    }
-}
-
-// MARK: - Active rules summary (Task 9, testable)
-
-/// Condensed popover summary of the active rule table (spec §6): ordered
-/// enabled rules as `match → target` pairs, class rules first in config
-/// order, catch-all last regardless of position. Disabled rules are
-/// counted, not listed.
-enum RulesSummary: Sendable {
-
-    /// `nil` when there are no enabled rules.
-    static func text(mappings: [ModelMapping], vendors: [Vendor]) -> String? {
-        func vendorName(_ id: UUID) -> String {
-            vendors.first(where: { $0.id == id })?.name ?? "?"
-        }
-        var parts: [String] = []
-        for mapping in mappings where mapping.isEnabled {
-            let match: String
-            if mapping.catchAll {
-                match = "other"
-            } else if let matchClass = mapping.matchClass {
-                match = matchClass.rawValue
-            } else {
-                match = mapping.sourceModel
-            }
-            let target = "\(mapping.targetModel) @ \(vendorName(mapping.targetVendorID))"
-            var part = "\(match) → \(target)"
-            if let backupVendorID = mapping.backupTargetVendorID {
-                let backupModel = mapping.backupTargetModel ?? mapping.targetModel
-                part += " ⇄ \(backupModel) @ \(vendorName(backupVendorID))"
-            }
-            parts.append(part)
-        }
-        guard !parts.isEmpty else { return nil }
-        let disabled = mappings.filter { !$0.isEnabled }.count
-        let suffix = disabled > 0 ? "  (+\(disabled) off)" : ""
-        return parts.joined(separator: " · ") + suffix
     }
 }
 

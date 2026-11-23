@@ -39,8 +39,9 @@ private struct ClientRowSection: View {
         return (1024...65535).contains(port)
     }
 
-    /// One formatter (EnvExportLine) for the popover env line and this
-    /// quick start — same 127.0.0.1 host, same actual-bound-port semantics.
+    /// One formatter (EnvExportLine) for the Advanced tab's client-setup
+    /// line and this quick start — same 127.0.0.1 host, same
+    /// actual-bound-port semantics.
     private var envExportCommand: String {
         EnvExportLine.quickStartCommand(
             client: client,

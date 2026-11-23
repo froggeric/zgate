@@ -321,51 +321,6 @@ struct MenuBarUITests {
         #expect(formatter.date(from: entry.timeDisplayText) != nil)
     }
 
-    // MARK: - Rules summary
-
-    @Test("summary lists enabled rules in order, counts disabled, labels catch-all")
-    func rulesSummary() {
-        let relay = Vendor(name: "zcode relay", baseURL: "https://zcode.z.ai", apiKey: "")
-        let splash = Vendor(name: "splash (local)", baseURL: "http://127.0.0.1:8000", apiKey: "")
-        let summary = RulesSummary.text(
-            mappings: [
-                ModelMapping(
-                    sourceModel: "auto", targetModel: "GLM-5.3", targetVendorID: relay.id,
-                    matchClass: .auto),
-                ModelMapping(
-                    sourceModel: "opus (peak hours)", targetModel: "GLM-5.3-Flash",
-                    targetVendorID: relay.id, isEnabled: false, matchClass: .opus),
-                ModelMapping(
-                    sourceModel: "haiku", targetModel: "Qwen3.8-27B-4bit",
-                    targetVendorID: splash.id, backupTargetModel: "GLM-5.3-Flash",
-                    backupTargetVendorID: relay.id, matchClass: .haiku),
-                ModelMapping(
-                    sourceModel: "fallback", targetModel: "GLM-5.3-Flash",
-                    targetVendorID: relay.id, catchAll: true),
-            ],
-            vendors: [relay, splash])
-        #expect(summary != nil)
-        let text = summary!
-        #expect(text.contains("auto → GLM-5.3 @ zcode relay"))
-        #expect(text.contains("haiku → Qwen3.8-27B-4bit @ splash (local) ⇄ GLM-5.3-Flash @ zcode relay"))
-        #expect(text.contains("other → GLM-5.3-Flash @ zcode relay"))
-        #expect(!text.contains("opus (peak hours)"))
-        #expect(text.contains("+1 off"))
-    }
-
-    @Test("summary is nil with no enabled rules")
-    func rulesSummaryEmpty() {
-        let relay = Vendor(name: "zcode relay", baseURL: "https://zcode.z.ai", apiKey: "")
-        let summary = RulesSummary.text(
-            mappings: [
-                ModelMapping(
-                    sourceModel: "opus", targetModel: "GLM-5.3", targetVendorID: relay.id,
-                    isEnabled: false, matchClass: .opus)
-            ],
-            vendors: [relay])
-        #expect(summary == nil)
-    }
-
     // MARK: - Splash lifecycle chip (Package C)
 
     @Test("lifecycle chip faces: symbol + text, distinct shapes per state")

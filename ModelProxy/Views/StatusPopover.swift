@@ -16,7 +16,6 @@ struct StatusPopover: View {
     @State private var showCorruptBanner: Bool = false
     @State private var showingReloginAlert: Bool = false
     @State private var reloginMessage: String = ""
-    @State private var copiedEnvLine: Bool = false
     /// ZGate install flow (spec §3.5 via §5): the shared
     /// confirm-to-stage-swap helper — the About Updates row runs the
     /// same object type, so the two surfaces cannot drift.
@@ -59,11 +58,7 @@ struct StatusPopover: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
 
-            rulesAndHealthSection
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
-
-            envLineSection
+            splashSection
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
 
@@ -430,33 +425,18 @@ struct StatusPopover: View {
         }
     }
 
-    // MARK: - Rules summary + splash lifecycle
+    // MARK: - Splash lifecycle
 
+    /// Only the splash chip remains in this row (2026-11-23): the rules
+    /// summary that shared it truncated after two lines and repeated
+    /// Settings → Rules. The chip stays — it is the one place the popover
+    /// shows splash's lifecycle.
     @ViewBuilder
-    private var rulesAndHealthSection: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                if let summary = RulesSummary.text(
-                    mappings: configStore.config.modelMappings,
-                    vendors: configStore.config.vendors)
-                {
-                    Text(summary)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                        .help(summary)
-                        .textSelection(.enabled)
-                } else {
-                    Text("No rules enabled — unmatched models pass through")
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            Spacer(minLength: 8)
+    private var splashSection: some View {
+        HStack {
+            Spacer(minLength: 0)
             splashChip(splashManager.state)
         }
-        .accessibilityElement(children: .combine)
     }
 
     /// Lifecycle chip driven by the manager's process state (spec §5); the
@@ -474,38 +454,6 @@ struct StatusPopover: View {
                 .foregroundStyle(.secondary)
         }
         .help("Splash lifecycle managed by ZGate (Settings → Splash)")
-    }
-
-    // MARK: - Env line
-
-    @ViewBuilder
-    private var envLineSection: some View {
-        if let line = EnvExportLine.claudeLine(
-            boundPorts: proxyServer.boundPorts,
-            clients: configStore.config.clients)
-        {
-            HStack(spacing: 6) {
-                Text(line)
-                    .font(.callout.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 4)
-                Button {
-                    copyToClipboard(line)
-                    copiedEnvLine = true
-                    Task {
-                        try? await Task.sleep(for: .seconds(1.5))
-                        copiedEnvLine = false
-                    }
-                } label: {
-                    Text(copiedEnvLine ? "Copied" : "Copy")
-                        .font(.callout)
-                }
-                .buttonStyle(.link)
-                .accessibilityLabel("Copy environment line")
-            }
-        }
     }
 
     // MARK: - Control Row
@@ -554,6 +502,7 @@ struct StatusPopover: View {
                 }
                 .buttonStyle(.bordered)
                 .accessibilityLabel("Open Settings")
+                .help("Open Settings")
 
                 Button { NSApplication.shared.terminate(nil) } label: {
                     Text("Quit")
