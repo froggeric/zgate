@@ -31,6 +31,7 @@ All project documents use `docs/00-AI-CONTEXT.md` as the single source of truth.
 | Change history | `docs/07-changelog/` |
 | Lessons learned | `docs/09-lessons-learned/` |
 | App Store published pages + compliance | `docs/10-app-store-connect/` |
+| Release signing intel (partly superseded by 2.7.6) / E2E proof checklist | `docs/signing-notes.md`, `docs/e2e-checklist.md` |
 | Crystallized decisions | `docs/11-crystals/` |
 
 ## Document After Completing Features
@@ -67,6 +68,20 @@ Required:
 - AsyncHTTPClient or URLSession for upstream requests
 - UserDefaults + JSON for config persistence
 - No SwiftData, no Core Data
+
+## Build & Test
+
+```bash
+# Focused test suite — ALWAYS filter ZGateTests/<Suite>, never ModelProxyTests/<Suite>:
+# sources live in ModelProxyTests/ but compile into the ZGateTests target, so a
+# ModelProxyTests/ filter matches NO tests and vacuously "passes".
+xcodebuild test -project ZGate.xcodeproj -scheme ZGate \
+  -destination 'platform=macOS' -only-testing:ZGateTests/RouterTests
+
+# Release build (hand the .app path to `zsh scripts/notarize.sh <path-to-ZGate.app>`)
+xcodebuild -project ZGate.xcodeproj -scheme ZGate -configuration Release \
+  -derivedDataPath build/DerivedData build
+```
 
 ## Coding Conventions
 
@@ -112,14 +127,10 @@ read it directly with `ls`/`head` (verified 2026-11-19):
 - **os_log is empty.** Subsystem `com.modelproxy.app` persists nothing
   (`log show --predicate 'subsystem == "com.modelproxy.app"'`). Not a debugging source.
 - **Determine a model's route by probing the live proxy, not by guessing:**
-  `curl localhost:9090/v1/messages -H 'x-api-key: probe' -H 'anthropic-version: 2023-06-01' -d '{"model":"<m>","max_tokens":8,"messages":[{"role":"user","content":"x"}]}'`
+  `curl localhost:8787/v1/messages -H 'x-api-key: probe' -H 'anthropic-version: 2023-06-01' -d '{"model":"<m>","max_tokens":8,"messages":[{"role":"user","content":"x"}]}'`
   — an Anthropic-format error (`request_id: req_011C...`) means that model is **passthrough
   to Anthropic**; a different vendor/error means it's mapped. See
   `docs/09-lessons-learned/2026-06-11-proxy-transform-diagnosis.md` for the tool-call transform gating table.
-  - **Focused test runs must filter `ZGateTests/<Suite>`, never `ModelProxyTests/<Suite>`**
-    (sources live in ModelProxyTests/ but compile into the ZGateTests target — the
-    ModelProxyTests/ filter matches NO tests and vacuously "passes":
-    `xcodebuild test … -only-testing:ZGateTests/RouterTests`).
   - **Verify external API shapes against the live wire, never invented fixtures**
     (2026-11-21: ApiKeyMinter shipped broken — fixtures guessed field names the real
     api/biz responses don't use). Probes keep credentials in shell vars, never printed.
