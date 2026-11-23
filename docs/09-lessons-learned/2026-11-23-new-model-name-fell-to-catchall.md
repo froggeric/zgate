@@ -57,6 +57,11 @@ curl -s 127.0.0.1:8787/v1/messages -H 'x-api-key: probe' \
 Before the fix: `GLM-5.3-Flash`. After it, swapped in: `GLM-5.4`.
 `glm-5.3-flash[1m]` → `GLM-5.3-Flash`; unknown names → `GLM-5.3-Flash`.
 
+Correction, same day: Claude Code strips `[1m]` before sending (measured
+on 2.1.323 against a local stub), so the ids that reached ZGate were
+`glm-5.4` and `glm-5.3-flash`. Both forms classified the same way — as
+nothing — so the diagnosis stands. A probe should send the bare id.
+
 Vision needed the same discipline. GLM-5.4 is the first main model with
 native image input, and three probes gave three different levels of
 confidence:
@@ -95,7 +100,11 @@ confidence:
 ## Open follow-ups
 
 - Make main-model classification generic or data-driven, so a launch is
-  a config change rather than a three-file patch.
+  a config change rather than a three-file patch. Partly done the same
+  day: any `glm-` name without "flash" is now opus-class
+  (`RouterExtensions.swift`), verified live with the not-yet-released
+  `glm-5.5[1m]`. `canonicalModel` and `glmFamily` are still enumerated;
+  they only matter when a rule carries no target model.
 - Surface catch-all fall-through for names that look like a known family.
 - Add a `GLM-5.3` backup target to the opus and sonnet rules and test the
   1305 path.
