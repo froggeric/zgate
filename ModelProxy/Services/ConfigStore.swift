@@ -329,6 +329,21 @@ final class ConfigStore {
                 for row in plainRows { config.modelMappings[row].targetModel = "GLM-5.4" }
             }
         }
+        // Migration 13 (configurator v2, 2026-11-23): the `local` routing
+        // rule behind the local model id. FIRST application only (gated by
+        // `localRuleSeeded`, the contract of migration 10): `local` → the
+        // active splash profile's model, with relay Flash as the backup (the
+        // levers' behaviour: splash down means the backup serves). Nobody
+        // sends `local` until Claude Code is told to, so the rule changes no
+        // existing route; without it a `local` request falls to the catch-all
+        // and is answered by the relay. A config without a splash vendor or
+        // an active profile stays unseeded and is retried at the next launch.
+        if !config.localRuleSeeded {
+            let seeded = ClaudeSetupLocalRule.sync(into: config)
+            if seeded || ClaudeSetupLocalRule.rule(in: config) != nil {
+                config.localRuleSeeded = true
+            }
+        }
         return config
     }
 

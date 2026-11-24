@@ -80,8 +80,8 @@ extension AppConfig {
         #expect(targets[.sonnet] == "GLM-5.4")
         #expect(targets[.auto] == "GLM-5.4")
         #expect(targets[.haiku] == "GLM-5.3-Flash")
-        // Same rows, same order.
-        #expect(after.modelMappings.map(\.id) == beforeIDs)
+        // Same rows, same order (migration 13's `local` rule aside).
+        #expect(after.modelMappings.filter { $0.sourceModel != "local" }.map(\.id) == beforeIDs)
         // Idempotent: a second pass changes nothing.
         let twice = ConfigStore.applyMigrations(after)
         #expect(twice.modelMappings.map(\.targetModel) == after.modelMappings.map(\.targetModel))
@@ -134,8 +134,9 @@ extension AppConfig {
         #expect(twin != nil && plain != nil && twin! < plain!)
         // v2.1: the inserted twin is DISABLED (dormant lever default).
         #expect(m[twin!].isEnabled == false)
-        // existing rules untouched, same order, same ids
-        #expect(m.filter { $0.sourceModel != "auto (peak hours)" }.map(\.id) == beforeIDs)
+        // existing rules untouched, same order, same ids (the `local` rule
+        // migration 13 seeds is not an existing rule)
+        #expect(m.filter { $0.sourceModel != "auto (peak hours)" && $0.sourceModel != "local" }.map(\.id) == beforeIDs)
     }
 
     @Test func migrationIsIdempotent() {
@@ -395,8 +396,10 @@ extension AppConfig {
         stripped.modelMappings.removeAll { $0.targetModel == "local/qwen3.8-27b-q8" }
         let migrated = ConfigStore.applyMigrations(stripped)
 
+        // The class levers only: migration 13's exact-match `local` rule
+        // targets the same model.
         func qwenRows(_ c: AppConfig) -> [ModelMapping] {
-            c.modelMappings.filter { $0.targetModel == "local/qwen3.8-27b-q8" }
+            c.modelMappings.filter { $0.targetModel == "local/qwen3.8-27b-q8" && $0.matchClass != nil }
         }
         let rows = qwenRows(migrated)
         #expect(rows.count == 2)
