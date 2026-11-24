@@ -10,6 +10,11 @@ struct ClientsTabView: View {
                 ClientRowSection(index: index)
                     .environment(configStore)
                     .environment(proxyServer)
+                // The configurator edits Claude Code's own settings file, so it
+                // sits with that client.
+                if configStore.config.clients[index].clientName.lowercased().contains("claude") {
+                    ClaudeSetupSection()
+                }
             }
         }
         .formStyle(.grouped)
