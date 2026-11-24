@@ -145,6 +145,14 @@ final class AppConfig: Codable {
     /// migration needed (a user setting enabled=false stays false; there is
     /// no "delete the section" UX to resurrect).
     var offPeak: OffPeakConfig
+    /// Claude Code settings configurator (spec v2): the recommended ids,
+    /// windows and compaction percentage. Absent in every pre-configurator
+    /// config → defaults; encoded only once it differs from them.
+    var claudeSetup: ClaudeSetupSettings?
+    /// Configurator migration marker (migration 13): the `local` routing rule
+    /// has been seeded at least once. Run-once gate with the contract of
+    /// `fallbackEdgeSeeded` — a user-deleted row STAYS deleted.
+    var localRuleSeeded: Bool
 
     // MARK: - Init
 
@@ -161,7 +169,9 @@ final class AppConfig: Codable {
         relayClientVersion: String = RelayTarget.clientVersion,
         fallbackEdgeSeeded: Bool = false,
         offPeakVendorSeeded: Bool = false,
-        offPeak: OffPeakConfig = OffPeakConfig()
+        offPeak: OffPeakConfig = OffPeakConfig(),
+        claudeSetup: ClaudeSetupSettings? = nil,
+        localRuleSeeded: Bool = false
     ) {
         self.vendors = vendors
         self.clients = clients
@@ -176,6 +186,8 @@ final class AppConfig: Codable {
         self.fallbackEdgeSeeded = fallbackEdgeSeeded
         self.offPeakVendorSeeded = offPeakVendorSeeded
         self.offPeak = offPeak
+        self.claudeSetup = claudeSetup
+        self.localRuleSeeded = localRuleSeeded
     }
 
     // MARK: - Codable
@@ -194,6 +206,8 @@ final class AppConfig: Codable {
         case fallbackEdgeSeeded
         case offPeakVendorSeeded
         case offPeak
+        case claudeSetup
+        case localRuleSeeded
     }
 
     required init(from decoder: Decoder) throws {
@@ -232,6 +246,9 @@ final class AppConfig: Codable {
         // Absent in every pre-wave config — defaults (disabled). A malformed
         // section also falls to defaults rather than failing the whole load.
         offPeak = (try? container.decode(OffPeakConfig.self, forKey: .offPeak)) ?? OffPeakConfig()
+        // Absent in every pre-configurator config — defaults.
+        claudeSetup = try? container.decode(ClaudeSetupSettings.self, forKey: .claudeSetup)
+        localRuleSeeded = (try? container.decodeIfPresent(Bool.self, forKey: .localRuleSeeded)) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -266,6 +283,12 @@ final class AppConfig: Codable {
         // installs stay byte-stable; a real edit persists the whole section.
         if offPeak != OffPeakConfig() {
             try container.encode(offPeak, forKey: .offPeak)
+        }
+        if let claudeSetup, claudeSetup != ClaudeSetupSettings() {
+            try container.encode(claudeSetup, forKey: .claudeSetup)
+        }
+        if localRuleSeeded {
+            try container.encode(true, forKey: .localRuleSeeded)
         }
     }
 }
@@ -424,11 +447,20 @@ extension AppConfig {
     /// Spec §6.1: the stored splash vendor baseURL (default 8123) goes stale
     /// the moment the user changes the port. Pure in-memory rewrite used to
     /// build routing; NEVER persisted (the stored row keeps its default).
+    /// The splash vendor row: a loopback URL and "splash" in the name — the
+    /// convention the port sync, migration 7 and the configurator share.
+    static func isSplashVendor(_ vendor: Vendor) -> Bool {
+        isSplashVendor(name: vendor.name, baseURL: vendor.baseURL)
+    }
+
+    static func isSplashVendor(name: String, baseURL: String) -> Bool {
+        name.lowercased().contains("splash") && baseURL.contains("127.0.0.1")
+    }
+
     static func syncingSplashVendor(_ vendors: [Vendor], splashPort: Int?) -> [Vendor] {
         let port = splashPort ?? 8123
         return vendors.map { v in
-            guard v.name.lowercased().contains("splash"),
-                  v.baseURL.contains("127.0.0.1") else { return v }
+            guard isSplashVendor(v) else { return v }
             var out = v
             out.baseURL = "http://127.0.0.1:\(port)"
             return out
