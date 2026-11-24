@@ -88,7 +88,7 @@ window is open.
 
 **Key Files:**
 - `ModelProxy/App/ModelProxyApp.swift` - app entry, MenuBarExtra
-- `ModelProxy/App/SettingsPresenter.swift` - Settings in front from the panel (policy switch, restore on close)
+- `ModelProxy/App/SettingsPresenter.swift` - Settings in front from the panel (policy switch, restore on close, checked again after it)
 - `ModelProxy/Views/StatusPopover.swift` - main popover view
 - `ModelProxy/Views/SettingsView.swift` - settings window
 - `ModelProxy/Services/UpdateCenter.swift`, `AppUpdateService.swift` - update checks (splash, ZGate), explicit-click self-update

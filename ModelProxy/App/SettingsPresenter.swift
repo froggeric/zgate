@@ -51,11 +51,15 @@ final class SettingsPresenter {
     nonisolated static let raiseAttempts = 3
     nonisolated static let raiseRetryDelay: TimeInterval = 0.2
 
+    /// After the close, the policy is read again at each of these delays.
+    nonisolated static let settleChecks: [TimeInterval] = [0.25, 0.75, 2]
+
     private let deps: Deps
     /// True from `present` until the Settings window closes — or fails to
     /// appear at all.
     private(set) var isPresenting = false
-    /// The policy the app ran with before presenting: restored, never assumed.
+    /// The policy the app ran with before the first presentation: restored,
+    /// never assumed, and kept for the checks that follow a close.
     private var startingPolicy: NSApplication.ActivationPolicy?
     private var closeObserver: NSObjectProtocol?
 
@@ -114,7 +118,8 @@ final class SettingsPresenter {
     }
 
     /// The Settings window is closing (or never came): back to the policy
-    /// the app started from — exactly once per presentation.
+    /// the app started from — exactly once per presentation — and again if
+    /// the policy moves afterwards.
     func handleSettingsWillClose() {
         guard isPresenting else { return }
         if let closeObserver {
@@ -125,6 +130,19 @@ final class SettingsPresenter {
         if let startingPolicy {
             deps.setPolicy(startingPolicy)
         }
-        startingPolicy = nil
+        for delay in Self.settleChecks {
+            deps.asyncAfter(delay) { [weak self] in self?.settle() }
+        }
+    }
+
+    /// The framework changes the activation policy around the close of the
+    /// app's last window on its own. Measured on macOS 27 (2026-11-24): the
+    /// policy read `.accessory` when the close was handled and `.regular`
+    /// again right after, with no call from this app in between, and the
+    /// Dock icon stayed. The one write above is not trusted on its own: the
+    /// policy is read again and put back if it moved.
+    private func settle() {
+        guard !isPresenting, let startingPolicy, deps.policy() != startingPolicy else { return }
+        deps.setPolicy(startingPolicy)
     }
 }

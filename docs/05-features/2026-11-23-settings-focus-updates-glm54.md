@@ -10,6 +10,7 @@ the next day: `2026-11-24-claude-settings-configurator.md`.
 | Behavior | When | What happens |
 |---|---|---|
 | Settings in front | Gear in the popover | The panel is dismissed through SwiftUI's `dismiss`, ZGate switches to the regular activation policy, the Settings scene opens and is raised on a later main-loop turn. A Dock icon and a menu bar show while the window is open; the starting policy is restored when it closes |
+| Back to the menu bar | Settings closes | The policy is restored at the close and read again after 0.25 s, 0.75 s and 2 s; if macOS moved it, ZGate puts it back. A check due while Settings is open again does nothing |
 | Panel afterwards | Status item clicked, with Settings open or after it closed | The panel opens on the first click |
 | New GLM names | Any `glm-` model id without `flash` | Classified as the main model's class (opus) and served by the opus rule. A `glm-*-flash` name stays haiku |
 | Default routing | Fresh install | `auto`, `sonnet`, `opus` → relay `GLM-5.4`; `haiku` → `GLM-5.3-Flash`; catch-all → flash, backed by the api.z.ai edge |
@@ -42,6 +43,15 @@ the next day: `2026-11-24-claude-settings-configurator.md`.
   dismiss action as a parameter so no caller can forget it.
 - If the Settings window never appears (three main-loop turns), the policy is
   restored instead of left regular.
+- **A write is not a state.** macOS changes the activation policy around
+  the close of an app's last window on its own. Measured on 2026-11-24 with
+  a trace on an isolated copy: the policy read `.accessory` when the close
+  was handled (no call from ZGate in between), and in three sessions of
+  about twenty it read `.regular` again right after and the Dock icon
+  stayed. So the presenter restores the policy at the close and checks it
+  again at 0.25 s, 0.75 s and 2 s. A change later than two seconds after
+  the close is not covered. Lesson:
+  `docs/09-lessons-learned/2026-11-24-dock-icon-stayed-after-settings.md`.
 - Migration 12 counts only enabled, condition-less rows: an enabled peak twin
   beside the plain row does not opt out, an extra plain row does.
 - A class rule's target decides what is served. `canonicalModel` only matters
@@ -57,3 +67,4 @@ the next day: `2026-11-24-claude-settings-configurator.md`.
 | Date | Change |
 |------|--------|
 | 2026-11-23 | Initial version |
+| 2026-11-24 | Dock icon after Settings: the policy is checked again after the close (found on 2.12 (1)) |

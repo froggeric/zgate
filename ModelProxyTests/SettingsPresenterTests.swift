@@ -149,4 +149,65 @@ import Testing
         #expect(journal.policies == [.regular])
         #expect(presenter.isPresenting)
     }
+
+    // MARK: - The framework's own change at the close
+
+    /// A presenter whose clock moves only when the test says so, over a policy
+    /// the test can also change from outside — as the framework does.
+    @MainActor private final class Rig {
+        let journal = Journal()
+        var policy: NSApplication.ActivationPolicy = .accessory
+        var deferred: [@MainActor () -> Void] = []
+        let source = WindowSource()
+        lazy var presenter: SettingsPresenter = SettingsPresenter(deps: SettingsPresenter.Deps(
+            policy: { self.policy },
+            setPolicy: { self.policy = $0; self.journal.policies.append($0) },
+            activate: {},
+            windows: { self.source.next() },
+            async: { work in work() },
+            asyncAfter: { _, work in self.deferred.append(work) }))
+
+        func runDeferred() {
+            let works = deferred
+            deferred = []
+            works.forEach { $0() }
+        }
+    }
+
+    /// Found on the release build (2026-11-24): the policy read `.accessory`
+    /// when the close was handled and `.regular` again right after, with no
+    /// call from this app in between. The Dock icon stayed. A single write at
+    /// the close can land between the framework's two changes.
+    @Test func aPolicyChangedAfterTheCloseIsPutBack() {
+        let rig = Rig()
+        rig.source.answers = [[settingsWindow()]]
+        present(rig.presenter, journal: rig.journal)
+
+        rig.presenter.handleSettingsWillClose()
+        #expect(rig.journal.policies == [.regular, .accessory])
+
+        rig.policy = .regular  // the framework's change, after the restore
+        rig.runDeferred()
+
+        #expect(rig.journal.policies == [.regular, .accessory, .accessory])
+    }
+
+    /// A check that comes due after Settings was opened again must leave the
+    /// policy alone: Settings needs the regular policy while it is open.
+    @Test func aCheckAfterTheCloseLeavesSettingsAloneWhenItIsOpenAgain() {
+        let rig = Rig()
+        rig.source.answers = [[settingsWindow()], [settingsWindow()]]
+        present(rig.presenter, journal: rig.journal)
+        rig.presenter.handleSettingsWillClose()
+        let deferred = rig.deferred
+        rig.deferred = []
+
+        present(rig.presenter, journal: rig.journal)  // opened again before the checks
+        #expect(rig.policy == .regular)
+        deferred.forEach { $0() }
+
+        #expect(rig.journal.policies == [.regular, .accessory, .regular])
+        #expect(rig.policy == .regular)
+        #expect(rig.presenter.isPresenting)
+    }
 }
