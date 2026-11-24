@@ -4,6 +4,19 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
+## 2.12 (2)
+
+### 2026-11-24 — Dock icon after Settings
+
+- **ZGate returns to the menu bar when Settings closes, every time.** In
+  2.12 (1) the Dock icon sometimes stayed after the Settings window was
+  closed (seen on 2026-11-24; quit and relaunch cleared it). macOS changes
+  the activation policy around the close of an app's last window on its
+  own, and ZGate's single write could land between two of those changes.
+  ZGate now reads the policy again a quarter of a second, three quarters of
+  a second and two seconds after the close, and puts it back if it moved.
+  No other change.
+
 ## 2.12 (1)
 
 ### 2026-11-23 — Claude Code settings configurator
