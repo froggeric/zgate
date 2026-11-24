@@ -4,7 +4,42 @@ User-facing changes to ZGate. Dates below are authoring dates. Version
 numbers follow `marketing.build` (e.g. 2.6.4 = CFBundleShortVersionString
 2.6, CFBundleVersion 4).
 
-## Unreleased
+## 2.12 (1)
+
+### 2026-11-23 — Claude Code settings configurator
+
+- **Settings → Clients has a "Claude Code settings file" section.** It
+  reads `~/.claude/settings.json` and lists each key ZGate relies on as it
+  is against the recommendation, then writes the differences after a
+  confirmation that names every change and a backup beside the file.
+  "Restore last backup" puts the previous file back. Every other byte of
+  the file is kept.
+- **Every model gets its own context window.** The tier ids become
+  `opus[1m]`, `sonnet[1m]` and `haiku[1m]`; each gets
+  `modelSettings.<id>.autoCompactWindow` — 1,000,000 for GLM, the local
+  model's length for `local` — and Claude Code compacts at 70% of it
+  (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`), which is 686,000 tokens on GLM.
+- **Why the ids carry `[1m]`.** The suffix pins an id's window to 1M,
+  whatever `CLAUDE_CODE_MAX_CONTEXT_TOKENS` says. A bare id takes that
+  value, including a stale one: a session keeps the environment it started
+  with. With 262,144 left over, bare `opus` compacted at 169,500 and was
+  blocked at 239,000.
+- **Why each id gets its window written out.** With `[1m]` and no window,
+  Claude Code skips the compaction check: a file with `[1m]` ids and no
+  windows never compacted on its own.
+- **The global cap is set to the local model's window.**
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is a ceiling for every id without `[1m]`:
+  it protects `local` and any id typed by hand, and the `[1m]` tiers ignore
+  it. A lower cap is kept as yours. The section also names
+  `CLAUDE_CODE_DISABLE_1M_CONTEXT` when it is on.
+- **A `local` model id.** ZGate seeds one routing rule, `local` → the
+  active splash profile's model with relay Flash as backup, so
+  `/model local` runs a session on the local model with its own window.
+- **The recommended values are settings.** The `claudeSetup` section of
+  `config.json` holds the ids, the default window, the percentage and a
+  window per id; a window follows the model the id is routed to.
+- Measured on Claude Code 2.1.323 against a local stub. The section names
+  the version.
 
 ### 2026-11-23 — GLM-5.4 by default, Settings in front, a working update check
 

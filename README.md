@@ -42,6 +42,19 @@ without `flash` classifies as the main model's class. Existing installs
 whose three rows still match the untouched previous layout are moved once
 at launch; a row that was edited in any way is left alone.
 
+**v2.12 Claude Code settings configurator (2026-11-24):** Settings →
+Clients → "Claude Code settings file" reads Claude Code's own
+`settings.json`, lists each key ZGate relies on as it is against the
+recommendation, and writes the differences after a confirmation and a
+backup. The recommended setup gives every model its own context window: the
+ids become `opus[1m]`, `sonnet[1m]` and `haiku[1m]` (1M on GLM), `local`
+runs on the local model at its own length, and Claude Code compacts at 70%
+of the window (686,000 tokens on GLM) instead of running until the context
+is full. A `local` routing rule is seeded once, and the recommended values
+are the `claudeSetup` section of `config.json` — see
+[Claude Code tier aliases](#claude-code-tier-aliases) and
+[`docs/05-features/2026-11-24-claude-settings-configurator.md`](docs/05-features/2026-11-24-claude-settings-configurator.md).
+
 **v2.11 off-peak as a first-class citizen (2026-11-21):** the off-peak
 surface (Settings → General → Off-Peak, default OFF) routes generation
 through ZCode's off-peak ticket queue: enabling it polls window
@@ -103,19 +116,46 @@ family since 2026-11-23, so the next GLM version needs no ZGate change),
 unset or `auto*` → auto; anything unrecognized (local qwen ids) falls
 through to the terminal fallback rule.
 
-Recommended: the bare aliases. They never change when z.ai or Anthropic
-ships a model, so a launch is a rule-target edit in ZGate and nothing else:
+Recommended: the aliases with `[1m]`, each with a window of 1,000,000.
+They never change when z.ai or Anthropic ships a model, so a launch is a
+rule-target edit in ZGate and nothing else. Claude Code strips `[1m]` before
+sending, so ZGate receives `opus`, `sonnet` and `haiku` as before:
 
-| CC pick | Alias | Class | Serves (v2.2 defaults) |
+| CC pick | Settings value | On the wire | Serves (v2.2 defaults) |
 |---|---|---|---|
-| opus | `opus` | opus | relay GLM-5.4 |
-| sonnet | `sonnet` | sonnet | relay GLM-5.4 |
-| haiku | `haiku` | haiku | relay GLM-5.3-Flash |
+| opus | `opus[1m]` | `opus` | relay GLM-5.4 |
+| sonnet | `sonnet[1m]` | `sonnet` | relay GLM-5.4 |
+| haiku | `haiku[1m]` | `haiku` | relay GLM-5.3-Flash |
 
 The opus and sonnet picks deliberately serve the same model: all deliberate
 work — main thread and subagents — runs GLM-5.4 on the relay, the haiku
 alias carries fast/background chatter on GLM-5.3-Flash, and the local qwen
 model is off all default routes (quality ruling, 2026-11-17).
+
+Context window and compaction (measured on Claude Code 2.1.323):
+
+- **`[1m]` pins an id's window to 1M**, whatever `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+  says. A bare id takes that variable's value, including a stale one: a
+  session keeps the environment it was started with. With a 262,144 cap left
+  over, bare `opus` compacted at 169,500 and was blocked at 239,000.
+- **A `[1m]` id needs its window written out:**
+  `modelSettings.<id>.autoCompactWindow`, under the key without the suffix.
+  With no window, Claude Code skips the compaction check for the id.
+- **Each id gets the window of the model ZGate routes it to**: 1,000,000 for
+  the GLM tiers (z.ai states a 1M context for GLM-5.4 and GLM-5.3-Flash),
+  and the local model's own length for `local`, which stays bare. Below a
+  million the suffix is left off: it would pin the window too high.
+- **Claude Code holds back 20,000 tokens** of a window for the reply and
+  compacts at `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` percent of the rest. `70`
+  compacts at 686,000 on GLM and at 169,500 on a 262,144-token local model.
+  Without the variable it waits for 96.7%.
+- **Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the local model's window**
+  (262144 here). It is a ceiling for every id without `[1m]`, so it protects
+  `local` and any id typed by hand. The `[1m]` tiers ignore it.
+- **Leave out `CLAUDE_CODE_DISABLE_1M_CONTEXT`.** Set to 1, it ignores `[1m]`
+  and holds every model to 200K.
+
+Other keys:
 
 - `CLAUDE_CODE_AUTO_MODE_MODEL=haiku` keeps Claude Code's auto-mode
   classifier on the fast tier. Unset, it follows the sonnet alias — the main
@@ -125,22 +165,19 @@ model is off all default routes (quality ruling, 2026-11-17).
   when the id changes.
 - `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` lets the traffic list label main,
   subagent, compaction and auxiliary requests.
-- `CLAUDE_CODE_MAX_CONTEXT_TOKENS` applies to ids Claude Code doesn't
-  recognize that carry no `[1m]`: with the bare aliases, `262144` arms
-  proactive compaction at a 242,144-token window. With a `[1m]` alias the
-  variable is inert and nothing arms proactive compaction — the session
-  keeps a 1M assumption.
 
-Measured on Claude Code 2.1.323. A configurator for these keys is planned —
-see [Roadmap](#roadmap).
+**Settings → Clients → "Claude Code settings file"** writes all of it. The
+section lists each key as it is against the recommendation, shows where each
+id is routed and when it compacts, writes after a confirmation and a backup,
+and names anything in the file that would switch compaction off. Its values
+are the `claudeSetup` section of `config.json`. Design and measurements:
+[`docs/specs/2026-11-23-claude-settings-configurator-design.md`](docs/specs/2026-11-23-claude-settings-configurator-design.md).
 
-## Requirements
-
-- macOS (Apple Silicon), admin access to copy ZGate.app into `/Applications`.
-- **Splash** — optional local server; Settings → Splash installs and manages
-  it (see [Splash](#splash-local-server-optional)).
-
-## First-run setup
+A request whose name equals a rule's label takes that row before any class
+rule. The plain rows are labelled `opus`, `sonnet` and `haiku`, so a request
+for `opus` always takes the plain row: the peak twins and the qwen levers,
+which carry other labels, do not catch it. To move a tier, edit its plain
+row.
 
 ### 1. Build & install (release)
 
@@ -437,12 +474,12 @@ Gatekeeper prompts on any machine.
 What is planned, nearest first. Shipped work is in
 [`CHANGELOG.md`](CHANGELOG.md).
 
-- [ ] **Claude Code settings configurator** — design drafted in
-  [`docs/specs/2026-11-23-claude-settings-configurator-design.md`](docs/specs/2026-11-23-claude-settings-configurator-design.md).
-  ZGate shows whether Claude Code is set up for it, applies the recommended
-  keys to `~/.claude/settings.json` (stable `opus`/`sonnet`/`haiku` ids,
-  auto-mode model, gateway hint headers) after a diff, a confirmation and
-  a backup, and offers a `local` model id with its own context window.
+- [ ] **Levers and peak twins for alias-named requests** — a request for
+  `opus`, `sonnet` or `haiku` takes the plain row by its label before any
+  class rule, so the qwen levers and the timed twins do not catch it. Class
+  rules should be evaluated before the label match.
+- [ ] **A popover banner when the Claude Code settings file differs** — the
+  section in Settings shows the state; the popover does not.
 - [ ] **A model name that falls through should be visible** — today an
   unrecognized name lands on the catch-all rule with no sign; the traffic
   row should say so.
