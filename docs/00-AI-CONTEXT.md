@@ -93,6 +93,34 @@ window is open.
 - `ModelProxy/Views/SettingsView.swift` - settings window
 - `ModelProxy/Services/UpdateCenter.swift`, `AppUpdateService.swift` - update checks (splash, ZGate), explicit-click self-update
 
+### Claude Code settings configurator (2026-11-23)
+
+Settings → Clients → "Claude Code settings file". It reads Claude Code's own
+`settings.json`, shows each managed key against the recommendation, and
+writes only through `ClaudeSettingsFileStore`: fingerprint check against the
+preview, a backup beside the file (ten kept), atomic replace with the file's
+permissions. The recommended values are the `claudeSetup` config section:
+the tier aliases, a window per id that follows the routed model (splash's
+`context_length`, else the 1M default), and a compaction percentage
+(`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, default 70). An id whose window is 1M or
+more is written with `[1m]` (`opus[1m]`): the suffix pins the window to 1M
+whatever `CLAUDE_CODE_MAX_CONTEXT_TOKENS` says, and the window written under
+the key without the suffix (`modelSettings.opus`) keeps the compaction check
+on — with `[1m]` and no window, Claude Code skips it (2.1.323). The global
+cap `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is recommended at the largest window
+among the ids without `[1m]` (the local model's): `[1m]` ids ignore it.
+Migration 13
+seeds the `local` routing rule once. Feature notes:
+`docs/05-features/2026-11-24-claude-settings-configurator.md`.
+
+**Key Files:**
+- `ModelProxy/Services/OrderedJSON.swift` - JSON that keeps member order and every scalar's spelling
+- `ModelProxy/Services/ClaudeSetup.swift` - recommendation, planner (which keys change), the settings-file store
+- `ModelProxy/Services/ClaudeSetupReviewer.swift`, `ClaudeSetupModel.swift` - what the section shows; state and writes
+- `ModelProxy/Views/ClaudeSetupSection.swift` - the section and its confirmation sheets
+- `ModelProxy/Models/ClaudeSetupSettings.swift` - the `claudeSetup` config section
+- `docs/specs/2026-11-23-claude-settings-configurator-design.md` - design and measurements
+
 ## Tech Stack
 
 macOS 15.7+ (Sequoia) minimum, Swift 6, SwiftUI, SwiftNIO (proxy server),
@@ -109,6 +137,7 @@ Keychain; no SwiftData / Core Data).
 | Relay target + signing | `ModelProxy/Proxy/RelayTarget.swift`, `ModelProxy/Signing/` |
 | Config models | `ModelProxy/Models/` |
 | Views | `ModelProxy/Views/` |
+| Claude Code settings configurator | `ModelProxy/Services/ClaudeSetup.swift` |
 
 ## Document Index
 

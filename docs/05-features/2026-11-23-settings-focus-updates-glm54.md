@@ -1,9 +1,9 @@
 # Settings in front, working update check, GLM-5.4 routing (2026-11-23)
 
 Five bounded changes shipped together on 2026-11-23. The configurator for
-Claude Code's settings is designed separately
-(`docs/specs/2026-11-23-claude-settings-configurator-design.md`) and is not
-built yet.
+Claude Code's settings was designed separately
+(`docs/specs/2026-11-23-claude-settings-configurator-design.md`) and shipped
+the next day: `2026-11-24-claude-settings-configurator.md`.
 
 ## Expected Behavior
 
